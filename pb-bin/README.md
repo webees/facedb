@@ -10,7 +10,7 @@
 | 大小 | 41,709,597 字节 | 43,624,965 字节 |
 | sha256 | `85a10d0baf5d42d631735304baaaefd79e8a118658daf64981ecda30ebea8ef0` | `3786b4f5cbc35379129a35123dd5d2303744036d7fd9c0974d0d089ce3eb0490` |
 | md5 | `115ca8dd9bcbdd667ecc617175c803ed` | `ac39fb7771e03eb49a986f99a1789313` |
-| 适用机 | 源机 nanopc-t6-lts（RK3588，aarch64） | 目标机 113.20.8.27（x86_64） |
+| 适用机 | 源机 nanopc-t6-lts（RK3588，aarch64） | 目标机（x86_64 构建机） |
 | 自报版本 | `pocketbase version (untracked)`（源码编译产物没有版本号） | 同左 |
 | 运行时基座 | `ghcr.io/muchobien/pocketbase:0.28.1`（多架构，随 `--platform` 取对应架构） | 同左 |
 
@@ -35,7 +35,7 @@ cd ui && npm run build && cd ..                     # 构建 UI（产物被 go:e
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o pocketbase-zh-linux-arm64 examples/base/main.go
 cp pocketbase-zh-linux-arm64 ../webees@facedb/pb-bin/pocketbase-zh-linux-arm64
 
-# amd64（目标机 113.20.8.27）
+# amd64（目标机（x86_64 构建机））
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o pocketbase-zh-linux-amd64 examples/base/main.go
 cp pocketbase-zh-linux-amd64 ../webees@facedb/pb-bin/pocketbase-zh-linux-amd64
 ```
