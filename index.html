@@ -10,14 +10,18 @@
                                     *:8090 不覆盖它。当前并未使用 WebSocket
                                    （PocketBase 的实时订阅走 SSE，属 http），
                                    这里一并放行是为了将来加实时推送时不至于被静默拦住。
+         <%= PB_CONNECT_SRC %> —— 构建期按 PUBLIC_PB_URL 追加的额外源（见 rsbuild.config.ts）。
+                                   该变量留空时为空串，上面三条即全部规则。
+                                   必须由构建期产出：`*:8090` 只覆盖「恰好 8090 端口」，
+                                   而 PUBLIC_PB_URL 常写成 https://host（标准 443）——
+                                   实测那种地址会被本条 CSP 直接拦死（R12/W11 浏览器实测）。
          这条规则同时堵住 Worker 作用域的外发：下面的脚本只 patch 了主线程的
          fetch/XHR/sendBeacon，而 Worker 有独立全局作用域，patch 覆盖不到
          （实测 Worker 内的请求确实会发出去）。CSP 是浏览器内核级约束，
-         与调用方在哪个线程、用什么 API 无关。
-         注：若用 PUBLIC_PB_URL 指向别的地址，需同步放行该地址。 -->
+         与调用方在哪个线程、用什么 API 无关。 -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="connect-src 'self' *:8090 ws://*:8090 wss://*:8090"
+      content="connect-src 'self' *:8090 ws://*:8090 wss://*:8090<%= PB_CONNECT_SRC %>"
     />
 
     <script>

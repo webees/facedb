@@ -1,6 +1,30 @@
 import { defineConfig } from '@rsbuild/core';
 import { pluginVue } from '@rsbuild/plugin-vue';
 
+/**
+ * index.html 里 CSP 的额外 connect-src 源，按构建期的 PUBLIC_PB_URL 推导。
+ *
+ * 为什么必须有：`connect-src` 里的 `*:8090` 只覆盖「方案与文档一致 + 恰好 8090 端口」，
+ * 而 PUBLIC_PB_URL 的推荐写法是 `https://pb.example.com`（标准 443 端口）——
+ * 实测该地址会被文档自己的 CSP 拦死，上传必然失败。留空时退化为空串，
+ * CSP 与旧版逐字一致（默认部署行为不变）。
+ *
+ * 同时给出对应的 WebSocket 方案（PB 的实时订阅走 SSE 属 http，这里只为将来留口）。
+ */
+function derivePbConnectSrc(raw: string | undefined): string {
+  const v = (raw ?? '').trim();
+  if (!v) return '';
+  try {
+    const u = new URL(v);
+    const ws = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    return ` ${u.origin} ${ws}//${u.host}`;
+  } catch {
+    // 非绝对地址（相对路径、单主机名等）不追加：这类值本就不能作为跨源地址使用，
+    // 静默追加一个猜出来的源只会掩盖配置错误。
+    return '';
+  }
+}
+
 export default defineConfig({
   plugins: [pluginVue()],
 
@@ -13,6 +37,9 @@ export default defineConfig({
     // 入口 script/link 由 Rsbuild 自动注入，模板内不要手写。
     template: './index.html',
     title: 'facedb',
+    templateParameters: {
+      PB_CONNECT_SRC: derivePbConnectSrc(process.env.PUBLIC_PB_URL),
+    },
   },
 
   output: {
