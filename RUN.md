@@ -1,15 +1,17 @@
-1. `cp .env.example .env`，填入 `PUBLIC_PB_URL`（默认 `http://127.0.0.1:8090`）
+1. `cp .env.example .env`（**无需填写 `PUBLIC_PB_URL`**：留空时前端在运行时按页面地址推导后端地址；只有后端不在同主机的 8090 端口时才需要填绝对地址）
 2. `docker compose up -d --build` → 采集端 `http://localhost:3000`，后台 `http://localhost:8090/_/`
    **两个容器**：`web`（前端，生产构建，:3000）/ `pocketbase`（后端，直接暴露 :8090）。
    `pocketbase` 用**本地构建镜像** `webees-facedb-pocketbase:0.28.1-zh`（`pb-bin/Dockerfile`：
-   官方运行时 + COPY 进源码汉化后交叉编译的 `pb-bin/pocketbase-zh`，构建期自校验非官方原版 md5）。
+   官方运行时 + COPY 进源码汉化后交叉编译的 `pb-bin/pocketbase-zh-linux-<arch>`（arm64 / amd64 各一份，
+   由 `ARG TARGETARCH` 经中间 stage 选一），构建期逐项断言 sha256 / md5 / size / ELF `e_machine` 命中白名单、
+   且 `TARGETARCH` 在 `PB_ALLOWED_ARCH` 内，任一不符即 `REFUSED:` 构建失败）。
    Compose 项目名固定为 **`webees-facedb`**（目录名含 `@`，compose 默认会把它吞掉变成 `webeesfacedb`，
    故在 `docker-compose.yml` 顶层显式声明 `name:`）；镜像名同为 `webees-facedb-web`。
 3. 建管理员（**必须在 PB 容器停止时执行，否则写入不生效**）：
    `docker compose stop pocketbase && docker compose run --rm --entrypoint /usr/local/bin/pocketbase pocketbase superuser upsert <邮箱> <密码> --dir=/pb_data && docker compose start pocketbase`
 4. 打开 `http://localhost:8090/_/` 用超级用户登录，查看采集结果（`captures` 集合）
 5. 采集页必须用 `http://localhost:3000` 访问（getUserMedia 只在 HTTPS 或 localhost 下可用）
-6. `web` 容器跑的是**生产构建**（`rsbuild preview`），镜像内自带产物、不挂载宿主源码。
+6. `web` 容器跑的是**生产构建产物**（镜像内由 `static-web-server` 提供静态服务，**没有 node/rsbuild**），产物打包进镜像、不挂载宿主源码。
    `PUBLIC_PB_URL` 会被构建时内联进产物，改动它必须重新构建：
    `docker compose build --build-arg PUBLIC_PB_URL=http://<host>:8090 web && docker compose up -d web`
    改前端代码同样要重新构建镜像（不再有 dev 热更新）。
@@ -434,8 +436,11 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 ```dockerfile
 ENV SERVER_ROOT=/public
 ENV SERVER_PORT=3000
+ENV SERVER_HOST=0.0.0.0
 ENV SERVER_FALLBACK_PAGE=/public/index.html   # SPA 回退，绝对路径
 ENV SERVER_COMPRESSION=true
+ENV SERVER_COMPRESSION_LEVEL=default
+ENV SERVER_CACHE_CONTROL_HEADERS=false        # 见下节：本工程关掉了缓存头
 ```
 
 `SERVER_FALLBACK_PAGE` 不能省：采集页 URL 形如 `/202610050513`，路径段是采集编号而非真实文件。
@@ -443,16 +448,17 @@ ENV SERVER_COMPRESSION=true
 **`COPY` 必须带 `--chown=1000:1000`**：该镜像以非 root 运行，而 COPY 出来的文件属主默认是 root，
 权限不符会返回 403。
 
-### 缓存策略（框架默认，无需配置）
+### 缓存策略（`SERVER_CACHE_CONTROL_HEADERS=false`，服务端不主动发缓存头）
 
-| 路径 | Cache-Control |
-|---|---|
-| `static/js/index.<hash>.js` | `max-age=31536000`（带内容 hash，一年正确） |
-| `index.html` 等 | `max-age=86400`（1 天） |
+实测（`curl -sI http://localhost:3000/`、`/index.html`、`/static/js/index.<hash>.js`）：
+**三个路径的响应里都没有 `Cache-Control`**，只有 `Last-Modified`。
+即本工程是**显式关掉** static-web-server 的缓存头（`Dockerfile` 里的 `ENV`），而不是
+「使用框架默认」—— 早先这里写成「框架默认，无需配置」并给出一张 `max-age=31536000 / 86400`
+的表，与线上实况相反。
 
-`index.html` 缓存 1 天意味着部署后用户最多 1 天内可能看到旧页面（刷新即可）。
-若要立即生效，可关掉 `SERVER_CACHE_CONTROL_HEADERS`，但那样所有文件都没有缓存头、
-浏览器会改用启发式缓存，反而更不可控 —— 部署频率低，保持默认更合适。
+为什么这么选：开缓存头时 `index.html` 会被缓存（默认 `max-age=86400`），部署后用户最多
+1 天内可能看到旧页面；关掉后浏览器改用启发式缓存（按 `Last-Modified` 估计新鲜度），
+行为不完全可控但**部署即生效**。改这个开关是改 `Dockerfile` 的 `ENV`，必须重新构建镜像才生效。
 
 ### ⚠️ 换基础镜像时必须同步健康检查
 
@@ -879,7 +885,7 @@ s = s.replaceAll('{' + k + '}', String(v))          // ❌
 ## 源码被恢复后如何复原（一条命令）
 
 `rebuild-zh.mjs` 的流程是「**恢复源码** → 重放词表 → 构建 → 编译」，其中的 `git checkout`
-会把 5 处**非汉化补丁一并冲掉**（补丁不在汉化词表里）。
+会把 7 处**非汉化补丁一并冲掉**（补丁不在汉化词表里）。
 
 因此从「源码刚被 checkout」的状态回到可用态需要两步，顺序固定：
 
@@ -890,7 +896,7 @@ bash <运行根>/pb-full-rebuild.sh
 它做的是：
 
 1. **重放汉化**（`pb-source-i18n-v2.mjs --write`，词表 1085 条）并断言中文文件数 ≥ 50
-2. 打 5 处补丁 → 校验产物 → 交叉编译 → 重建镜像 → 线上校验（即 `pb-rebuild-deploy.sh`）
+2. 打 7 处补丁 → 校验产物 → 交叉编译 → 重建镜像 → 线上校验（即 `pb-rebuild-deploy.sh`）
 
 **为什么不能只用 `pb-rebuild-deploy.sh`**：它只打补丁、不重放汉化，源码被 checkout 后会编译出**全英文后台**。
 
@@ -899,9 +905,9 @@ bash <运行根>/pb-full-rebuild.sh
 在临时态下验证过补丁脚本的复原能力：
 
 ```
-把 5 个目标文件替换为未打补丁版本
+把 7 个目标文件替换为未打补丁版本
   → 跑 apply-pb-patches.mjs
-  → 5 处全部恢复 ✅（逐项核对）
+  → 7 处全部恢复 ✅（逐项核对）
 ```
 
 同时确认：**汉化重放不会破坏已打的补丁**（它只替换词表条目，不做 checkout）。
@@ -1576,7 +1582,7 @@ PocketBase 自动生成了 `1791217910_deleted_users.js` / `1791217910_deleted_o
 **汉化流程的第一步是 `git checkout -- ui/src`**（见下节 `rebuild-and-deploy-v2.sh`），
 它把整个 `ui/src` 恢复成官方原版，然后**只应用汉化词表**。
 
-因此**任何不属于汉化的源码改动都会被抹掉**，本项目有三处这样的改动：
+因此**任何不属于汉化的源码改动都会被抹掉**，本项目有七处这样的改动（与 `apply-pb-patches.mjs` 的 ①–⑦ 一一对应）：
 
 | # | 文件 | 改动 |
 |---|---|---|
@@ -1584,6 +1590,9 @@ PocketBase 自动生成了 `1791217910_deleted_users.js` / `1791217910_deleted_o
 | ② | `ui/src/components/base/PreviewPopup.svelte` | 非图片分支按类型分流，video/audio 用原生标签（否则 Chrome 永远显示「无法预览该文件。」） |
 | ③ | `ui/src/components/records/RecordFieldValue.svelte` | file 字段容器加 `flex-wrap` + `max-width: 340px`（否则 10 张缩略图挤成一行） |
 | ④ | `ui/src/components/base/FormattedDate.svelte` | 日期按固定时区 `Asia/Shanghai` 格式化、标注由 UTC 改 CST（否则后台一律显示 UTC，比北京时间少 8 小时） |
+| ⑤ | `ui/src/components/records/RecordFileThumb.svelte` | 缩略图改用 `<video preload="metadata">` 显示首帧（否则 webm 只显示一个小图标） |
+| ⑥ | `ui/src/components/logs/LogsList.svelte` | 日志页表头直改中文 + 注入 `LOG_KEY_LABELS` 映射表渲染变量（字段名是变量，词表替换不到） |
+| ⑦ | `ui/src/scss/_base.scss` | `.thumb` 补 `video { … }` 尺寸约束（`<video>` 有固有尺寸，不约束会撑开 40px 容器并覆盖到表格上） |
 
 **症状**：明明改好了，构建部署后却毫无变化；或者昨天还能播放、今天又变回「无法预览该文件」。
 很容易误判成缓存、挂载、构建不生效——**实际是被汉化流程的 `git checkout` 冲掉了**。
@@ -1594,15 +1603,15 @@ PocketBase 自动生成了 `1791217910_deleted_users.js` / `1791217910_deleted_o
 # 1. 先跑完整汉化流程
 bash <运行根>/rebuild-and-deploy-v2.sh
 
-# 2. 再打三处补丁并重新构建部署（脚本内置幂等补丁 + 产物/线上双重校验）
+# 2. 再打七处补丁并重新构建部署（脚本内置幂等补丁 + 产物/线上双重校验）
 bash <运行根>/pb-rebuild-deploy.sh
 ```
 
 `pb-rebuild-deploy.sh` 的六步一步不缺，且每一步都断言：
 
-1. 打三处补丁（幂等，可重复执行）
+1. 打七处补丁（幂等，可重复执行）
 2. `npm run build`
-3. **校验产物**：三处补丁**与**汉化**同时存在**
+3. **校验产物**：七处补丁**与**汉化**同时存在**
 4. `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build`
 5. `docker compose build pocketbase` + `up -d --force-recreate`
 6. **校验线上 bundle**（同样五项）
@@ -1624,9 +1633,12 @@ bash <运行根>/pb-rebuild-deploy.sh
 ## 后台汉化（源码编译 + 本地镜像方案）
 
 `../webees@pocketbase`（PocketBase v0.28.1 源码）已就地汉化并编译，
-产物 `pb-bin/pocketbase-zh`（**Linux/arm64**，交叉编译）由 `pb-bin/Dockerfile` COPY 进本地镜像
+产物按架构分文件 `pb-bin/pocketbase-zh-linux-arm64` / `pb-bin/pocketbase-zh-linux-amd64`（各自交叉编译）
+由 `pb-bin/Dockerfile` 经中间 stage 按 `ARG TARGETARCH` 选一份 COPY 进本地镜像
 `webees-facedb-pocketbase:0.28.1-zh`（`FROM ghcr.io/muchobien/pocketbase:0.28.1`，
-构建期断言镜像内二进制 md5 ≠ 官方原版 `50c14b87…`）。
+构建期按架构逐项断言 sha256 / md5 / size / ELF `e_machine` 全部命中白名单，
+且 `TARGETARCH` 必须在 `PB_ALLOWED_ARCH`（`arm64 amd64`）内，任一不符即 `REFUSED:`）。
+换二进制后必须同步 `pb-bin/SHA256SUMS` 与 `pb-bin/Dockerfile` 里的期望常量，否则构建期 `REFUSED`。
 改文案后重新产出：
 
 ```bash
@@ -1634,8 +1646,9 @@ cd ../webees@pocketbase
 git checkout -- ui/src                                  # 先恢复干净源码（替换是幂等的）
 node <运行根>/pb-source-i18n-v2.mjs --write             # 应用词表（超 1290 处）
 cd ui && npm run build && cd ..                          # 构建 UI（产物被 go:embed 打进二进制）
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o pocketbase-zh-linux examples/base/main.go
-cp pocketbase-zh-linux ../webees@facedb/pb-bin/pocketbase-zh
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o pocketbase-zh-linux-arm64 examples/base/main.go
+cp pocketbase-zh-linux-arm64 ../webees@facedb/pb-bin/pocketbase-zh-linux-arm64
+# x86_64 目标机同理：GOOS=linux GOARCH=amd64 … -o pocketbase-zh-linux-amd64，再 cp 成同名文件
 cd ../webees@facedb
 docker compose build pocketbase && docker compose up -d --force-recreate pocketbase
 ```
