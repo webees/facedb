@@ -44,13 +44,20 @@ const UPLOAD_TIMEOUT_MS = 25000
 //      后端在其固定的 8090 端口上，按同主机 + 8090 推导。
 //
 // 若后端不在同一主机、或需要固定地址，用 PUBLIC_PB_URL 显式覆盖（构建期注入）。
-const PB_BASE =
-  import.meta.env.PUBLIC_PB_URL ||
-  (typeof location !== 'undefined'
+//
+// 尾部斜杠必须去掉：PUBLIC_PB_URL 很容易被写成 "https://pb.example.com/"，
+// 不归一化就会拼出 "https://pb.example.com//api/collections/..."。实测 PocketBase 对双斜杠回 301，
+// 而 fetch 规范规定 301/302 重定向**把 POST 降级为 GET 并丢弃请求体** —— 重定向后的 GET 命中
+// 列表接口、回 200 + 空列表，于是 res.ok 为真、"上传成功"、库里一条记录都没有。
+// 实测后果：10 张照片 + 1 段视频整批静默丢失，界面显示成功。
+const rawBase = (import.meta.env.PUBLIC_PB_URL || '').trim()
+const PB_BASE = rawBase
+  ? rawBase.replace(/\/+$/, '') // 显式覆盖：去尾部斜杠
+  : typeof location !== 'undefined'
     ? location.port && location.port !== '80' && location.port !== '443'
       ? `${location.protocol}//${location.hostname}:8090` // 直连
       : location.origin // 经网关：同源，由 /api 前缀分流
-    : 'http://127.0.0.1:8090')
+    : 'http://127.0.0.1:8090'
 
 const API = `${PB_BASE}/api/collections/captures/records`
 
@@ -77,7 +84,20 @@ async function post(build: () => FormData, what: string): Promise<void> {
     const timer = setTimeout(() => ctl.abort(), UPLOAD_TIMEOUT_MS)
     try {
       const res = await fetch(API, { method: 'POST', body: build(), signal: ctl.signal })
-      if (res.ok) return
+      // 成功判定不能只看 res.ok：地址拼接错误（如双斜杠）会让 PocketBase 回 301，
+      // fetch 会把 POST 降级成 GET 并丢掉请求体，重定向后的 GET 回 200 + 空列表 ——
+      // res.ok 为真、其实一条记录都没写。这里把「被重定向」和「响应不是 JSON」
+      // 都当成永久错误抛出，宁可报错也不能让用户以为拍成功了。
+      if (res.redirected) {
+        throw new PermanentError(`${what}: 请求被重定向到 ${res.url}（疑似后端地址拼接错误，如多余斜杠）`)
+      }
+      if (res.ok) {
+        const ct = res.headers.get('content-type') || ''
+        if (!ct.includes('json')) {
+          throw new PermanentError(`${what}: 响应不是 JSON（content-type=${ct || '空'}），不能确认写入成功`)
+        }
+        return
+      }
       const body = await res.text().catch(() => '')
       const msg = `${what}: ${res.status} ${body.slice(0, 150)}`
       // 4xx 是请求本身的问题，重试只会白白等待
