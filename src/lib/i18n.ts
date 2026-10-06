@@ -71,6 +71,7 @@ const M = {
     doneTitle: '识别完成',
     again: '重新识别',
     linkMissing: '链接中缺少采集编号',
+    linkTooLong: '采集编号过长（最多 200 个字符）',
 
     metricFaceWidth: '脸宽',
     metricSharpness: '清晰度',
@@ -150,6 +151,7 @@ const M = {
     doneTitle: 'Recognition complete',
     again: 'Recognize again',
     linkMissing: 'Missing capture ID in the link',
+    linkTooLong: 'Capture ID is too long (200 characters max)',
 
     metricFaceWidth: 'Face width',
     metricSharpness: 'Sharpness',
