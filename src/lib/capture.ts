@@ -77,6 +77,13 @@ let lastSegment: { blob: Blob; mime: string } | null = null
 let finalizing: Promise<void> | null = null
 /** 正在录制的采集点；未录制时为 null。用于让「开段」幂等。 */
 let currentPose: string | null = null
+/**
+ * 当前录制器绑定的流。
+ * 为什么必须记它：幂等判断若只看「姿态名 + rec 是否存在」，换摄像头（重新 getUserMedia）
+ * 或摄像头掉线重连后，补偿调用会被当成重复调用直接返回 true —— 新流在整个采集点内
+ * 一次都没被录，而 segmentFailed 仍是 false，用户拿不到任何提示，该采集点的视频段静默丢失。
+ */
+let recStream: MediaStream | null = null
 /** 当前段的开始时刻（performance.now()）；用于保证最短录制时长。 */
 let segmentStart = 0
 
@@ -98,6 +105,26 @@ const buildBlob = (): { blob: Blob; mime: string } | null => {
 }
 
 /**
+ * 把已攒下的 chunk 收成一个段并写进 lastSegment。
+ * 被 finalize 的 onstop 回调与 begin 里挂的「自发停止」回调共用。
+ */
+function collectSegment(): void {
+  const seg = buildBlob()
+  if (seg && seg.blob.size >= MIN_SEGMENT_BYTES) {
+    lastSegment = seg // 只留最新一段
+    console.debug('[seg] 收段 ' + Math.round(seg.blob.size / 1024) + ' KB（保留为最终结果）')
+  } else if (seg) {
+    // 刚开就被切掉的尾段：不覆盖已有的有效段
+    console.debug(
+      '[seg] 尾段仅 ' + Math.round(seg.blob.size / 1024) + ' KB，过小，保留上一段' +
+        (lastSegment ? '（' + Math.round(lastSegment.blob.size / 1024) + ' KB）' : '（无）'),
+    )
+  } else {
+    console.debug('[seg] 收段为空')
+  }
+}
+
+/**
  * 收掉当前段并把结果存进 lastSegment（覆盖更早的段）。
  * 内部自管，不依赖外部调用返回值 —— 这是超时路径不丢数据的关键。
  */
@@ -108,23 +135,12 @@ function finalize(): Promise<void> {
   clearTimeout(timer)
   const r = rec
   rec = null
+  recStream = null
   if (!r) return Promise.resolve()
 
   const p = new Promise<void>((resolve) => {
     const done = () => {
-      const seg = buildBlob()
-      if (seg && seg.blob.size >= MIN_SEGMENT_BYTES) {
-        lastSegment = seg // 只留最新一段
-        console.debug('[seg] 收段 ' + Math.round(seg.blob.size / 1024) + ' KB（保留为最终结果）')
-      } else if (seg) {
-        // 刚开就被切掉的尾段：不覆盖已有的有效段
-        console.debug(
-          '[seg] 尾段仅 ' + Math.round(seg.blob.size / 1024) + ' KB，过小，保留上一段' +
-            (lastSegment ? '（' + Math.round(lastSegment.blob.size / 1024) + ' KB）' : '（无）'),
-        )
-      } else {
-        console.debug('[seg] 收段为空')
-      }
+      collectSegment()
       resolve()
     }
     if (r.state === 'inactive') {
@@ -150,25 +166,44 @@ function begin(stream: MediaStream, pose: string | null): boolean {
   segmentStart = performance.now()
   mime = pickVideoMime()
   chunks = []
+  let r: MediaRecorder
   try {
-    rec = new MediaRecorder(
+    r = new MediaRecorder(
       stream,
       mime ? { mimeType: mime, videoBitsPerSecond: POSE_BPS } : { videoBitsPerSecond: POSE_BPS },
     )
   } catch {
     rec = null
+    recStream = null
     return false
   }
-  rec.ondataavailable = (e) => {
+  rec = r
+  recStream = stream
+  r.ondataavailable = (e) => {
     if (e.data.size > 0) chunks.push(e.data)
   }
-  rec.onerror = (e) => {
+  r.onerror = (e) => {
     // 出错时就地收尾：必须走 finalize，否则定时器不会被清、chunks 也不会被收走
     // （早先这里直接置空 rec，导致定时器与已录数据一起泄漏）
     console.warn('[seg] 录制器出错，就地收尾', e)
     void finalize()
   }
-  rec.start(500)
+  // 录制器会**自己**停下：实测 track.stop() 后浏览器立即把录制器置为 inactive 且**不触发 onerror**。
+  // 早先只有 finalize() 会挂 onstop，于是这种情况留下一个 inactive 的悬挂句柄：
+  // 8 秒定时器到点后对已死的流 finalize→begin 空转（报「成功」但 0 字节），每 8 秒一次，
+  // 直到切采集点或卸载页面。这里让「自发停止」也走同一条收尾路径。
+  // 注意：finalize() 会把 rec 置空后再覆盖 onstop，因此本回调里用 `rec !== r` 判定是否已被接管。
+  r.onstop = () => {
+    if (rec !== r) return // 已被 finalize 接管，或已经换了新实例
+    clearTimeout(timer)
+    timer = undefined
+    collectSegment()
+    rec = null
+    recStream = null
+    currentPose = null
+    console.debug('[seg] 录制器自发停止（流已结束），已收尾并清空句柄')
+  }
+  r.start(500)
   console.debug('[seg] 开段')
 
   timer = setTimeout(() => {
@@ -189,10 +224,17 @@ function begin(stream: MediaStream, pose: string | null): boolean {
 export function startPoseRecording(stream: MediaStream, pose: string): boolean {
   // 幂等：同一个采集点重复调用时直接返回，避免「开段→收段→再开段」空转
   // （空转产生的段都是空的：刚创建、还没攒到第一个 chunk）
-  if (currentPose === pose && rec) return true
+  //
+  // 但幂等必须同时满足三个条件，缺一不可：
+  //   · 姿态名相同 —— 同一采集点
+  //   · 录制器仍在录制（state !== 'inactive'）—— 已停的句柄不能再算「正在录」
+  //   · 流是同一条 —— 换摄像头 / 掉线重连后是新的 MediaStream
+  // 早先只比前两个中的第一个与 rec 是否存在，于是换流后的补偿调用被当成重复调用返回 true，
+  // 新流整个采集点内一次都没录，而 segmentFailed 仍是 false（用户无任何提示），视频段静默丢失。
+  if (currentPose === pose && rec && rec.state !== 'inactive' && recStream === stream) return true
 
   if (rec) {
-    console.debug('[seg] 切换到新采集点，收掉上一段')
+    console.debug('[seg] 切换到新采集点或新流，收掉上一段')
     void finalize()
   }
   lastSegment = null // 新采集点：丢弃上一采集点的内容
