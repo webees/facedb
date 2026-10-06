@@ -36,6 +36,10 @@ const M = {
     hintTooDark: '光线太暗，请补光',
     hintTooBright: '光线过亮，请避开强光',
     hintHoldStill: '保持不动，正在拍摄…',
+    // 录制收尾（等 onstop、补足最短录制时长）与「上传」是两件事，文案必须分开：
+    // 此前收尾阶段直接显示「上传中…」，而收尾在 iOS WKWebView 上会卡住，
+    // 界面便永久停在上传文案上 —— 用户以为在上传，其实一条请求都没发出去。
+    hintFinalizing: '正在处理，请稍候…',
     hintUploading: '上传中…',
     // 提交重试全部失败后的终态文案。此前失败后界面仍停留在「上传中…」，
     // 用户既不知道失败、也没有可点的入口（已采文件只在内存，刷新即丢）。
@@ -123,6 +127,7 @@ const M = {
     hintTooDark: 'Too dark, please add light',
     hintTooBright: 'Too bright, please avoid strong light',
     hintHoldStill: 'Hold still, capturing…',
+    hintFinalizing: 'Processing, please wait…',
     hintUploading: 'Uploading…',
     hintUploadFailed: 'Upload failed. Please check your network and tap "Retry upload" below',
     hintCameraOn: '{pose}',

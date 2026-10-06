@@ -14,7 +14,7 @@ import {
   startPoseRecording,
   stopPoseRecording,
 } from '../lib/capture'
-import { uploadSession, type CaptureMeta, type CaptureResult, type PendingFile } from '../lib/pb'
+import { uploadSession, UPLOAD_BUDGET_MS, type CaptureMeta, type CaptureResult, type PendingFile } from '../lib/pb'
 import { primeAudio, resumeAudio, sfx } from '../lib/audio'
 import { t, type MessageKey } from '../lib/i18n'
 
@@ -171,6 +171,10 @@ let lastLoggedHint = ''
 const URGENT_HINTS: MessageKey[] = [
   'cameraDenied', 'cameraNotFound', 'cameraBusy', 'cameraFailed', 'modelFailed',
   'failedMax', 'hintNoFace', 'hintMultiFace', 'hintTooFar', 'hintUploading',
+  // 收尾阶段的「正在处理」取代了原先过早出现的「上传中…」，同样必须立即显示：
+  // 收尾期间 loop 因 busy 已停止投提示，但收尾前最后一帧投出的姿态提示还留在表决缓冲里，
+  // 走表决的话它会被反复压回「保持不动，正在拍摄…」，用户就看不到「正在收尾」。
+  'hintFinalizing',
   // 提交失败的终态必须立即显示：它同时是「失败」与「有重试入口」的唯一提示
   'hintUploadFailed',
   // 录制段创建失败：该采集点不会有视频，必须立即告知而不是被姿态提示盖掉
@@ -370,9 +374,12 @@ async function shoot(): Promise<void> {
     // 收下本采集点的视频段：advance() 在最后一步会调 cleanup()，
     // 而 cleanup() 里会 stopPoseRecording()，所以必须在这里先取走。
     const isLastStep = step === POSES[POSES.length - 1]
-    // 只有最后一步才提示「上传中」（此时确实要等上传完成才切页）；
-    // 其余步骤拍完即切步，上传要等到最后一步才发生，此处提示会造成误解。
-    if (isLastStep) setHint('hintUploading')
+    // 收尾阶段（等 onstop、补足最短录制时长）改用与上传无关的「正在处理，请稍候…」：
+    // 早先这里直接设「上传中…」，而收尾在 iOS WKWebView 上会卡住
+    // （stop() 被接受但 onstop 永不触发），界面便永久停在「上传中」，服务端一条请求都收不到。
+    // 只在最后一步设：非最后一步收尾完就 advance()，多设一次只会让下一步的姿态提示
+    // 被表决缓冲多挡几帧才显示（那一步的收尾通常只有几十毫秒，不值得为它换文案）。
+    if (isLastStep) setHint('hintFinalizing')
     // 用户可能瞬间达标（例如正脸很标准），此时本段还不到 0.4 秒、体积低于有效性门槛，
     // 取出来也会被丢弃，导致该采集点没有视频。这里补足最短录制时长再取
     // —— 秒过的用户最多多等不到 1.2 秒，却能保证每段视频都可用。
@@ -449,13 +456,25 @@ async function submit(): Promise<void> {
   uploading.value = true
   uploadError.value = ''
   submitFailed.value = false
+  // 「上传中…」与 uploading（驱动旋转动画）必须与「真的开始上传」同一时刻出现。
+  // 此前这行提示提前到了 shoot() 里用户刚达标的那一刻，收尾阶段就已经显示「上传中」，
+  // 收尾一旦卡住，界面便永久停在这个文案上 —— 用户以为在上传，其实什么都没发出去。
   setHint('hintUploading')
   dbg('开始提交，文件数:', pendingFiles.length)
 
   try {
+    // 整批提交（含下面所有轮次与内层重试）共用一个截止时刻：
+    // 不共享的话最坏耗时 = 外层 3 轮 × 内层 3 次 × 25s 单次上限 + 退避 ≈ 237.6s，
+    // 期间没有任何进度反馈，用户只能干等。
+    const deadline = Date.now() + UPLOAD_BUDGET_MS
     for (let attempt = 1; attempt <= SUBMIT_TRIES; attempt++) {
+      // 预算已耗尽：不再发起新一轮，直接进入失败态（否则总耗时突破预算，失败态永远到不了）
+      if (Date.now() >= deadline) {
+        if (!uploadError.value) uploadError.value = t('uploadFailed')
+        break
+      }
       try {
-        await uploadSession(props.sessionId, pendingFiles)
+        await uploadSession(props.sessionId, pendingFiles, deadline)
         dbg('提交成功（第 ' + attempt + ' 次尝试）')
         sfx.done()
         cleanup()
@@ -465,8 +484,11 @@ async function submit(): Promise<void> {
         uploadError.value = e instanceof Error ? e.message : String(e)
         dbg('第 ' + attempt + ' 次提交失败：', uploadError.value)
         if (attempt < SUBMIT_TRIES) {
-          // 间隔递增：1.2s、2.4s
-          await new Promise((r) => setTimeout(r, SUBMIT_BACKOFF_MS * attempt))
+          // 间隔递增：1.2s、2.4s。退避同样计入预算，剩余时间不够就直接进失败态，
+          // 不让用户多等一个注定超时的间隔。
+          const wait = SUBMIT_BACKOFF_MS * attempt
+          if (Date.now() + wait >= deadline) break
+          await new Promise((r) => setTimeout(r, wait))
         }
       }
     }
@@ -478,6 +500,8 @@ async function submit(): Promise<void> {
     sfx.warn()
     dbg('提交最终失败：', uploadError.value)
   } finally {
+    // 任何出口（成功切页、提交失败、预算耗尽、内部抛错）都必须复位这两个状态，
+    // 否则旋转动画会一直转，观感上就是「永远在上传」。
     submitting.value = false
     uploading.value = false
   }

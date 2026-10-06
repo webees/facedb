@@ -32,6 +32,14 @@ export type CaptureResult = { pose: string; filename: string }
 // 单次上传超时。实测：本机 52ms、4G 约 1.5s，25s 已是极宽松的上限。
 // 原先取 60s，叠加 4 次重试后又叠加调用方的 3 轮，最坏要 12 分钟才报错，用户被迫干等。
 const UPLOAD_TIMEOUT_MS = 25000
+/**
+ * 整批提交的总时间预算（含内层重试与退避，也含调用方的多轮重试）。
+ * 为什么必须由调用方传入同一个截止时刻：单次 25s × 内层 3 次 + 退避，再 × 外层 3 轮
+ * = 最坏 237.6s，期间界面只有「上传中…」，用户无法分辨是慢还是已经卡死。
+ * 取 90s —— 一次提交约 2~3 MB，4G 上约 1.5s，90s 足够覆盖弱网下的多次重试，
+ * 又不会让人干等到失去耐心。超时后由调用方进入失败态并给出重试入口。
+ */
+export const UPLOAD_BUDGET_MS = 90000
 // PocketBase 地址（不含 /api 后缀，下方拼接）。
 //
 // 两种形态，按访问端口自动选择，同一份产物即可同时支持：
@@ -72,16 +80,85 @@ class PermanentError extends Error {}
 //   · 两条完整记录 远好于 一条都没有 —— 本项目要保证的是人脸信息不丢。
 // 文件名带毫秒时间戳，因此重复记录之间也不会互相覆盖。
 
+// 在途请求的控制器 + 一条独立于定时器的中断路径。
+//
+// 为什么单靠 setTimeout 不够：页面转后台时浏览器会节流甚至暂停定时器，
+// 而恰恰是「到点 abort」这条唯一的中断路径 —— 此时在途的 await fetch 与驱动它的定时器
+// **一起被挂起**，谁也叫不醒谁，界面就停在「上传中」直到回到前台。
+// visibilitychange 与定时器无关，是第二条中断路径：让 await 立刻 reject
+// （AbortError → 可重试错误），回到前台后正常进入重试。
+//
+// 但这条兜底不能「一切后台就打断」：切出去看一眼消息再切回来是最常见的操作，
+// 而那时请求往往还在正常跑 —— 立刻 abort 会把本可在后台传完的上传打断，
+// 服务端可能留下半写记录，下一次尝试整批重传。所以先给 HIDE_GRACE_MS 宽限：
+// 只有「后台持续超过宽限且请求仍未结束」才中止。
+const HIDE_GRACE_MS = 5000
+let inflightCtl: AbortController | null = null
+let hideHooked = false
+let graceTimer: ReturnType<typeof setTimeout> | undefined
+
+function clearGrace(): void {
+  if (graceTimer === undefined) return
+  clearTimeout(graceTimer)
+  graceTimer = undefined
+}
+
+/**
+ * 已转入后台且有在途请求时武装宽限定时器（幂等：重复调用不会堆出第二个定时器）。
+ * 此刻已在后台时新发起的尝试也要走这里，否则「在后台里开始的那次请求」不受宽限保护。
+ */
+function armHideGrace(): void {
+  if (typeof document === 'undefined' || !document.hidden) return
+  if (graceTimer !== undefined || !inflightCtl) return
+  graceTimer = setTimeout(() => {
+    graceTimer = undefined // 到期即自清：三个出口（到期 / 回前台 / 请求成功）都不留悬挂定时器
+    if (typeof document === 'undefined' || !document.hidden) return // 人已回来
+    const ctl = inflightCtl
+    if (!ctl) return // 请求已结束：没有可中止的对象
+    console.debug('[upload] 转入后台超过 ' + HIDE_GRACE_MS + 'ms 仍未完成，中止在途请求（可重试）')
+    ctl.abort()
+  }, HIDE_GRACE_MS)
+}
+
+function hookHideAbort(): void {
+  // 模块级只注册一次：post 会被反复调用，重复注册会让同一次切后台触发多个回调。
+  // 无 document（Node 测试环境）时直接跳过。
+  if (hideHooked || typeof document === 'undefined') return
+  hideHooked = true
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      // 回到前台：宽限期内的请求本来还能传完，取消这次中止
+      clearGrace()
+      return
+    }
+    armHideGrace()
+  })
+}
+
 /**
  * 提交表单。共 3 次尝试，退避 1s / 2s。
  * @param build 每次尝试都重新构造 FormData —— 规范并不保证 FormData 可重复提交，
  *              重建的成本极低，却能彻底规避「重试时请求体为空」这类问题。
+ * @param deadline 整批提交的截止时刻（Date.now() 口径）。由调用方传入，
+ *                 使内层重试与外层多轮重试共享同一份预算；缺省时按单轮预算计。
  */
-async function post(build: () => FormData, what: string): Promise<void> {
+async function post(build: () => FormData, what: string, deadline: number): Promise<void> {
+  // 入口就记下本次实际拿到的预算：错误消息必须按实际预算说话，
+  // 不能引用模块常量 —— 调用方给的 deadline 可能只剩余很少时间（如第二版预算的尾巴）。
+  const budgetMs = Math.max(0, deadline - Date.now())
   let lastErr: unknown
   for (let attempt = 0; attempt < 3; attempt++) {
+    // 预算耗尽就不再发起新尝试：否则「最坏耗时」完全由重试次数决定，用户只能一直等
+    const left = deadline - Date.now()
+    if (left <= 0) break
+    hookHideAbort()
     const ctl = new AbortController()
-    const timer = setTimeout(() => ctl.abort(), UPLOAD_TIMEOUT_MS)
+    // 记在模块级：页面转后台时由 visibilitychange 回调用它打断在途请求
+    inflightCtl = ctl
+    armHideGrace() // 若此刻已在后台，武装宽限（幂等）
+    // 单次超时不超过剩余预算，否则最后一次尝试会把总耗时拖到预算之外
+    const slice = Math.min(UPLOAD_TIMEOUT_MS, left)
+    const timer = setTimeout(() => ctl.abort(), slice)
     try {
       const res = await fetch(API, { method: 'POST', body: build(), signal: ctl.signal })
       // 成功判定不能只看 res.ok：地址拼接错误（如双斜杠）会让 PocketBase 回 301，
@@ -96,6 +173,7 @@ async function post(build: () => FormData, what: string): Promise<void> {
         if (!ct.includes('json')) {
           throw new PermanentError(`${what}: 响应不是 JSON（content-type=${ct || '空'}），不能确认写入成功`)
         }
+        clearGrace() // 请求已成功结束：后台宽限没有意义，别留一个到点就想 abort 的定时器
         return
       }
       const body = await res.text().catch(() => '')
@@ -105,21 +183,57 @@ async function post(build: () => FormData, what: string): Promise<void> {
       lastErr = new Error(msg)
     } catch (e) {
       if (e instanceof PermanentError) throw e
-      lastErr = e
+      // AbortError 的技术消息（"The operation was aborted"）对用户与排查都没有信息量，
+      // 换成「第 N 次尝试在 X 秒内无响应」，与网络错误区分开。
+      // 中止有两种来源，文案必须分开：① 单次超时到点（定时器）；② 后台宽限期满（visibilitychange）。
+      // 两者都只作废这一次尝试、都走重试 —— 都不是永久错误。
+      // ②的文案不写「页面转入后台」：abort 发生时页面确实在后台，但用户往往是回到前台才看见
+      // 这条消息，写「转入后台」会让人以为失败是自己切出去造成的，也看不出「可以直接重试」。
+      // 已完成的请求不受影响：请求结束时 inflightCtl 已被清空，abort 不会落到它身上；
+      // 即便落到，AbortController.abort() 对已 settle 的 fetch 也没有任何副作用。
+      lastErr =
+        e instanceof DOMException && e.name === 'AbortError'
+          ? new Error(
+              typeof document !== 'undefined' && document.hidden
+                ? `${what}: 连接中断，第 ${attempt + 1} 次尝试已中止（可重试）`
+                : `${what}: 第 ${attempt + 1} 次尝试 ${Math.round(slice / 1000)}s 内无响应，已中止`,
+            )
+          : e
     } finally {
       clearTimeout(timer)
+      // 只清自己那一个：若下一次尝试已经接手，不能把它也清掉
+      if (inflightCtl === ctl) inflightCtl = null
     }
-    if (attempt < 2) await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt))
+    if (attempt < 2) {
+      const backoff = 1000 * 2 ** attempt
+      // 退避也计入预算：剩余时间连退避都不够时直接放弃，不再空等
+      if (deadline - Date.now() <= backoff) break
+      await new Promise((r) => setTimeout(r, backoff))
+    }
   }
 
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
+  if (lastErr) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
+  // 走到这里一定是「一次请求都没发出去」：任何一次尝试失败都会写 lastErr 并在上一行抛出，
+  // 成功的尝试已在循环里 return。所以只可能是入口预算不足 —— 此时若仍报「已用满 90s」，
+  // 在 0ms 耗时下显然荒谬，必须按实际拿到的预算说话。
+  // 早先这里还有一个「重试中耗尽」分支（靠临时布尔量区分），但它不可达：那条路径永远由
+  // lastErr 命中、抛出更具体的错误。留着只会让人误以为存在「重试中预算用尽」这种失败。
+  throw new Error(
+    `${what}: 提交预算已耗尽（可用 ${Math.round(budgetMs)}ms，不足一次尝试），未发出任何请求`,
+  )
 }
 
 /**
  * 提交一次识别的全部文件：照片进 photos（多文件），视频进 video（单文件）。
  * 每次尝试都重建 FormData（见 post 的说明）。
+ * @param deadline 整批提交（含调用方的多轮重试）共用的截止时刻。
+ *                 调用方必须传入同一个值，否则最坏耗时会按轮数倍增。
  */
-export async function uploadSession(sessionId: string, files: PendingFile[]): Promise<void> {
+export async function uploadSession(
+  sessionId: string,
+  files: PendingFile[],
+  deadline: number = Date.now() + UPLOAD_BUDGET_MS,
+): Promise<void> {
   if (files.length === 0) throw new Error(t('emptyRecording'))
 
   // deviceInfo（UA 约 120 字符）与视频尺寸在本次识别内完全相同，
@@ -144,5 +258,5 @@ export async function uploadSession(sessionId: string, files: PendingFile[]): Pr
     }
     form.append('meta', JSON.stringify(meta))
     return form
-  }, t('uploadFailed'))
+  }, t('uploadFailed'), deadline)
 }

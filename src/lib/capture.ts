@@ -97,19 +97,45 @@ export function poseRecordingElapsed(): number {
   return rec ? performance.now() - segmentStart : 0
 }
 
-const buildBlob = (): { blob: Blob; mime: string } | null => {
-  const type = mime || chunks[0]?.type || 'video/webm'
-  const blob = new Blob(chunks, { type })
-  chunks = []
+/**
+ * 把一段 chunk 收成 Blob。
+ * 参数化 chunk 数组（而不是直接读模块级的 chunks）是为了让「段的归属」与「代次」对齐：
+ * 每一代在 begin 时拿到新数组，收尾捕获自己那一份，
+ * 于是迟到的旧收尾既不会污染新段，也不会把新段的数据一起卷走。
+ */
+const buildBlob = (src: Blob[]): { blob: Blob; mime: string } | null => {
+  const type = mime || src[0]?.type || 'video/webm'
+  const blob = new Blob(src, { type })
   return blob.size > 0 ? { blob, mime: type } : null
 }
 
 /**
+ * 段代次。startPoseRecording / stopPoseRecording 各自递增一次；
+ * collectSegment 只接受「同代」写入，代次不符的迟到回写直接丢弃。
+ *
+ * 为什么需要：收尾有兜底（onstop 1.5s 未触发）与护栏（stopPoseRecording 3s 上限）两条超时路径，
+ * 它们都可能让「上一段的收尾」晚于「下一采集点的开始」才落地。迟到的段一旦覆盖 lastSegment，
+ * 就会被下一次 stopPoseRecording 当成当前采集点的视频取走 —— 视频与姿态错配，
+ * 而且错得很隐蔽（时长、体积都正常，看不出来）。
+ * 注：在当前超时参数下这个窗口不可达（finalize 自身的 1500ms 兜底必先于 3000ms 护栏生效），
+ * 这里的守卫是防御性的：成本只是一个整数自增，换来的是这类回归不会悄悄发生。
+ */
+let epoch = 0
+
+/**
  * 把已攒下的 chunk 收成一个段并写进 lastSegment。
  * 被 finalize 的 onstop 回调与 begin 里挂的「自发停止」回调共用。
+ * @param src 本代的 chunk 数组（由调用方在发起收尾时捕获，见 buildBlob 的说明）。
+ * @param fromEpoch 发起收段的代次；代次已翻篇则丢弃（见上方 epoch 的说明）。
  */
-function collectSegment(): void {
-  const seg = buildBlob()
+function collectSegment(src: Blob[], fromEpoch: number): void {
+  if (fromEpoch !== epoch) {
+    // 直接丢弃：src 是调用方自己那一代的 chunk 数组（begin 时独立开辟），
+    // 既不会覆盖 lastSegment 去冒充下一个采集点的视频，也不会动到新段正在攒的数据。
+    console.debug('[seg] 丢弃过期段（采集点已切换，代次 ' + fromEpoch + ' ≠ ' + epoch + '）')
+    return
+  }
+  const seg = buildBlob(src)
   if (seg && seg.blob.size >= MIN_SEGMENT_BYTES) {
     lastSegment = seg // 只留最新一段
     console.debug('[seg] 收段 ' + Math.round(seg.blob.size / 1024) + ' KB（保留为最终结果）')
@@ -125,22 +151,84 @@ function collectSegment(): void {
 }
 
 /**
+ * 收尾时等待 onstop 的硬上限。
+ * 为什么必须有：finalize 原本唯一的 resolve 路径是 MediaRecorder.onstop，
+ * 而 iOS WKWebView（含 WhatsApp 内置浏览器）在页面转后台时会「接受 stop() 但不触发 onstop」。
+ * 此时 Promise 永不 resolve，采集流程永久停在收尾，界面一直显示「上传中」，
+ * 而服务端连一条请求都收不到。
+ * 取 1500ms：正常 onstop 实测在几十毫秒内到达，1.5s 已极宽松。
+ * 代价（别写成「不丢数据」）：正常路径下 dataavailable 先于 onstop 事件，尾块不丢；
+ * 但超时兜底路径会摘掉回调，浏览器随后随 onstop 补发的最后一块（timeslice 500ms）
+ * 会被丢掉 —— 即最多少最后 500ms 画面。这是刻意取舍：用 500ms 尾块换界面不永久卡死。
+ */
+const STOP_TIMEOUT_MS = 1500
+
+/**
+ * 给任意等待加硬上限：到点就按 fallback 继续，绝不无限挂起。
+ * 用于所有「等一个可能永远不来的事件」的地方 —— 这类等待在移动端浏览器里一旦不返回，
+ * 界面就会永久卡在某个中间态（本项目踩到的正是「上传中」）。
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    let settled = false
+    const t = setTimeout(() => {
+      if (settled) return
+      settled = true
+      console.warn('[seg] 等待收尾超过 ' + ms + 'ms，不再阻塞调用方')
+      resolve(fallback)
+    }, ms)
+    const finish = (v: T) => {
+      if (settled) return
+      settled = true
+      clearTimeout(t)
+      resolve(v)
+    }
+    void p.then(finish, (e) => {
+      // 不要静默吞掉 reject：本工具是通用的、被多处复用，
+      // 把失败无声地换成 fallback，排查时只会看到「什么都没发生」。
+      // fallback 语义保持不变（调用方依赖它不挂起），这里只是留下痕迹。
+      console.warn('[seg] 等待失败，按兜底值继续', e)
+      finish(fallback)
+    })
+  })
+}
+
+/**
  * 收掉当前段并把结果存进 lastSegment（覆盖更早的段）。
- * 内部自管，不依赖外部调用返回值 —— 这是超时路径不丢数据的关键。
+ * 内部自管，不依赖外部调用返回值 —— 这是超时路径仍能交出「已收到的数据」的关键
+ * （代价见 STOP_TIMEOUT_MS 的说明：兜底路径可能丢最后 ≤500ms 的尾块）。
  */
 function finalize(): Promise<void> {
   // 已有一个收尾在跑：直接复用，避免并发时重复 stop 与竞态
   if (finalizing) return finalizing
+  // 记下本段属于哪一代、以及哪一代的 chunk 数组：
+  // 收段是异步落地的，期间采集点可能已经翻篇、新段也已开始攒数据。
+  const myEpoch = epoch
+  const myChunks = chunks
 
   clearTimeout(timer)
+  timer = undefined
   const r = rec
   rec = null
   recStream = null
   if (!r) return Promise.resolve()
 
   const p = new Promise<void>((resolve) => {
+    let settled = false
+    let stopTimer: ReturnType<typeof setTimeout> | undefined
+    // 收段只能做一次：超时兜底与「迟到才到的 onstop」都可能触发 done，
+    // 第二次收的是空 chunks，除了误导日志没有别的效果。顺手摘掉回调，
+    // 让这个已经交还的录制器不再产生任何回调。
     const done = () => {
-      collectSegment()
+      if (settled) return
+      settled = true
+      clearTimeout(stopTimer)
+      r.onstop = null
+      r.ondataavailable = null
+      // 摘掉回调的代价：浏览器随后随 onstop 补发的最后一块（timeslice 500ms）会被丢掉。
+      // 这是超时兜底路径的已知取舍 —— 用最多 500ms 尾块换界面不永久卡死。
+      // 不能为保住尾块而留着回调：那会与 done 的幂等保证冲突（可能二次收段、把空 chunk 收成段）。
+      collectSegment(myChunks, myEpoch)
       resolve()
     }
     if (r.state === 'inactive') {
@@ -148,6 +236,12 @@ function finalize(): Promise<void> {
       return
     }
     r.onstop = done
+    // 兜底路径：stop() 不抛异常、onstop 却永不触发时，到点按已收到的 chunk 收段并放行。
+    // 正常路径（onstop 及时到达）下这个定时器会被 done 清掉，行为与修复前完全一致。
+    stopTimer = setTimeout(() => {
+      console.debug('[seg] onstop ' + STOP_TIMEOUT_MS + 'ms 未触发，按已收到的数据收段并放行')
+      done()
+    }, STOP_TIMEOUT_MS)
     try {
       r.stop()
     } catch {
@@ -165,7 +259,12 @@ function begin(stream: MediaStream, pose: string | null): boolean {
   currentPose = pose
   segmentStart = performance.now()
   mime = pickVideoMime()
-  chunks = []
+  // 本代自己的 chunk 数组：本代回调只写这一份（闭包捕获 mine，不再读模块级 chunks）。
+  // 为什么必须这样：finalize() 调 stop() 后排队的 dataavailable 可能在本代结束之后才派发，
+  // 若回调读模块级 chunks，那一块就会被 push 进【新段】的数组，成为新 blob 的第一个 chunk ——
+  // 上一采集点的画面接在新采集点头上，而时长与体积都看不出异常。
+  const mine: Blob[] = []
+  chunks = mine
   let r: MediaRecorder
   try {
     r = new MediaRecorder(
@@ -180,7 +279,7 @@ function begin(stream: MediaStream, pose: string | null): boolean {
   rec = r
   recStream = stream
   r.ondataavailable = (e) => {
-    if (e.data.size > 0) chunks.push(e.data)
+    if (e.data.size > 0) mine.push(e.data)
   }
   r.onerror = (e) => {
     // 出错时就地收尾：必须走 finalize，否则定时器不会被清、chunks 也不会被收走
@@ -197,7 +296,7 @@ function begin(stream: MediaStream, pose: string | null): boolean {
     if (rec !== r) return // 已被 finalize 接管，或已经换了新实例
     clearTimeout(timer)
     timer = undefined
-    collectSegment()
+    collectSegment(mine, epoch)
     rec = null
     recStream = null
     currentPose = null
@@ -238,6 +337,7 @@ export function startPoseRecording(stream: MediaStream, pose: string): boolean {
     void finalize()
   }
   lastSegment = null // 新采集点：丢弃上一采集点的内容
+  epoch++ // 新代次：上一段任何迟到的回写从此被丢弃，不会再冒充本采集点的视频
   return begin(stream, pose)
 }
 
@@ -248,8 +348,19 @@ export function startPoseRecording(stream: MediaStream, pose: string): boolean {
 export async function stopPoseRecording(): Promise<{ blob: Blob; mime: string } | null> {
   // 若有收尾正在进行（例如刚好到 8 秒上限），先等它完成，
   // 否则可能读到尚未被赋值的 lastSegment 而错误地返回 null。
-  if (finalizing) await finalizing
-  await finalize()
+  //
+  // 两处等待都加上限：本函数被 shoot() 直接 await，它一旦不返回，
+  // 界面就永久停在收尾提示上（这正是 P0 缺陷的表象）。
+  // finalize 自身已带 onstop 兜底，这里的护栏兜的是「finalizing 已被别处挂起」的情况：
+  // 宁可返回 null（该采集点没有视频）也不能让整条采集流程卡死。
+  if (finalizing) await withTimeout(finalizing, STOP_TIMEOUT_MS * 2, undefined)
+  // 翻代（顺序很关键）：
+  //   · 必须在上面那次等待【之后】—— 若那个收尾是本代发起的（例如刚好到 8 秒上限），
+  //     它的段属于本采集点，得先让它落地，否则会被下面的自增误判为过期而丢弃；
+  //   · 必须在 finalize() 调用【之前】—— 此后任何仍挂起的旧收尾（护栏已放弃的那个）
+  //     就算最终落地，代次也对不上，不会再写进 lastSegment 冒充下一个采集点的视频。
+  epoch++
+  await withTimeout(finalize(), STOP_TIMEOUT_MS * 2, undefined)
   currentPose = null
   const out = lastSegment
   lastSegment = null
