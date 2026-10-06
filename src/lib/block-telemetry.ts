@@ -6,7 +6,10 @@
 // 放独立模块而非 main.ts 顶部的目的：import 会被提升，能确保在 App.vue（进而 MediaPipe）
 // 加载之前执行，且逻辑不与入口文件混在一起。
 
-const BLOCKED = /(^|\.)googleapis\.com$/i
+// 尾点也要拦：`googleapis.com.` 是 FQDN 的绝对形式，`new URL()` 会把尾点保留在 hostname 里，
+// 而 /(^|\.)googleapis\.com$/ 匹配不到它 —— 实测 https://odml.pa.googleapis.com./v1/log
+// 会被放行到真实网络（`%2e` 同理）。这里运行时还有 CSP 兜底，但那是「两层防线漏了一层」。
+const BLOCKED = /(^|\.)googleapis\.com\.?$/i
 
 function hostOf(input: RequestInfo | URL): string {
   try {
@@ -41,7 +44,11 @@ XMLHttpRequest.prototype.open = function (
   url: string | URL,
   ...rest: unknown[]
 ) {
+  // 必须成对：同一个 XHR 对象可以反复 open（先 open 拦截目标、后 open 放行目标是正常用法）。
+  // 只在命中时 add、不在未命中时 delete 的话，复用的对象会一直留在集合里，
+  // 于是**真正要发的请求也不发**，还伪造一个 200 '{}' 交给调用方 —— 静默丢请求。
   if (isBlocked(url)) blockedXhr.add(this)
+  else blockedXhr.delete(this)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (origOpen as any).call(this, method, url, ...rest)
 } as typeof XMLHttpRequest.prototype.open

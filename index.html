@@ -52,7 +52,9 @@
       // 本项目处理人脸数据，任何外发都必须拦住。此处内联执行，早于任何模块加载，
       // 与 src/lib/block-telemetry.ts 形成双保险（后者负责应用运行期的调用）。
       (() => {
-        var BLOCKED = /(^|\.)googleapis\.com$/i
+        // 尾点（FQDN 绝对形式 googleapis.com.）也要拦：new URL() 保留尾点，
+        // 旧正则漏掉它，实测能放行到真实网络。
+        var BLOCKED = /(^|\.)googleapis\.com\.?$/i
         var isBlocked = function (u) {
           try {
             var h = new URL(typeof u === 'string' ? u : u && u.url ? u.url : String(u), location.href).hostname
@@ -72,7 +74,10 @@
         var os = XMLHttpRequest.prototype.send
         var blocked = new WeakSet()
         XMLHttpRequest.prototype.open = function (m, u) {
+          // 必须成对：同一个 XHR 可以反复 open，只 add 不 delete 会让复用的对象被一直拦着，
+          // 连真正要发的请求也不发（还伪造 200 '{}'）。与 block-telemetry.ts 保持一致。
           if (isBlocked(u)) blocked.add(this)
+          else blocked.delete(this)
           return oo.apply(this, arguments)
         }
         XMLHttpRequest.prototype.send = function () {

@@ -1,6 +1,9 @@
 // 极简提示音：用 Web Audio 合成，不引入任何音频文件。
 // 强制开启、不提供开关；浏览器要求音频必须在用户手势之后才能播放，故在首次交互时 primeAudio() 解锁。
 let ctx: AudioContext | null = null
+// 构造失败（无音频设备、隐私模式、被策略禁止）后不再反复尝试：
+// 不缓存的话，每次调用都会重新 new 一次并再抛一次 —— 实测连续 5 次调用抛 5 次。
+let audioUnavailable = false
 const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug')
 const dbg = (...a: unknown[]) => {
   if (DEBUG) console.log('[audio]', ...a)
@@ -25,20 +28,35 @@ export function primeAudio(): void {
 
   const wasReady = isAudioReady()
   if (!ctx) {
+    if (audioUnavailable) return
     const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
     if (!Ctor) {
       dbg('AudioContext 不可用')
+      audioUnavailable = true
       return
     }
-    ctx = new Ctor()
-    dbg('AudioContext 已创建, state =', ctx.state)
+    // 必须包 try：调用点（CaptureView.vue 首次交互的监听器）没有 try/catch，
+    // 构造抛错会直接冒泡到事件回调外层。
+    try {
+      ctx = new Ctor()
+      dbg('AudioContext 已创建, state =', ctx.state)
+    } catch (err) {
+      ctx = null
+      audioUnavailable = true
+      dbg('AudioContext 构造失败，本次及后续不再尝试：', err)
+      return
+    }
   }
   if (ctx.state === 'suspended') {
-    void ctx.resume().then(() => {
-      dbg('resume 完成, state =', ctx?.state)
-      // 刚解锁时放一声确认音：听到即说明链路正常
-      if (!wasReady && isAudioReady()) tone(1175, 0.1, 0.2)
-    })
+    // resume() 会 reject（上下文已被关闭 / 被策略拒绝），不接住就是 unhandledRejection。
+    void ctx
+      .resume()
+      .then(() => {
+        dbg('resume 完成, state =', ctx?.state)
+        // 刚解锁时放一声确认音：听到即说明链路正常
+        if (!wasReady && isAudioReady()) tone(1175, 0.1, 0.2)
+      })
+      .catch((err) => dbg('resume 失败（忽略）：', err))
   } else if (!wasReady) {
     tone(1175, 0.1, 0.2)
   }
@@ -46,7 +64,7 @@ export function primeAudio(): void {
 
 /** 切后台/来电回来后恢复音频（此时 AudioContext 常被挂起） */
 export function resumeAudio(): void {
-  if (ctx?.state === 'suspended') void ctx.resume()
+  if (ctx?.state === 'suspended') void ctx.resume().catch((err) => dbg('resume 失败（忽略）：', err))
 }
 
 // 音量不宜过小：0.07 在普通系统音量下几乎听不见，实测需要 0.2 以上才清晰可辨
@@ -60,9 +78,12 @@ function tone(freq: number, dur: number, vol = VOL, delay = 0): void {
   // 不因 suspended 就放弃：先恢复再发声（否则首次音效会静默丢失）
   if (ctx.state !== 'running') {
     dbg('state =', ctx.state, '尝试恢复后重发')
-    void ctx.resume().then(() => {
-      if (ctx?.state === 'running') tone(freq, dur, vol, delay)
-    })
+    void ctx
+      .resume()
+      .then(() => {
+        if (ctx?.state === 'running') tone(freq, dur, vol, delay)
+      })
+      .catch((err) => dbg('resume 失败（忽略）：', err))
     return
   }
   const t0 = ctx.currentTime + delay
