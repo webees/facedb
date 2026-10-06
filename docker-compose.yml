@@ -1,0 +1,67 @@
+# 显式指定项目名：目录名含 @，compose 默认会把它吞掉变成 webeesfacedb
+name: webees-facedb
+
+services:
+  pocketbase:
+    # 本地镜像：官方运行时 + 源码汉化二进制（构建上下文 ./pb-bin，见 pb-bin/Dockerfile）
+    # 汉化二进制由 ../webees@pocketbase 交叉编译产出，流程见 RUN.md
+    build:
+      context: ./pb-bin
+      dockerfile: Dockerfile
+    image: webees-facedb-pocketbase:0.28.1-zh
+    container_name: facedb-pocketbase
+    restart: unless-stopped
+    ports:
+      # 直接对外暴露：原由 admin(nginx) 反代并注入汉化脚本，现改用源码汉化的二进制，
+      # 注入层与其映射（集合名/字段名）一并移除，故不再需要反代。
+      - "8090:8090"
+    volumes:
+      - ./pb_data:/pb_data
+      # migrations 必须只读：这些文件是安全约束的来源（session_id 的 pattern、
+      # 各集合的 listRule/deleteRule、字段的 max/maxSelect/maxSize）。
+      # 可写时，任何能控制容器内进程的一方都能改写「下次启动时应用什么约束」，
+      # 相当于持久化注入代码 —— 后果比改写 pb_data 更重。
+      # 实测只读下功能完全正常（空库重放 6 集合齐全、最终迁移含 \p{Z} 已应用）；
+      # PB 自身不需要写这个目录（迁移执行记录写在 pb_data 里）。
+      - ./pb_migrations:/pb_migrations:ro
+    # 显式声明迁移目录：镜像的 ENTRYPOINT 已带 `serve --dir=/pb_data …`，
+    # 这里追加的 flag 会接到 ENTRYPOINT 之后，即最终命令为
+    #   pocketbase serve --http=0.0.0.0:8090 --dir=/pb_data --publicDir=/pb_public --hooksDir=/pb_hooks --migrationsDir=/pb_migrations
+    # 不写也能跑：PB 会从 --dir 推导 ./pb_data/../pb_migrations，恰好命中挂载点；
+    # 但那是隐式推导，一旦改 --dir 或换挂载点就会静默不加载迁移（B#11），故显式指定。
+    command: ["--migrationsDir=/pb_migrations"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8090/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+      # 启动期内用更短的间隔探测，冷启动几秒内即可判定（缺失则退回 interval=30s）
+      start_interval: 2s
+
+  web:
+    build:
+      context: .
+      # 留空即可：产物默认在运行时按页面地址推导后端（见 src/lib/pb.ts），
+      # 这样本机与局域网访问都能正确上传。仅当后端不在同一主机时才在此填绝对地址。
+      args:
+        PUBLIC_PB_URL: ""
+    # 显式指定镜像名，避免沿用默认的 <项目名>-web
+    image: webees-facedb-web
+    container_name: facedb-web
+    restart: unless-stopped
+    depends_on:
+      pocketbase:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    healthcheck:
+      # 运行阶段是 static-web-server:alpine，用镜像自带的 busybox wget。
+      # 注意 compose 的 healthcheck 会覆盖 Dockerfile 的 HEALTHCHECK：实测 docker inspect 生效的是本文件的值，
+      # 所以两边数值必须一致（Dockerfile 那份只是「不经 compose 直接 docker run」时的默认值）——B#8。
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+      start_interval: 3s

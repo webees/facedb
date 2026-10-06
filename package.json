@@ -1,0 +1,25 @@
+{
+  "name": "facedb",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "rsbuild dev",
+    "build": "rsbuild build",
+    "preview": "rsbuild preview",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
+    "pocketbase": "^0.28.1",
+    "vue": "^3.5.43"
+  },
+  "devDependencies": {
+    "@rsbuild/core": "^2.2.11",
+    "@rsbuild/plugin-vue": "^2.0.1",
+    "@tailwindcss/postcss": "^4.3.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "vue-tsc": "^3.3.12"
+  }
+}

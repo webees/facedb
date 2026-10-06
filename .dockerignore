@@ -1,0 +1,16 @@
+node_modules
+dist
+pb_data
+pb-bin
+docs
+# RUN.md 是 1600+ 行且改动频繁的文档：它随 `COPY . .` 进构建上下文后，
+# 任何一次文档改动都会让 COPY 层之后的缓存全部失效（实测：改文档触发 npm run build 重跑）。
+RUN.md
+.git
+# .env 必须排除：它一旦进了构建上下文，就会覆盖 docker-compose.yml 的 build args（PUBLIC_PB_URL）
+# 并污染构建缓存，使「同一份源码构建出不同产物」且难以察觉（B#10）。.env.example 仍保留（模板无密钥）。
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store

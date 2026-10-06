@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+
+    <!-- 只约束「连接」这一个维度，不写 default-src，因此对脚本/样式/图片毫无影响。
+         connect-src 'self'   —— 经网关访问时走同源的 /api
+         connect-src *:8090   —— 直连访问时走 <主机>:8090（http/https）
+         connect-src ws://*:8090 / wss://*:8090 —— 同上，但 WebSocket 协议属独立方案，
+                                    *:8090 不覆盖它。当前并未使用 WebSocket
+                                   （PocketBase 的实时订阅走 SSE，属 http），
+                                   这里一并放行是为了将来加实时推送时不至于被静默拦住。
+         这条规则同时堵住 Worker 作用域的外发：下面的脚本只 patch 了主线程的
+         fetch/XHR/sendBeacon，而 Worker 有独立全局作用域，patch 覆盖不到
+         （实测 Worker 内的请求确实会发出去）。CSP 是浏览器内核级约束，
+         与调用方在哪个线程、用什么 API 无关。
+         注：若用 PUBLIC_PB_URL 指向别的地址，需同步放行该地址。 -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="connect-src 'self' *:8090 ws://*:8090 wss://*:8090"
+    />
+
+    <script>
+      // 界面语言按浏览器语言在 zh / en 间切换（见 src/lib/i18n.ts），
+      // 文档的 lang 也应随之设定，否则英文用户的读屏与断词规则会按中文处理。
+      document.documentElement.lang = (navigator.language || '').toLowerCase().startsWith('zh')
+        ? 'zh-CN'
+        : 'en'
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="facedb" />
+    <link rel="icon" href="data:," />
+    <!-- 预加载首屏必需的模型与 wasm：实测共约 15.8MB，不做预加载时浏览器
+         要等到 JS 执行到 initFace() 才开始下载，白白多等数秒。
+
+         三条的 as 与 crossorigin 必须与【实际发起方】一致，否则缓存不命中、白下载一次。
+         逐种写法实测（看该文件被请求几次）：
+           模型   /face_landmarker.task            as="fetch"  + crossorigin → 1 次
+           wasm   /wasm/vision_wasm_internal.wasm  as="fetch"  + crossorigin → 1 次
+           loader /wasm/vision_wasm_internal.js    as="script" + crossorigin → 1 次
+
+         loader 由 MediaPipe 动态插入的 <script> 加载（CDP 显示资源类型 Script、发起者
+         parser/script），且该 script 带 crossOrigin 属性，所以必须是
+         as="script" + crossorigin；写成 as="fetch"、或漏掉 crossorigin，
+         都会让它被下载两次（preload 一次、使用方再取一次，多传 323KB）。 -->
+    <link rel="preload" href="/face_landmarker.task" as="fetch" crossorigin="anonymous" />
+    <link rel="preload" href="/wasm/vision_wasm_internal.js" as="script" crossorigin="anonymous" />
+    <link rel="preload" href="/wasm/vision_wasm_internal.wasm" as="fetch" crossorigin="anonymous" />
+    <title>facedb</title>
+    <script>
+      // 最早的一道防线：MediaPipe(TFLite) 会向 odml.pa.googleapis.com 上报遥测，
+      // 本项目处理人脸数据，任何外发都必须拦住。此处内联执行，早于任何模块加载，
+      // 与 src/lib/block-telemetry.ts 形成双保险（后者负责应用运行期的调用）。
+      (() => {
+        var BLOCKED = /(^|\.)googleapis\.com$/i
+        var isBlocked = function (u) {
+          try {
+            var h = new URL(typeof u === 'string' ? u : u && u.url ? u.url : String(u), location.href).hostname
+            return BLOCKED.test(h)
+          } catch (e) {
+            return false
+          }
+        }
+        var empty = function () {
+          return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        var of = window.fetch.bind(window)
+        window.fetch = function (i, init) {
+          return isBlocked(i) ? Promise.resolve(empty()) : of(i, init)
+        }
+        var oo = XMLHttpRequest.prototype.open
+        var os = XMLHttpRequest.prototype.send
+        var blocked = new WeakSet()
+        XMLHttpRequest.prototype.open = function (m, u) {
+          if (isBlocked(u)) blocked.add(this)
+          return oo.apply(this, arguments)
+        }
+        XMLHttpRequest.prototype.send = function () {
+          if (blocked.has(this)) {
+            // 模拟一次【完整且成功】的响应，与 src/lib/block-telemetry.ts 保持一致：
+            // 只补事件而不设 readyState/status/responseText 的话，调用方读到 status=0 会判为失败。
+            var self = this
+            setTimeout(function () {
+              var def = function (k, v) {
+                Object.defineProperty(self, k, { value: v, configurable: true })
+              }
+              def('readyState', 4)
+              def('status', 200)
+              def('statusText', 'OK')
+              def('responseText', '{}')
+              def('response', '{}')
+              self.dispatchEvent(new Event('readystatechange'))
+              self.dispatchEvent(new Event('load'))
+              self.dispatchEvent(new Event('loadend'))
+            }, 0)
+            return
+          }
+          return os.apply(this, arguments)
+        }
+        if (navigator.sendBeacon) {
+          var ob = navigator.sendBeacon.bind(navigator)
+          navigator.sendBeacon = function (u, d) {
+            return isBlocked(u) ? true : ob(u, d)
+          }
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

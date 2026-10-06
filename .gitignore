@@ -1,0 +1,8 @@
+node_modules
+dist
+pb_data
+.env.local
+# 只忽略二进制本体：pb-bin/SHA256SUMS（白名单）与 pb-bin/README.md（溯源）必须可提交，
+# 否则干净重建既没有校验清单、也说不清这份二进制从哪来（B#6）。
+# 当前工程不是 git 仓库，本文件作为「未来入库时」的可追溯性约束保留。
+pb-bin/pocketbase-zh

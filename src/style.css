@@ -1,0 +1,123 @@
+/* 关闭 Tailwind v4 的自动内容探测，改为显式声明扫描范围（C-03）。
+   自动探测会从项目根一路扫到 RUN.md / docs/ 的正文，把文档里提到的类名当成真实用到的类名，
+   结果是产物里混进死 CSS，而且改文档就会改产物 CSS 的指纹。
+   source(none) 之后只认下面两条 @source（路径相对本文件）： */
+@import "tailwindcss" source(none);
+@source "../src";
+@source "../index.html";
+
+/* 上传中的旋转指示器：纯 CSS 边框旋转，颜色继承文字（黑白底都清晰） */
+.upload-spinner {
+  display: inline-block;
+  width: 1.15em;
+  height: 1.15em;
+  border: 0.18em solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: upload-spin 0.75s linear infinite;
+  flex: none;
+}
+
+@keyframes upload-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 尊重系统的「减少动态效果」设置：改为低频脉冲而非旋转 */
+@media (prefers-reduced-motion: reduce) {
+  .upload-spinner {
+    animation: upload-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes upload-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+}
+
+
+/* 提示文字描边：8 方向 text-shadow 合成黑边。
+   比 -webkit-text-stroke 兼容性更好，也不会把笔画内部吃掉。 */
+.hint-outline {
+  text-shadow:
+    -2px -2px 0 #000,
+    2px -2px 0 #000,
+    -2px 2px 0 #000,
+    2px 2px 0 #000,
+    -2px 0 0 #000,
+    2px 0 0 #000,
+    0 -2px 0 #000,
+    0 2px 0 #000,
+    0 0 6px rgba(0, 0, 0, 0.6);
+}
+
+
+/* 取景框扫描线：缓慢上下扫过，营造「正在检测」的科技感 */
+@keyframes scan-move {
+  0% {
+    top: -18%;
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    top: 108%;
+    opacity: 0;
+  }
+}
+.scan-line {
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(34, 211, 238, 0.22),
+    rgba(34, 211, 238, 0.06),
+    transparent
+  );
+  animation: scan-move 3.2s ease-in-out infinite;
+}
+
+/* 完成页成功图标：先画外圈、再画勾，像手写一样逐段显现。
+   r=23 的周长 ≈ 144.5；勾的路径长约 34.6。 */
+@keyframes draw-stroke {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.suc-circle {
+  stroke-dasharray: 145;
+  stroke-dashoffset: 145;
+  animation: draw-stroke 0.55s ease-out forwards;
+}
+.suc-check {
+  stroke-dasharray: 35;
+  stroke-dashoffset: 35;
+  animation: draw-stroke 0.35s ease-out 0.5s forwards;
+}
+
+/* 尊重系统「减弱动态效果」：动画关掉后，进度条与文字仍能传达状态（不依赖动画传信息） */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .scan-line {
+    display: none;
+  }
+  /* 描边动画被压缩到瞬时完成后，确保图形仍是完整可见的 */
+  .suc-circle,
+  .suc-check {
+    stroke-dashoffset: 0 !important;
+  }
+}
