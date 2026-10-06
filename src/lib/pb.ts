@@ -16,6 +16,12 @@ export type CaptureMeta = {
   deviceInfo: string
   videoWidth: number
   videoHeight: number
+  /**
+   * 本采集点的视频段是否录制成功（false = 录制器没起来或启动失败）。
+   * 落库侧唯一的其它线索是「video 文件为空」，而那与「用户这一步本来就没拍视频」
+   * 完全同形 —— 没有这个字段时后台无法区分这两种情况。
+   */
+  segmentOk: boolean
 }
 
 /** 待提交的单个文件（连同它的姿态与指标） */

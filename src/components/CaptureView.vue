@@ -377,6 +377,9 @@ async function shoot(): Promise<void> {
       deviceInfo: navigator.userAgent,
       videoWidth: el.videoWidth,
       videoHeight: el.videoHeight,
+      // 录制状态随本采集点的每个文件落库：录制器没起来时置 false，
+      // 后台据此区分「录制失败」与「这一步没有视频」。
+      segmentOk: !segmentFailed.value,
     }
     // 拍到就立刻切到下一步，上传放到后台队列。
     // 之前是 await 上传完再 advance，用户转到目标角度后还要额外等 0.5~1s 才进入下一步，
