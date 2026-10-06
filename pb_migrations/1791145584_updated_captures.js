@@ -23,7 +23,7 @@ migrate((app) => {
 
   // update field
   collection.fields.addAt(1, new Field({
-    "cascadeDelete": true,
+    "cascadeDelete": false,
     "collectionId": "pbc_3735627160",
     "hidden": false,
     "id": "relation1570731425",
