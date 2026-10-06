@@ -67,6 +67,28 @@ export type Verdict = { pass: boolean; hintKey: MessageKey }
 
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v))
 
+/** 参与判定的数值是否全是有限数（见 judge 顶部的说明）。 */
+function isFiniteFrame(f: FaceFrame, vw: number, blur: number, brightness: number): boolean {
+  return (
+    Number.isFinite(f.count) &&
+    Number.isFinite(f.yaw) &&
+    Number.isFinite(f.pitch) &&
+    Number.isFinite(f.roll) &&
+    Number.isFinite(f.faceWidthPx) &&
+    Number.isFinite(f.eyeBlinkLeft) &&
+    Number.isFinite(f.eyeBlinkRight) &&
+    Number.isFinite(vw) &&
+    Number.isFinite(blur) &&
+    Number.isFinite(brightness)
+  )
+}
+
+/** 姿态名必须是 TARGETS 的**自有**属性。
+ *  用 `TARGETS[pose]` 直接索引会把原型链上的名字也算命中（见 judge 里的说明）。 */
+function isKnownPose(pose: Pose): boolean {
+  return Object.prototype.hasOwnProperty.call(TARGETS, pose)
+}
+
 /** 各项门槛按任务书 §4 的编号顺序判定。
  *
  *  注意：本函数只判断「当前这一帧是否达标」，不做连续帧的累计 ——
@@ -74,6 +96,29 @@ const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v))
  *  （见 CaptureView 的 tickHold）。 */
 export function judge(f: FaceFrame, vw: number, blur: number, brightness: number, pose: Pose): Verdict {
   const no = (hintKey: MessageKey): Verdict => ({ pass: false, hintKey })
+
+  // —— 先做输入合法性把关，再谈门槛 ——
+  // NaN 与任何比较都是 false（`NaN < 0.2` 与 `NaN > 0.2` 同为 false），
+  // 于是下面所有 `if (x < 阈值) return no(...)` 会被**静默跳过**，无效帧被判【达标】。
+  // 后果不止是误提示：CaptureView 会把它计入连续达标帧并触发拍摄，NaN 还会被写进 meta
+  //（`JSON.stringify(NaN)` 得 null），事后无法从 meta 复现。
+  // 实测 11 组反例（任一数值字段为 NaN、count=-1）全部穿透；Infinity 中的
+  // faceWidthPx 同样穿透（`Infinity < vw*0.2` 为 false）。
+  // 说明：MediaPipe 在本工程未观测到 NaN，但本函数收到的数值是多处算术合成的产物
+  //（欧拉角、包围盒、ROI 统计），按「不信任输入」处理成本最低。
+  // 返回 hintHoldStill 而不是某个方向性文案：这是测量失败、不是用户姿势不对，
+  // 给方向反而会把人引偏；关键是它 pass=false，不会被计入达标帧。
+  if (!isFiniteFrame(f, vw, blur, brightness)) return no('hintHoldStill')
+
+  // 姿态名必须是自己认识的：TARGETS['__proto__'] / ['constructor'] / ['toString'] 都会
+  // 命中原型链上的属性，t.yaw 与 t.pitch 为 undefined，yaw 与 pitch 两段判定被整段跳过
+  //（实测这三个名字都静默判通过）；而拼错的姿态名会抛 TypeError 冒泡到组件的 loop()，
+  // 那里没有 try/catch，会中断该帧的后续处理。
+  if (!isKnownPose(pose)) return no('hintHoldStill')
+
+  // count 是探测器的「脸数」：0 与 >1 各有专门文案，负值与非整数是无意义输入，
+  // 且 count=-1 会同时绕开「无脸」与「多人」两条判定（实测被判通过）。
+  if (!Number.isInteger(f.count) || f.count < 0) return no('hintNoFace')
   if (f.count === 0) return no('hintNoFace')
   if (f.count > 1) return no('hintMultiFace')
   if (vw <= 0 || f.faceWidthPx < vw * MIN_FACE_RATIO) return no('hintTooFar')
