@@ -3,7 +3,7 @@
 > **术语**：下文出现的 `<运行根>` 指审计工作房的运行根目录。本轮为
 > `~/.dsh-codepunk/projects/facedb/runs/run-20261006-160618`；文档里引用的历史脚本体
 > （`apply-pb-patches.mjs`、`pb-full-rebuild.sh`、`rebuild-and-deploy-v2.sh` 等 23 个）都在
-> 上一轮运行根 `~/.dsh-codepunk/projects/facedb/runs/run-20261005-010657`，照抄前先确认该文件存在。
+> 已从上一轮运行根 `run-20261005-010657` 迁入 `<运行根>/lib/legacy/`，逐个 sha256 核验与源全等；照抄前先确认该文件存在（迁入清单与数据目录见 `<运行根>/lib/legacy/README.md`）。
 
 1. `cp .env.example .env`（**无需填写 `PUBLIC_PB_URL`**：留空时前端在运行时按页面地址推导后端地址；只有后端不在同主机的 8090 端口时才需要填绝对地址）
 2. `docker compose up -d --build` → 采集端 `http://localhost:3000`，后台 `http://localhost:8090/_/`
@@ -169,7 +169,7 @@ blendshape 值飙升 → 用户越转头越被判「请睁开眼睛」→ **侧�
 
 **方向提示**：低于区间下界时，正区间提示「继续转」、负区间提示「回正」；高于上界时反之。
 早期版本在「右转转过头」时会提示「请再向右转」，导致用户越转越过——已修正
-（可用 `runs/<run>/verify-yaw-hints.mjs` 复跑 5 个姿态 × 13 个角度的提示矩阵）。
+（可用 `<运行根>/lib/legacy/verify-yaw-hints.mjs` 复跑 5 个姿态 × 13 个角度的提示矩阵）。
 
 **达标判定（滑动窗口 + 滞后 + 上锁）**：`held` 计数达到 `STABLE_FRAMES` 即拍；
 失败时**递减而非清零**（landmark 抖动不会让进度来回跳），并用 `armed` 标志上锁，
@@ -503,11 +503,11 @@ OCI runtime exec failed: exec: "node": executable file not found in $PATH
 一条都没验证却给出绿灯。为此提供了可复用工具：
 
 ```
-运行根/lib/audit-assert.mjs
+<运行根>/lib/audit-assert.mjs
 ```
 
 ```js
-import { makeChecker } from './lib/audit-assert.mjs'
+import { makeChecker } from '<运行根>/lib/audit-assert.mjs'
 
 const c = makeChecker('CSP 边界')
 c.check('同源放行', r.sameOrigin === 200)   // 只接受布尔值
@@ -900,7 +900,7 @@ s = s.replaceAll('{' + k + '}', String(v))          // ❌
 因此从「源码刚被 checkout」的状态回到可用态需要两步，顺序固定：
 
 ```bash
-bash <运行根>/pb-full-rebuild.sh
+bash <运行根>/lib/legacy/pb-full-rebuild.sh
 ```
 
 它做的是：
@@ -916,7 +916,7 @@ bash <运行根>/pb-full-rebuild.sh
 
 ```
 把 7 个目标文件替换为未打补丁版本
-  → 跑 apply-pb-patches.mjs
+  → 跑 <运行根>/lib/legacy/apply-pb-patches.mjs
   → 7 处全部恢复 ✅（逐项核对）
 ```
 
@@ -1611,10 +1611,10 @@ PocketBase 自动生成了 `1791217910_deleted_users.js` / `1791217910_deleted_o
 
 ```bash
 # 1. 先跑完整汉化流程
-bash <运行根>/rebuild-and-deploy-v2.sh
+bash <运行根>/lib/legacy/rebuild-and-deploy-v2.sh
 
 # 2. 再打七处补丁并重新构建部署（脚本内置幂等补丁 + 产物/线上双重校验）
-bash <运行根>/pb-rebuild-deploy.sh
+bash <运行根>/lib/legacy/pb-rebuild-deploy.sh
 ```
 
 `pb-rebuild-deploy.sh` 的六步一步不缺，且每一步都断言：
@@ -1638,7 +1638,7 @@ bash <运行根>/pb-rebuild-deploy.sh
 
 > **根治办法**（若汉化流程由另一会话维护）：在 `rebuild-and-deploy-v2.sh` 的
 > `node pb-source-i18n-v2.mjs --write` 之后、`npm run build` 之前，插入一行
-> `node <运行根>/apply-pb-patches.mjs`，即可让两者长期共存、不必每次手动补。
+> `node <运行根>/lib/legacy/apply-pb-patches.mjs`，即可让两者长期共存、不必每次手动补。
 
 ## 后台汉化（源码编译 + 本地镜像方案）
 
@@ -1654,7 +1654,7 @@ bash <运行根>/pb-rebuild-deploy.sh
 ```bash
 cd ../webees@pocketbase
 git checkout -- ui/src                                  # 先恢复干净源码（替换是幂等的）
-node <运行根>/pb-source-i18n-v2.mjs --write             # 应用词表（超 1290 处）
+node <运行根>/lib/legacy/pb-source-i18n-v2.mjs --write             # 应用词表（超 1290 处）
 cd ui && npm run build && cd ..                          # 构建 UI（产物被 go:embed 打进二进制）
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o pocketbase-zh-linux-arm64 examples/base/main.go
 cp pocketbase-zh-linux-arm64 ../webees@facedb/pb-bin/pocketbase-zh-linux-arm64
@@ -1663,7 +1663,7 @@ cd ../webees@facedb
 docker compose build pocketbase && docker compose up -d --force-recreate pocketbase
 ```
 
-一键脚本：`<运行根>/rebuild-and-deploy-v2.sh`（含上述全部步骤 + 健康检查）。
+一键脚本：`<运行根>/lib/legacy/rebuild-and-deploy-v2.sh`（含上述全部步骤 + 健康检查）。
 
 #### 词表与工具（运行根 `dict/`）
 
