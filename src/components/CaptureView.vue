@@ -26,7 +26,7 @@ const emit = defineEmits<{ done: [results: CaptureResult[]] }>()
 // 原方案含左/右 45° 两步，但 45° 处 MediaPipe 的 yaw 抖动大、且与质量门槛的 45° 上限重合，
 // 用户几乎无法稳定命中（实测「向某侧转几次都失败」），已按反馈去掉。
 const POSES: Pose[] = ['frontal', 'left30', 'right30', 'up', 'down', 'liveness']
-// 调试用：?start=liveness 直接跳到录制步骤，便于单独验证倒计时等末段逻辑
+// 调试用：?start=liveness 直接跳到录制步骤，便于单独验证末段（录制与提交）逻辑
 const startParam = new URLSearchParams(location.search).get('start')
 const startIdx = POSES.indexOf(startParam as Pose)
 // 推理频率：40ms ≈ 25fps。MediaPipe 在 1080p 下单帧约 10~30ms，这个频率不会成为瓶颈，
@@ -561,7 +561,7 @@ function loop(): void {
   stats.roi = s.roi
   const verdict = judge(f, el.videoWidth, s.blur, s.brightness, pose.value)
   ok.value = verdict.pass
-  // 正在录制（倒计时）或正在上传时，不要用逐帧判定结果覆盖提示 ——
+  // 正在录制或正在上传时，不要用逐帧判定结果覆盖提示 ——
   // 否则「保持不动，正在拍摄…」「上传中…」会被冲掉，动画一闪而过。
   // 设备断开后不再用逐帧判定覆盖提示：画面已静止，判定结果没有意义。
   // 失败提示的冷却期内同样不覆盖，否则「失败」会被立刻盖成「正在拍摄」。
