@@ -27,6 +27,89 @@
         ? 'zh-CN'
         : 'en'
     </script>
+    <script>
+      // 启动失败的兜底（W4/P3）。
+      //
+      // 产物 JS 404、被静态服务的 page-fallback 换成 HTML（解析即语法错误）、或启动期
+      // 抛异常时，页面会停在空白的 #root：用户只看到白屏，也不知道该找谁。下面两个监听
+      // 覆盖这三类错误，把原因写进页面。
+      //
+      // 三个刻意的取舍：
+      //  1) 用**捕获阶段**监听 <script> 的资源错误 —— 资源错误不冒泡，只有 capture 收得到。
+      //  2) 判定前留 1.2 秒宽限：脚本失败未必致命（例如可选脚本挂了而主流程仍能起来），
+      //     只有 #root 依然一个子节点都没有时，才认定为启动失败。
+      //  3) 不做「N 秒未挂载」看门狗：慢网络下会误报，宁可不报。
+      ;(function () {
+        var GRACE_MS = 1200
+        var TRIES = 40
+        var shown = false
+
+        function box(zh, en, detail) {
+          var html =
+            '<div style="max-width:36rem;margin:12vh auto;padding:1.5rem;font:16px/1.6 system-ui,-apple-system,sans-serif;color:#111">' +
+            '<h1 style="font-size:1.25rem;font-weight:700;margin:0 0 .5rem">' +
+            zh +
+            '</h1><p style="margin:0;color:#444">' +
+            en +
+            '</p>'
+          if (detail) {
+            html +=
+              '<pre style="margin:1rem 0 0;padding:.75rem;background:#f3f4f6;border-radius:.5rem;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:12px">' +
+              detail +
+              '</pre>'
+          }
+          return html + '</div>'
+        }
+
+        function render(html) {
+          if (shown) return
+          var el = document.getElementById('root')
+          if (!el) {
+            // #root 在文档末尾（body 结束标签之前），晚于本脚本；错误发生在解析期时它还不存在。
+            if (TRIES-- > 0) setTimeout(function () { render(html) }, 50)
+            else if (document.body) {
+              shown = true
+              document.body.insertAdjacentHTML('afterbegin', html)
+            }
+            return
+          }
+          shown = true
+          el.setAttribute('data-load-failed', '1')
+          el.innerHTML = html
+        }
+
+        function report(zh, en, detail) {
+          setTimeout(function () {
+            var el = document.getElementById('root')
+            // 应用其实起来了就不打扰（兜底只处理「真的没起来」）。
+            if (el && el.childElementCount > 0) return
+            render(box(zh, en, detail))
+          }, GRACE_MS)
+        }
+
+        window.addEventListener(
+          'error',
+          function (e) {
+            var t = e && e.target
+            if (t && t !== window) {
+              // 只有脚本加载失败才当作启动失败；preload / 图片等失败不致命
+              //（MediaPipe 需要时会自己去取 wasm，不能因为预加载失败就报白屏）。
+              if (t.tagName === 'SCRIPT') {
+                report('页面脚本加载失败', 'A page script failed to load.', String(t.src || '(inline)'))
+              }
+              return
+            }
+            report('页面启动失败', 'The page failed to start.', String((e && e.message) || e))
+          },
+          true,
+        )
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e && e.reason
+          report('页面启动失败', 'The page failed to start.', String((r && r.message) || r || e))
+        })
+      })()
+    </script>
+
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="facedb" />
     <link rel="icon" href="data:," />

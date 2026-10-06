@@ -211,6 +211,18 @@ function setHint(key: MessageKey, params?: Record<string, string | number>): voi
   applyHint(key, params)
 }
 
+/**
+ * 立刻换文案（不等 5/3 多数表决），用于「进新采集点」与用户主动重试。
+ *
+ * 不清空缓冲的话：buffer 里还留着上一步的键，新一步开头会继续显示旧文案
+ * （换文案要 3 票），「请{姿态}」这类提示还会因为旧键占位而更难攒够票数。
+ * 普通提示仍然走 setHint() 的多数表决，避免单帧噪声抖动界面。
+ */
+function setHintNow(key: MessageKey, params?: Record<string, string | number>): void {
+  hintBuf.length = 0
+  applyHint(key, params)
+}
+
 // 质量分仅供诊断展示（不参与判定）。
 // 亮度门槛直接引用 quality.ts 的常量，避免两处各写一份、改一处漏一处。
 const IDEAL_BRIGHT = 130
@@ -443,7 +455,7 @@ function advance(): void {
   // 进入新的采集点：开始录这一段（上一段已在 shoot() 里取走）
   openPoseSegment()
   sfx.step()
-  setHint('hintCameraOn', { pose: t(POSE_KEY[pose.value]) })
+  setHintNow('hintCameraOn', { pose: t(POSE_KEY[pose.value]) })
 }
 
 /** 提交整批文件；成功后切到完成页，失败则留在本页等待重试。 */
@@ -527,7 +539,7 @@ async function retry(): Promise<void> {
       return
     }
   }
-  setHint('hintCameraOn', { pose: t(POSE_KEY[pose.value]) })
+  setHintNow('hintCameraOn', { pose: t(POSE_KEY[pose.value]) })
   // 重开录制段：retry 之前录制器可能已因异常收尾被置空（此后一直没人在录），
   // 而重新取流的路径会让旧段与新流不再同源（switchCam 早已补了同样的补偿，这里此前漏了）。
   // startPoseRecording 对「同姿态且录制器仍在」是幂等的，健康时重复调用不会空转。
