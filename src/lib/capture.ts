@@ -43,6 +43,16 @@ export const extFor = (mime: string): string => (mime.includes('mp4') ? 'mp4' : 
 export function grabImage(video: HTMLVideoElement, f: FaceFrame): Promise<Blob> {
   const vw = video.videoWidth
   const vh = video.videoHeight
+  // 入参硬化：这里是唯一把「人脸框比例」变成像素的地方。
+  // 非正、非有限的宽高比会一路穿过下面的 Math.min/max：实测 bw=bh=-1 会产出一张
+  // 2285x1280 的伪造画布并 resolve（画的是画面一角，与人脸无关），bw=NaN 同理；
+  // 视频尺寸为 0 时也一样。宁可明确拒绝，也不要静默交出一张无意义的照片。
+  if (!Number.isFinite(vw) || !Number.isFinite(vh) || vw <= 0 || vh <= 0) {
+    return Promise.reject(new Error('视频尺寸不可用，无法拍照'))
+  }
+  if (![f.bw, f.bh, f.cx, f.cy].every(Number.isFinite) || f.bw <= 0 || f.bh <= 0) {
+    return Promise.reject(new Error('人脸框不可用，无法拍照'))
+  }
   const w = Math.round(Math.min(f.bw * vw * ROI_SCALE, vw))
   const h = Math.round(Math.min(f.bh * vh * ROI_SCALE, vh))
   const x = Math.round(Math.min(Math.max(f.cx * vw - w / 2, 0), vw - w))
@@ -302,7 +312,17 @@ function begin(stream: MediaStream, pose: string | null): boolean {
     currentPose = null
     console.debug('[seg] 录制器自发停止（流已结束），已收尾并清空句柄')
   }
-  r.start(500)
+  try {
+    r.start(500)
+  } catch (e) {
+    // 启动失败（流已结束、编解码组合不被支持）时必须把句柄清干净：
+    // 否则 isPoseRecording() 会返回 true，上层以为在录、不再重试，而一个字节都没录到。
+    console.warn('[seg] 录制器启动失败', e)
+    rec = null
+    recStream = null
+    currentPose = null
+    return false
+  }
   console.debug('[seg] 开段')
 
   timer = setTimeout(() => {
