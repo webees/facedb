@@ -1,10 +1,14 @@
 node_modules
 dist
 pb_data
+# 本地覆盖文件一律不入库（.env.example 才是入库的模板）：
+# 只写 .gitignore 不追溯已跟踪文件，故配套执行 git rm --cached .env。
+.env
 .env.local
+.env.*.local
 # 只忽略二进制本体（按架构分文件：pocketbase-zh-linux-arm64 / -amd64）：
 # pb-bin/SHA256SUMS（白名单）与 pb-bin/README.md（溯源）必须可提交，
 # 否则干净重建既没有校验清单、也说不清这份二进制从哪来（B#6）。
-# 当前工程不是 git 仓库，本文件作为「未来入库时」的可追溯性约束保留。
+# 2026-10-06 工程已 git init（基线 96f8211），本文件的规则自此生效。
 pb-bin/pocketbase-zh
 pb-bin/pocketbase-zh-linux-*
