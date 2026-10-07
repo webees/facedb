@@ -1,6 +1,10 @@
 /// <reference path="../pb_data/types.d.ts" />
 migrate((app) => {
-  const collection = app.findCollectionByNameOrId("_pb_users_auth_");
+// ⚠️ 回退边界：本迁移的 down **只重建集合定义，不恢复记录**。
+// up 的 app.delete(collection) 在 sqlite 层整表 DROP，记录已随表消失，down 无从还原。
+// 实测（R13-X2）：users 1 条 → down 后 0 条；operators 2 条 → down 后 0 条。
+// 需要保留数据时，只能在执行本迁移前先导出记录，不能靠 down 找回来。
+    const collection = app.findCollectionByNameOrId("_pb_users_auth_");
 
   return app.delete(collection);
 }, (app) => {

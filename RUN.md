@@ -1568,7 +1568,19 @@ PB 的 `autodate` **不会回溯填充**已有记录：加字段之前入库的�
 | `users` | PocketBase 默认 auth 集合 | 本项目不使用账号体系；删前确认 PB 源码里 `_pb_users_auth_` 的 41 处引用中，**只有初始迁移 `migrations/1640988000_init.go` 是运行时代码，其余全是 `_test.go`**，无运行时依赖 |
 
 删除后实测：后端 health 正常、后台可访问、采集端匿名写入正常、PB 日志无报错。
-PocketBase 自动生成了 `1791217910_deleted_users.js` / `1791217910_deleted_operators.js`（含 `down`，可回滚）。
+PocketBase 自动生成了 `1791217910_deleted_users.js` / `1791217910_deleted_operators.js`。
+
+**迁移与回滚约束（实测，勿把「有 down」当成「数据可回滚」）**：
+
+| 迁移 | up 做什么 | down 能恢复什么 | down **不能**恢复什么 |
+|---|---|---|---|
+| `1791217910_deleted_users.js` | `app.delete(collection)` 整表删 `users` | 集合定义（10 个字段、id `_pb_users_auth_`） | **记录全部丢失**（实测 1 → 0 条） |
+| `1791217910_deleted_operators.js` | 同上，删 `operators` | 集合定义（6 个字段、id `pbc_2338068732`） | **记录全部丢失**（实测 2 → 0 条） |
+| `1791206415_deleted_employees.js` | 删 `employees`（含先解 captures 引用） | 集合定义 | 记录全部丢失 |
+| 字段/规则/顺序类迁移（`updated_captures` 系） | 改字段与规则 | 取值、规则、字段顺序（R11/R13 已逐项对齐） | 被删列上的历史取值（如 `analyzed`、`created/updated` 时间戳） |
+
+原因：`app.delete(collection)` 在 sqlite 层是整表 DROP，表名从 `sqlite_master` 消失，down 只能按定义重建空表。
+需要保留数据时，只能在执行迁移前先导出记录。
 
 ## 采集端权限（安全影响见下）
 

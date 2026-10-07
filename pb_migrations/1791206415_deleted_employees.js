@@ -1,6 +1,10 @@
 /// <reference path="../pb_data/types.d.ts" />
 migrate((app) => {
-  // 幂等：集合不存在就跳过。
+// ⚠️ 回退边界：本迁移的 down **只重建集合定义，不恢复记录**。
+// up 的 app.delete(collection) 在 sqlite 层整表 DROP，记录已随表消失，down 无从还原。
+// 实测（R13-X2）：users 1 条 → down 后 0 条；operators 2 条 → down 后 0 条。
+// 需要保留数据时，只能在执行本迁移前先导出记录，不能靠 down 找回来。
+    // 幂等：集合不存在就跳过。
   // 本迁移曾叫 1791206104_deleted_employees.js（与 updated_captures 同时间戳，
   // 排序后先于它执行，导致全新部署时「captures 仍引用 employees」而失败）。
   // 改名后，已经应用过旧名字的库会把它当新迁移重跑 —— 此时集合早已删除，
