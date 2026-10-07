@@ -13,13 +13,32 @@ services:
     restart: unless-stopped
     # 加固（R19 P3）：PB 只监听 8090（非特权端口）、只写 /pb_data 与 /pb_migrations(ro)，
     # 不需要任何 Linux capability；也不该能通过 setuid 提权。
-    # 未做的两项及原因：`user:` 非 root 会因宿主挂载目录属主不是容器内 uid 而写不进 pb_data；
-    # `read_only: true` 需要 PB 在别处可写（SQLite 的 -wal/-shm、临时文件），
-    # 属未验证面，故不冒然开启（记为接受的风险，见 RUN.md「容器权限」小节）。
+    # `read_only: true` 已开启（R19 实测，见 RUN.md「容器权限」小节）：
+    # PB 的 SQLite `-wal`/`-shm` 就落在 /pb_data 内，除 /pb_data 外它不需要写任何路径 ——
+    # 只读根下启动、超管 upsert、POST /api/backups 建包、records 写入全部成功，
+    # 日志里 EROFS/PermissionDenied 命中 0（evidence/R19-LEAD-health-probe3.log PART B）。
+    # 唯一先决条件是 /pb_data 必须可写：把它一起挂 :ro 会立刻 Exited(1)（SQLITE_CANTOPEN）。
+    # 仍**没有**做的一项：`user:` 非 root —— 在 Linux 宿主上宿主挂载目录属主不是容器内 uid，
+    # 换成非 root 后 SQLite 写不进去。注意本机（macOS/OrbStack，/pb_data 为 virtiofs）容器内
+    # 不校验权限位，实测 --user 1000:1000 与 --user 65534:65534 都能 healthy 且写入成功，
+    # **所以别拿本机读数否证这条 Linux 侧的理由**（evidence/W19-C-*.log）。
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      # 显式给 size：不写就取宿主默认（实测 = VM 内存的 50%，本机 6.3G），换宿主即变（W19-B）
+      - /tmp:size=64m
+    logging:
+      # 显式声明轮转：不写就取宿主 daemon 默认（本机 json-file 20m×5），换 daemon 即变（W19-B）
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    environment:
+      # 显式声明时区：不写时容器内就是 UTC（与宿主 +07 不同），这里把它变成有意为之（W19-B）
+      TZ: UTC
     ports:
       # 直接对外暴露：原由 admin(nginx) 反代并注入汉化脚本，现改用源码汉化的二进制，
       # 注入层与其映射（集合名/字段名）一并移除，故不再需要反代。
@@ -65,7 +84,17 @@ services:
     # 实测只读下功能完全正常（首页与全部静态资源 200、健康检查通过）。
     read_only: true
     tmpfs:
-      - /tmp
+      # 显式给 size：不写就取宿主默认（实测 = VM 内存的 50%，本机 6.3G），换宿主即变（W19-B）
+      - /tmp:size=64m
+    logging:
+      # 显式声明轮转：不写就取宿主 daemon 默认（本机 json-file 20m×5），换 daemon 即变（W19-B）
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    environment:
+      # 显式声明时区：不写时容器内就是 UTC（与宿主 +07 不同），这里把它变成有意为之（W19-B）
+      TZ: UTC
     cap_drop:
       - ALL
     security_opt:
