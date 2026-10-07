@@ -129,6 +129,27 @@ const M = [
     apply: () => mutate('package.json', (t) => t.replace(/\s*"verify:size": "node scripts\/check-dist-size-budget\.mjs",/, '')) },
   { id: 'M18', target: '.github/workflows/ci.yml', expect: 'S26', desc: 'CI 里那一步体积判据被删（构建之后没人量产物）',
     apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/\s*- name: 产物体积与构成判据[^\n]*\n\s*run: npm run verify:size\n/, '\n')) },
+  // R22：S27 守的是「发布卫生闸门已接线且修复不许回退」。五个接线段各来一个变异体 ——
+  // 旧版闸门的六类漏检全部来自「按扩展名当二进制跳过」，所以回退这类修复必须报红。
+  { id: 'M19', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '闸门退回按扩展名白名单判二进制（.pem/.bak 里的凭据会被静默跳过）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace('const RULES = [', "const TEXT_EXT = ['.txt', '.md', '.js']\n\nconst RULES = [")) },
+  { id: 'M20', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '阻断线默认退回 P0（公网 IP / Tailscale / 超管口令命中不再阻断）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace("process.env.LEAK_BLOCK_AT || 'P1'", "process.env.LEAK_BLOCK_AT || 'P0'")) },
+  { id: 'M21', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '令牌前缀收窄（摘掉 sk-proj- 这类新式形态）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace("  'sk-proj-[A-Za-z0-9_-]{20,}',\n", '')) },
+  { id: 'M22', target: 'package.json', expect: 'S27', desc: '闸门的变异自检 npm script 被摘掉（写了没人跑）',
+    apply: () => mutate('package.json', (t) => t.replace(/\s*"verify:publish-selftest": "node scripts\/publish-leak-scan-selftest\.mjs",/, '')) },
+  { id: 'M23', target: '.github/workflows/ci.yml', expect: 'S27', desc: 'CI 里那一步发布卫生闸门被删（PUBLIC 仓库推送前没人扫）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/\s*- name: 发布卫生闸门[^\n]*\n\s*run: npm run verify:publish\n/, '\n')) },
+  { id: 'M24', target: '.github/workflows/ci.yml', expect: 'S28', desc: 'CI 里那一步仓库判据自检被删（判据的判别力在 CI 里没人守）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/\s*- name: 仓库判据的变异自检[^\n]*\n\s*run: npm run verify:selfcheck\n/, '\n')) },
+  { id: 'M25', target: 'scripts/verify-repo.mjs', expect: 'S28', desc: 'img-src 取值断言被摘（退回「img-src 这个词存在即通过」）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace(/const imgLoose = [^\n]*\n/, '')) },
+  // 【R22-21】CI 上真实发生过的两条：判据的绿/红取决于文件系统大小写。
+  { id: 'M26', target: '.github/PULL_REQUEST_TEMPLATE.md', expect: 'S27', desc: 'PR 模板被删（判据必须说「已跟踪但工作区缺失」，而不是静默读空串后放行）',
+    apply: () => { rmSync(join(WT, '.github/PULL_REQUEST_TEMPLATE.md'), { force: true }) } },
+  { id: 'M27', target: 'scripts/check-repo-standards.mjs', expect: 'S29', desc: '判据里新增一个大小写写错的读取点（macOS 上解析得到、Linux 上 ENOENT）',
+    apply: () => mutate('scripts/check-repo-standards.mjs', (t) => t + "\nconst _r22caseProbe = () => has('.github/issue_template/bug_report.yml')\n") },
 ]
 
 let caught = 0

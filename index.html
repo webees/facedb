@@ -3,25 +3,19 @@
   <head>
     <meta charset="UTF-8" />
 
-    <!-- 只约束「连接」这一个维度，不写 default-src，因此对脚本/样式/图片毫无影响。
-         connect-src 'self'   —— 经网关访问时走同源的 /api
-         connect-src *:8090   —— 直连访问时走 <主机>:8090（http/https）
-         connect-src ws://*:8090 / wss://*:8090 —— 同上，但 WebSocket 协议属独立方案，
-                                    *:8090 不覆盖它。当前并未使用 WebSocket
-                                   （PocketBase 的实时订阅走 SSE，属 http），
-                                   这里一并放行是为了将来加实时推送时不至于被静默拦住。
-         <%= PB_CONNECT_SRC %> —— 构建期按 PUBLIC_PB_URL 追加的额外源（见 rsbuild.config.ts）。
-                                   该变量留空时为空串，上面三条即全部规则。
-                                   必须由构建期产出：`*:8090` 只覆盖「恰好 8090 端口」，
-                                   而 PUBLIC_PB_URL 常写成 https://host（标准 443）——
-                                   实测那种地址会被本条 CSP 直接拦死（R12/W11 浏览器实测）。
-         这条规则同时堵住 Worker 作用域的外发：下面的脚本只 patch 了主线程的
-         fetch/XHR/sendBeacon，而 Worker 有独立全局作用域，patch 覆盖不到
-         （实测 Worker 内的请求确实会发出去）。CSP 是浏览器内核级约束，
-         与调用方在哪个线程、用什么 API 无关。 -->
+    <!-- 只约束「连接」与「图片」两个维度；不写 default-src，故对脚本/样式/字体毫无影响。
+         connect-src：'self'（网关同源 /api）· *:8090（直连）· ws://*:8090 / wss://*:8090
+           （WebSocket 属独立方案，*:8090 不覆盖；当前未使用，预留给实时推送）
+           · <%= PB_CONNECT_SRC %>（构建期按 PUBLIC_PB_URL 追加，留空即空串。必须由构建期
+           产出：*:8090 只覆盖 8090 端口，而 PUBLIC_PB_URL 常写成 https://host，实测被拦死）
+         img-src：图片通道的唯一防线 —— JS 侧只 patch 了 fetch/XHR/sendBeacon，
+           `new Image().src = …` 绕开它们（实测该通道确实出网）。界面不渲染 <img>，
+           同源 favicon 由 'self' 覆盖，预览走 <video>+blob:，收紧不损伤功能。
+         覆盖范围与仍敞开的三条通道（<script src> / <link rel=stylesheet> / <iframe src>）
+         见 RUN.md「遥测拦截：三层（内联脚本 / 运行期模块 / CSP）」。 -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="connect-src 'self' *:8090 ws://*:8090 wss://*:8090<%= PB_CONNECT_SRC %>"
+      content="connect-src 'self' *:8090 ws://*:8090 wss://*:8090<%= PB_CONNECT_SRC %>; img-src 'self' data: blob: *:8090<%= PB_CONNECT_SRC %>"
     />
 
     <script>

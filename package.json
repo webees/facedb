@@ -26,6 +26,7 @@
     "verify:selfcheck": "node scripts/verify-repo.mjs --self-check",
     "verify:types": "node scripts/typecheck-guard.mjs",
     "verify:publish": "node scripts/publish-leak-scan.mjs",
+    "verify:publish-selftest": "node scripts/publish-leak-scan-selftest.mjs",
     "verify:standards": "node scripts/check-repo-standards.mjs",
     "verify:hygiene": "node scripts/check-repo-config-hygiene.mjs",
     "verify:notices": "node scripts/check-third-party-notices.mjs",

@@ -340,7 +340,10 @@ blendshape 值飙升 → 用户越转头越被判「请睁开眼睛」→ **侧�
 ## 网络外发拦截（隐私）
 
 MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，域名形如
-`odml.pa.googleapis.com/v1/log`。**本项目处理人脸数据，不允许任何数据外发**，已拦截。
+`odml.pa.googleapis.com/v1/log`。**本项目处理人脸数据，不允许任何数据外发**，已拦截 ——
+准确口径是：**连接类 API（fetch / XHR / sendBeacon / WS / SSE）与图片通道已关**；
+`<script src>`、`<link rel=stylesheet>`、`<iframe src>` 三条仍敞开（已登记，见
+「遥测拦截：三层（内联脚本 / 运行期模块 / CSP）」一节）。
 
 拦截分两层，互为保险：
 
@@ -859,7 +862,7 @@ if (vw <= 0 || f.faceWidthPx < vw * MIN_FACE_RATIO) return no('hintTooFar')
 | 层 | 位置 | 拦什么 | 覆盖范围 |
 |---|---|---|---|
 | ① 内联拦截 | `index.html` 里的内联脚本 | 加载期的 fetch / XHR / sendBeacon | 主线程（早于任何模块执行） |
-| ② **CSP** | `index.html` 的 `meta` | 主线程外发，以及 `blob:` 脚本创建的 Worker 内的外发 | 主线程 + `blob:` Worker；**不含同源脚本 Worker**（见下） |
+| ② **CSP** | `index.html` 的 `meta` | 连接类 API（fetch / XHR / WS / SSE / beacon）与 `<img src>`；`<script src>` / `<link rel=stylesheet>` / `<iframe src>` **不拦** | 主线程 + `blob:`/`data:` Worker；**不含同源脚本 Worker**（见下） |
 | ③ JS 补丁 | `src/lib/block-telemetry.ts` | 运行期的 fetch / XHR / sendBeacon | 主线程 |
 
 **② 的边界（第 47 轮实测，此前这一格写错了）**：meta CSP 拦得住主线程，也拦得住
@@ -1481,46 +1484,79 @@ PocketBase 的字段约束在 API 上的显示与**实际生效值**不完全一
 **一般教训**：任何在模块顶层执行的、对用户输入的解码/解析，都必须容错 ——
 顶层抛错没有上层可以兜，直接表现为白屏。
 
-## 遥测拦截：两层，且必须包含 CSP
+## 遥测拦截：三层（内联脚本 / 运行期模块 / CSP），且必须包含 CSP
 
 MediaPipe（TFLite Tasks）会向 `odml.pa.googleapis.com` 上报使用数据。本项目处理人脸数据，
-任何外发都必须拦住。现有两层：
+任何外发都必须拦住 —— 但要说清「拦住了哪几类」。现有三层：
 
 | 层 | 位置 | 覆盖范围 |
 |---|---|---|
-| JS patch | `index.html` 内联 + `src/lib/block-telemetry.ts` | **仅主线程**的 fetch / XHR / sendBeacon |
-| **CSP** | `index.html` 的 `<meta http-equiv="Content-Security-Policy">` | **所有线程、所有连接类 API** |
+| 内联 JS patch | `index.html` 的 `<script>`（解析期即生效） | 仅主线程的 fetch / XHR / sendBeacon |
+| 运行期 JS patch | `src/lib/block-telemetry.ts` | 同上，但装/撤更细（可被后续代码撤销） |
+| **CSP** | `index.html` 的 `<meta http-equiv="Content-Security-Policy">` | **主线程 + `blob:`/`data:` Worker 的连接类 API**（fetch / XHR / WS / SSE / beacon） |
 
 ### ⚠️ 为什么 CSP 不可省略
 
-**Worker 有独立的全局作用域，主线程的 patch 覆盖不到它。** 实测：
+**Worker 有独立的全局作用域，主线程的 patch 覆盖不到它。** 实测（第 47 轮，服务器侧命中计数）：
 
 ```
-主线程 fetch → 被 JS patch 拦住（0ms 返回 200 {}）
-Worker  fetch → 真的发出去了，远端返回 403     ← JS patch 无效
+主线程 fetch        → 被 JS patch 拦住（伪造 200 {}），服务器命中 0
+blob: Worker fetch  → 被 CSP 拦住，服务器命中 0
+同源脚本 Worker fetch → 真的发出去，服务器命中 1   ← JS patch 与文档 CSP 都无效
 ```
 
-加上 CSP 后：
+CSP 生效时控制台报的是 CSP 违规原文：
 
 ```
-Worker fetch → TypeError: Failed to fetch
-控制台报告：Connecting to 'https://odml.pa.googleapis.com/v1/log' violates
-           the following Content Security Policy directive: "connect-src"
+Connecting to 'https://odml.pa.googleapis.com/v1/log' violates
+the following Content Security Policy directive:
+"connect-src 'self' *:8090 ws://*:8090 wss://*:8090"
 ```
 
-CSP 是浏览器内核级约束，与「在哪个线程、用哪个 API」无关，比 patch 可靠。
+**注意判据形式**：只看「请求失败」无法区分「被拦」与「真的出网后失败」——上面两条结论
+都是靠**一次性服务器上的命中计数**（被拦 0 / 放行 1）加上「去掉 CSP 的阴性对照」才成立的。
+早期版本用一条 403 报文当证据，而那条报文来自主线程，不能支撑 Worker 的机制结论（第 47 轮更正）。
+
+CSP 是浏览器内核级约束，与调用方用什么 API 无关，比 patch 可靠 —— 但**与线程类型有关**：
+同源脚本 Worker 的策略取自 worker 脚本自身的响应头，**不继承本文档的 CSP**。本工程不创建
+任何 Worker（全仓 grep 0 命中），故该差异当前不构成敞口；将来若要让 Worker 承载外发，只有两条路：
+用 `blob:` 脚本，或给 worker 脚本加 CSP 响应头。
 
 ### 这条 CSP 的范围被刻意压到最小
 
 ```html
-<meta http-equiv="Content-Security-Policy" content="connect-src 'self' *:8090" />
+<meta http-equiv="Content-Security-Policy"
+      content="connect-src 'self' *:8090 ws://*:8090 wss://*:8090<%= PB_CONNECT_SRC %>;
+               img-src 'self' data: blob: *:8090<%= PB_CONNECT_SRC %>" />
 ```
 
-- **不写 `default-src`** —— 因此对脚本、样式、图片、字体**没有任何限制**，改动面最小
+- **不写 `default-src`** —— 因此对脚本、样式、字体**没有任何限制**（`default-src` 会接管
+  `script-src`，可能拦掉内联防线本身与 wasm 加载）
 - `'self'` —— 经网关访问时的同源 `/api`
 - `*:8090` —— 直连访问时的 `<主机>:8090`
+- `ws://*:8090` / `wss://*:8090` —— WebSocket 属独立方案，`*:8090` 不覆盖它（当前未使用，
+  预留给将来的实时推送）
+- `<%= PB_CONNECT_SRC %>` —— 构建期按 `PUBLIC_PB_URL` 追加的额外源（见 `rsbuild.config.ts`）
+- `img-src` —— 图片通道的唯一防线（见下）。界面不渲染任何 `<img>`，同源 favicon 由 `'self'` 覆盖，
+  摄像头预览走 `<video>` + `blob:`，故收紧不损伤功能
 
 **唯一需要注意的**：若用 `PUBLIC_PB_URL` 指向别的地址，必须同步放行，否则会被 CSP 挡住。
+
+### 仍敞开的三条通道（已知敞口，第 47 轮实测）
+
+JS 的两层 patch 只管 `fetch` / `XHR` / `sendBeacon`，CSP 又只声明了 `connect-src` 与 `img-src`，
+于是下列三条**在实测中确实出网**（三层齐备页与生产页都有服务器命中）：
+
+| 通道 | 状态 | 为什么不能现在关 |
+|---|---|---|
+| `<img src>` | ✅ 已由 `img-src` 关闭 | ——（加这一条是 1 行改动、零功能影响） |
+| `<script src>` | ❌ 敞开 | 要关必须写 `script-src`，会连带管住内联防线与 wasm 加载，风险大于收益 |
+| `<link rel=stylesheet>` | ❌ 敞开 | 同上（`style-src` 会管住内联样式） |
+| `<iframe src>` | ❌ 敞开 | `frame-src` 可关，但当前无跨源嵌入需求，未做 |
+
+也就是说：**「任何外发都必须拦住」这句话只对连接类 API + 图片成立**，其余三条通道是已登记的敞口。
+仓库自检里有一条断言盯着 `img-src` 是否还在、`default-src` 是否没被引入、以及 `src/` 里是否
+新出现 `<img>`（出现了就要同步本文档与 CSP）。
 
 ### 已实测不受影响
 
@@ -1836,7 +1872,7 @@ compose 里 `command: ["--migrationsDir=/pb_migrations"]` 首参以 `-` 开头�
 
 ### ⚠️ 由此产生的静默空操作陷阱（P2，R20 实测）
 
-**`docker run <img> migrate up` 与 `docker compose run --rm pocketbase migrate up` 打印「没有可应用的新迁移。」且 exit 0，
+**`docker run <镜像名> migrate up` 与 `docker compose run --rm pocketbase migrate up` 打印「没有可应用的新迁移。」且 exit 0，
 而宿主挂载的数据目录里 0 个文件、没有 `data.db`。**
 
 两条命令走的都是第 38 行那条分支，`--dir` 一个字都没传，于是数据目录落到了**镜像内的

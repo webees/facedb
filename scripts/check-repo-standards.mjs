@@ -19,6 +19,23 @@ const read = (rel) => readFileSync(R(rel), 'utf8')
 const has = (rel) => existsSync(R(rel))
 const sh = (cmd, args, opts = {}) => spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', ...opts })
 const tracked = sh('git', ['ls-files']).stdout.split('\n').filter(Boolean)
+
+// 【R22-21】大小写不敏感文件系统造成的「本地绿、CI 红」：
+// `.github/pull_request_template.md` 在 macOS（APFS 默认不敏感）上会把**实际跟踪的**
+// `.github/PULL_REQUEST_TEMPLATE.md` 解析出来，在 Linux CI 上却是 ENOENT —— 判据的绿/红
+// 取决于跑在哪种文件系统上，与工程内容无关。规矩：仓库内路径一律用 `git ls-files` 的
+// **字面结果**解析（git 的输出与文件系统大小写无关）；大小写变体多于一个直接判失败
+// （歧义比缺失更危险：读哪一个取决于文件系统）。
+const resolveTracked = (rel) => {
+  const want = rel.toLowerCase()
+  const hits = tracked.filter((t) => t.toLowerCase() === want)
+  if (hits.length === 0) return { path: null, reason: `没有跟踪这个路径（大小写敏感查找）：${rel}` }
+  if (hits.length > 1) return { path: null, reason: `有 ${hits.length} 个大小写变体，读哪个取决于文件系统：${hits.join(' / ')}` }
+  if (!existsSync(R(hits[0]))) return { path: null, reason: `已跟踪但工作区缺失：${hits[0]}` }
+  return { path: hits[0], reason: null }
+}
+const isDirPath = (rel) => tracked.some((t) => t.startsWith(rel.replace(/\/$/, '') + '/'))
+
 const lines = []
 let pass = 0
 let fail = 0
@@ -513,6 +530,148 @@ add({ id: 'S26', covers: ['scripts/lib/checker.mjs', 'scripts/check-dist-size-bu
     if (!new RegExp(`^\\s*run:\\s*npm run ${s}\\s*$`, 'm').test(ci)) miss.push(`CI 没有以独立步骤跑：npm run ${s}`)
   }
   return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '3 个新文件 · 自定位（SIZE_ROOT / --dist）· 5 个阈值常量 · npm script 与 CI 步骤接线 · 阈值来源写明 · 未塞进 verify:all' }
+} })
+
+// ── S27 发布卫生闸门与它的变异自检的接线（R22） ──────────────────────
+// 为什么单独立一条：`webees/facedb` 是 PUBLIC 仓库，闸门漏检 = 不可逆泄露。R14REV 复核席实测
+// 旧版闸门对 6 类真实泄露形态全部 exit 0 命中 0（.bak 等非白名单扩展名被当二进制跳过、
+// .pem 私钥同样跳过、新式令牌前缀无规则、>2MB 文本跳过、被忽略的 .env 不在扫描面、
+// 默认阻断线只到 P0）。这里守的是**修复不许被改回去** + **接线是真的**：
+// 内容判二进制（不许退回扩展名白名单）、未判定必须 exit 2、阻断线默认 P1、
+// 令牌前缀齐、npm script 与 CI 以独立步骤跑闸门与电池。
+add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak-scan-selftest.mjs'], name: '发布卫生闸门已接线且修复不许回退（内容判二进制 / 未判定 exit 2 / 阻断线 P1 / 令牌前缀 / 电池接线）', run() {
+  const GATE = 'scripts/publish-leak-scan.mjs'
+  const MUT = 'scripts/publish-leak-scan-selftest.mjs'
+  const miss = []
+  for (const f of [GATE, MUT]) if (!has(f)) miss.push(`${f} 不存在`)
+  const g = has(GATE) ? read(GATE) : ''
+  const m = has(MUT) ? read(MUT) : ''
+  if (g) {
+    if (!/process\.env\.LEAK_SCAN_ROOT/.test(g) || !/import\.meta\.dirname/.test(g)) miss.push('闸门没有 LEAK_SCAN_ROOT / import.meta.dirname 自定位通道')
+    // 注意：闸门里允许出现 `/Users/<name>/` —— 那是 LOCAL-PATH 规则自身的正则文本（不是硬编码根）。
+    // 这里禁的是「拿本机绝对路径当扫描根」，即 /Users/<真用户名>/<真实目录>。
+    if (/\/Users\/[A-Za-z0-9_.-]+\/(Desktop|__GITHUB__|Projects|Documents)/.test(g)) miss.push('闸门里出现硬编码的本机绝对路径')
+    // 修复不许回退：内容判二进制（NUL 字节），且不许再出现扩展名白名单
+    if (!/subarray\(0,\s*8192\)\.includes\(0\)/.test(g)) miss.push('闸门没有按内容判二进制（前 8KB NUL 字节）—— 会退回按扩展名跳过 .pem/.bak')
+    if (/TEXT_EXT/.test(g)) miss.push('闸门里又出现了扩展名白名单 TEXT_EXT（R22 已删）')
+    if (/st\.size > 2 \* 1024 \* 1024/.test(g)) miss.push('闸门又按 2MB 静默跳过（R22 已改为全量扫 + 超上限判未判定）')
+    if (!/LEAK_MAX_BYTES/.test(g)) miss.push('闸门没有 LEAK_MAX_BYTES 扫描上限通道')
+    // 未判定语义：读不到 / 超上限 ⇒ exit 2，绝不判通过
+    if (!/voided/.test(g) || !/process\.exit\(2\)/.test(g)) miss.push('闸门没有未判定（voided → exit 2）语义')
+    // 阻断线默认 P1（PUBLIC 仓库）
+    if (!/process\.env\.LEAK_BLOCK_AT \|\| 'P1'/.test(g)) miss.push('闸门默认阻断线不是 P1')
+    // 令牌前缀扩面：必须在 **TOKEN_PATTERNS 数组内**逐条存在。
+    // 只对整份源码做 includes 会被文件头注释满足（M21 实测：摘掉数组里的 sk-proj- 仍然判绿）。
+    const tp = (g.match(/const TOKEN_PATTERNS = \[([\s\S]*?)\n\]/) || [])[1] || ''
+    if (!tp) miss.push('闸门里找不到 TOKEN_PATTERNS 数组')
+    for (const k of ['github_pat_', 'glpat-', 'xox[baprs]-', 'AKIA', 'ASIA', 'sk-proj-', 'sk-ant-', 'AIza', 'ya29', 'hf_', 'npm_', 'dckr_pat_', 'pypi-', 'SG\\', 'eyJ']) {
+      if (!tp.includes(k)) miss.push(`TOKEN_PATTERNS 缺 ${k}`)
+    }
+    // 被忽略的敏感文件必须可见（提示区）
+    if (!/'--others', '--ignored', '--exclude-standard'/.test(g) || !/SENSITIVE_IGNORED/.test(g)) miss.push('闸门没有「被 .gitignore 忽略的敏感命名文件」提示区')
+    // 自匹配防护（R13-F9 自阻断教训）：私钥头不许以完整字面量出现。
+    // 注意：断言自己也不能写这个字面量 —— 否则 check-repo-standards.mjs 本身
+    // 就会被发布闸门判成 P0 PRIVATEKEY（R22 实测踩中：闸门自扫 exit 1）。
+    const SSH_HDR = ['-----BEGIN', 'OPENSSH PRIVATE KEY-----'].join(' ')
+    if (g.includes(SSH_HDR)) miss.push('闸门源码里出现完整 OPENSSH 私钥头字面量（会自阻断）')
+  }
+  if (m) {
+    // 电池的覆盖面：13 阳性 + 2 阴性 + 未判定语义 + 提示区 + 自扫
+    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'n1 ', 'n2 ', 'u1 ', 'i1 ', 's1 自扫真实仓库']) {
+      if (!m.includes(k)) miss.push(`电池缺场景 ${k.trim()}`)
+    }
+    if (!/process\.exit\(1\)/.test(m)) miss.push('电池失败时不 exit 1（会把失败读成通过）')
+  }
+  // 接线：npm script + CI 独立步骤（includes 会让「摘掉真判据只留自检」也判绿）
+  const pkg = has('package.json') ? read('package.json') : ''
+  for (const s of ['verify:publish', 'verify:publish-selftest']) {
+    if (!new RegExp(`"${s}":`).test(pkg)) miss.push(`package.json 缺 script ${s}`)
+  }
+  if (/verify:all[^\n]*verify:publish-selftest/.test(pkg)) miss.push('电池被塞进 verify:all（应只在 CI 的判据自检 job 里跑）')
+  const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
+  for (const s of ['verify:publish', 'verify:publish-selftest']) {
+    if (!new RegExp(`^\\s*run:\\s*npm run ${s}\\s*$`, 'm').test(ci)) miss.push(`CI 没有以独立步骤跑：npm run ${s}`)
+  }
+  // 文档口径：PR 模板与 CI 步骤名必须写明真实阻断线（R14REV must_fix：旧文案声称覆盖「地址/本地路径」而默认只挡 P0）
+  // 读取点必须大小写敏感解析 —— 否则该断言在 macOS 上恒绿、在 Linux CI 上恒红（R22-21）。
+  const prHit = resolveTracked('.github/pull_request_template.md')
+  if (!prHit.path) miss.push(`PR 模板：${prHit.reason}`)
+  const pr = prHit.path ? read(prHit.path) : ''
+  if (prHit.path && (!/verify:publish/.test(pr) || !/阻断/.test(pr))) miss.push('PR 模板没有写明发布卫生闸门的真实阻断线')
+  if (!/P1/.test(ci.split('\n').find((l) => /name: 发布卫生闸门/.test(l)) || '')) miss.push('CI 步骤名没有写明阻断线（P0/P1）')
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（禁扩展名白名单回退）· 未判定 exit 2 · 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 13+2+2+1 场景 · npm/CI 接线 · 文档口径一致' }
+} })
+
+// ── S28 仓库判据的变异自检接线与判别力（R22） ──────────────────────────
+// 为什么单独立一条：`scripts/verify-repo.mjs` 是仓库结构面与 CSP 面的判据，它的判别力来自
+// `--self-check` 的 20 个变异体（M1–M15 + 零样本 4 条 + 越界 2 条）。R22 实测：这个自检
+// **从未进 CI**（package.json 有 `verify:selfcheck`，但 CI 里一次都没跑）—— 于是「判据被无声
+// 削弱」的路径正坐在 CI 绿灯的背面。这与 R22REV 报的「只验 img-src 这个词存在」是同一层级的
+// 两个问题：一个是断言太弱，一个是守断言的东西没接线。这里守三件事：
+//  ① 接线是真（npm script 指向真文件、CI 有独立步骤、自检失败必须非零退出）；
+//  ② 取值断言与前提锁的关键实现不许被摘（摘掉就退回「词存在即通过」与「只扫 src/」）；
+//  ③ M12–M15 四个变异体不许消失（判别力的载体）。
+add({ id: 'S28', covers: ['scripts/verify-repo.mjs', 'package.json', '.github/workflows/ci.yml'], name: '仓库判据的变异自检已接线且判别力不许回退（img-src 取值 / 前提锁扩面 / 注释遮蔽 / M12–M15）', run() {
+  const V = 'scripts/verify-repo.mjs'
+  const miss = []
+  if (!has(V)) miss.push(`${V} 不存在`)
+  const v = has(V) ? read(V) : ''
+  const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
+  let pkg = {}
+  try { pkg = has('package.json') ? JSON.parse(read('package.json')) : {} } catch { miss.push('package.json 不是合法 JSON') }
+  const script = (pkg.scripts || {})['verify:selfcheck'] || ''
+  if (!script) miss.push('package.json 缺少 verify:selfcheck script')
+  else {
+    if (!script.includes('verify-repo.mjs')) miss.push(`verify:selfcheck 指向的不是仓库判据：${script}`)
+    if (!script.includes('--self-check')) miss.push(`verify:selfcheck 丢了 --self-check（等于只跑一遍判据，判别力为 0）：${script}`)
+  }
+  // CI 步骤用**行级正则**匹配，不用 includes：includes 会被注释或别的脚本里的同名字符串满足
+  // （S25/M16c 与 S27/M21 都踩过同型坑）。
+  if (!/^\s*run:\s*npm run verify:selfcheck\s*$/m.test(ci)) miss.push('CI 没有以独立步骤跑 npm run verify:selfcheck（判据的判别力在 CI 里无人守）')
+  if (v) {
+    // 必须锚在**声明行**上：只测 /imgLoose/ 会被「声明被摘、引用还在」的变异体骗过（M25 实测：
+    // 摘掉 `const imgLoose = …` 后文件里仍有 `imgLoose.length === 0`，断言照旧为真 → 变异体漏检）。
+    if (!/const imgLoose = /.test(v)) miss.push('缺少 img-src 取值断言（imgLoose 声明）—— 收紧可被无声改回全开')
+    if (!/img-src 取值落回收紧集合/.test(v)) miss.push('img-src 取值断言的标题被改名或摘掉')
+    if (!v.includes("['src', 'public', 'docs', 'index.html']")) miss.push('前提锁没有扩到 src/public/docs/index.html')
+    if (!v.includes('/<img[\\s/>]/i')) miss.push('前提锁丢了大小写不敏感的 <img 匹配')
+    if (!v.includes('/<!--[\\s\\S]*?-->/g')) miss.push('缺少注释遮蔽 —— 说明文字里的 <img> 会被自己的检查判成标签')
+    if (!/样式里没有跨源 url\(\) 图片引用/.test(v)) miss.push('缺少样式跨源图片断言的标题')
+    for (const m of ['M12', 'M13', 'M14', 'M15']) if (!v.includes(`name: '${m} `)) miss.push(`变异体 ${m} 被摘掉`)
+    if (!/process\.exit\(bad \? 1 : 0\)/.test(v)) miss.push('自检失败没有非零退出（自检本身变成恒真）')
+  }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '3 个文件 · npm script 指向真文件且带 --self-check · CI 独立步骤 · 取值断言 + 前提锁扩面 + 注释遮蔽 · M12–M15 · 自检非零退出' }
+} })
+
+// 【R22-21】判据自己不许依赖大小写不敏感文件系统：本文件与仓库判据里每一处
+// 「按字面量读仓库内文件」的点，都必须能在 **git ls-files 的字面结果**里唯一命中且真实存在。
+// 触发这件事的真实事故：S27 读 `.github/pull_request_template.md`（小写），而仓库实际跟踪的是
+// `.github/PULL_REQUEST_TEMPLATE.md`（大写）⇒ 本地 macOS 全绿、CI（Ubuntu）判红，且红的原因
+// 与工程无关、纯属路径大小写。变异体 M27 守着这条断言。
+add({ id: 'S29', covers: ['scripts/check-repo-standards.mjs', 'scripts/verify-repo.mjs'], name: '判据里的仓库内读取点都按大小写敏感语义唯一命中（禁止依赖不敏感文件系统）', run() {
+  const SCAN = ['scripts/check-repo-standards.mjs', 'scripts/verify-repo.mjs', 'scripts/publish-leak-scan.mjs', 'scripts/publish-leak-scan-selftest.mjs']
+  // 只扫**读取点**的字面量参数：散文、变异体夹具路径、目录名都不是读取点，扫进来只会造噪音
+  // （干跑实测：不限定调用点时 117 条里 24 条是噪音；限定 read/has/existsSync 后只剩目录那一类）。
+  // 参数必须与 `git ls-files` 的字面结果**逐字符相等**：大小写差一个字母时 macOS 读得到、
+  // Linux 读不到 —— 那正是「本地绿、CI 红」的来源，必须在这里判死。
+  // 例外：`resolveTracked(…)` 自身就是「按大小写不敏感解析但要求唯一命中」的合法读取器，不扫它的参数。
+  const RE = /\b(?:read|has|readFileSync|existsSync)\(\s*'([^'\n]+)'/g
+  const miss = []
+  let scanned = 0
+  for (const f of SCAN) {
+    if (!has(f)) { miss.push(`${f} 不存在`); continue }
+    for (const m of read(f).matchAll(RE)) {
+      const lit = m[1]
+      if (isDirPath(lit)) continue          // 目录不是 git 跟踪的对象，另有断言守目录内容
+      scanned++
+      if (tracked.includes(lit)) continue
+      const variants = tracked.filter((t) => t.toLowerCase() === lit.toLowerCase())
+      miss.push(variants.length
+        ? `${f} 的读取点 ${lit} 大小写与跟踪名不一致（实际是 ${variants[0]}）—— macOS 上能读到、Linux CI 上 ENOENT`
+        : `${f} 的读取点 ${lit} 没有跟踪这个路径`)
+    }
+  }
+  return { ok: miss.length === 0, detail: miss.length ? miss.slice(0, 4).join('；') : `${SCAN.length} 个判据脚本 · ${scanned} 个读取点全部与跟踪名逐字符一致` }
 } })
 
 for (const c of CHECKS) {
