@@ -18,7 +18,18 @@ let executed = 0
 let skippedByDesign = 0 // 环境所限（例如二进制按设计不入库）：只提示，不计入失败
 let undetermined = 0 // 样本为 0：覆盖面不完整，不得判通过
 
+// 每组「尝试」了多少条断言（check 与 notExecuted 各算一次）。
+// 用「尝试」而不是「通过」：样本为 0 时有意跳过不算被掏空。
+let attempted = 0
+let currentSection = null
+const sectionChecks = {}
+function bump() {
+  attempted++
+  if (currentSection) sectionChecks[currentSection] = (sectionChecks[currentSection] ?? 0) + 1
+}
+
 function check(name, ok, detail = '') {
+  bump()
   executed++
   results.push({ name, ok, detail })
   const mark = ok ? '✅' : '❌'
@@ -29,6 +40,7 @@ function notExecuted(name, why, byDesign = false) {
   // 未执行分两类，语义不同：
   //   · 样本为 0（目录里没有可检对象、清单为空…）→ 覆盖面不完整 → 整体 exit 2，绝不判通过
   //   · 环境所限（二进制按设计不入库、node_modules 未安装…）→ 只提示，不影响退出码
+  bump()
   if (byDesign) skippedByDesign++
   else undetermined++
   results.push({ name, ok: null, detail: why, byDesign })
@@ -40,10 +52,14 @@ function notExecuted(name, why, byDesign = false) {
 const ranSections = []
 function section(name, fn) {
   ranSections.push(name)
+  currentSection = name
+  sectionChecks[name] = 0
   try {
     fn()
   } catch (e) {
     check(`${name} 执行未抛异常`, false, `抛出 ${e.constructor.name}: ${e.message}`)
+  } finally {
+    currentSection = null
   }
 }
 
@@ -357,6 +373,17 @@ function runSelfCheck() {
 // 漏调一个 section 时 `executed` 只会变小、不会变成 0，所以单看 `executed === 0`
 // 发现不了「整段检查消失」（复核席 P3 实测：空 ROOT 仍执行 1 项）。
 const EXPECTED_SECTIONS = ['public/ 资源指纹', 'pb_migrations', 'i18n', 'pb-bin 指纹', 'RUN.md 常量']
+// 每个检查组至少要**尝试**这么多条断言（硬编码字面量：故意不写成「取当前值」或从数组推导）。
+// 掏空某个组的函数体 → 该组尝试条数掉到 0 → 下面立刻报红。
+const SECTION_MIN_CHECKS = {
+  'public/ 资源指纹': 3,
+  'pb_migrations': 5,
+  'i18n': 1,
+  'pb-bin 指纹': 3,
+  'RUN.md 常量': 3,
+}
+// 全局下限：新增/删除检查必须显式改这个字面量（改它是一次可被 review 的改动）
+const MIN_TOTAL_CHECKS = 15
 
 if (process.argv.includes('--self-check')) {
   runSelfCheck()
@@ -366,6 +393,28 @@ if (process.argv.includes('--self-check')) {
   section('i18n', checkI18n)
   section('pb-bin 指纹', checkPbbin)
   section('RUN.md 常量', checkRunmdConstants)
+
+  // 条数类断言：不依赖 ranSections / EXPECTED_SECTIONS 的一致性，
+  // 所以「把调用和清单一起删」也躲不过它。
+  const countsText = Object.keys(SECTION_MIN_CHECKS).map((n) => `${n}=${sectionChecks[n] ?? 0}`).join(' ')
+  if (undetermined > 0) {
+    notExecuted('每个检查组都跑了足够多的断言', '存在样本为 0 的检查组，条数不足以判定覆盖完整性')
+    notExecuted('断言总数不低于硬编码下限', '同上')
+  } else {
+    const thin = Object.entries(SECTION_MIN_CHECKS).filter(([n, min]) => (sectionChecks[n] ?? 0) < min)
+    check(
+      '每个检查组都跑了足够多的断言',
+      thin.length === 0,
+      thin.length === 0
+        ? `各组尝试条数 ${countsText}`
+        : `断言条数不足：${thin.map(([n, min]) => `${n} 只有 ${sectionChecks[n] ?? 0} 条（至少 ${min}）`).join('；')}；各组尝试条数 ${countsText}`,
+    )
+    check(
+      '断言总数不低于硬编码下限',
+      attempted >= MIN_TOTAL_CHECKS,
+      `实际尝试 ${attempted} 条，下限 ${MIN_TOTAL_CHECKS} 条`,
+    )
+  }
 
   const missingSections = EXPECTED_SECTIONS.filter((n) => !ranSections.includes(n))
   const extraSections = ranSections.filter((n) => !EXPECTED_SECTIONS.includes(n))
