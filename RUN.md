@@ -431,7 +431,7 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 > **体积口径（必须连口径一起写）**：上表用的是 `docker images` 报的 `Size`（arm64、OrbStack、2026-10-07 实测）。
 > 本仓库历史上出现过三个互不相等的数字 —— RUN.md 的 80MB、`Dockerfile` 头注的 ~68MB、R19 复核的 82.3MB —— 它们**不是同一个口径**：
 > `docker images` 的 `Size`、`docker image inspect .Size`（本镜像 17.7MiB = 18583983 字节）、镜像内 `du -sb /public`（27.4MB）、
-> 以及「基座 + 产物」相加，四者各不相同；连**架构**也要确认：本机 `joseluisq/static-web-server:2-alpine` 就是 arm64/linux（`docker image inspect -f '{{.Architecture}}/{{.Os}}'`），`docker images` 报 58.6MB，`docker image inspect -f '{{.Size}}'` 报 8,190,662 字节。
+> 以及「基座 + 产物」相加，四者各不相同。连**架构**也要确认：本机 `joseluisq/static-web-server:2-alpine` 就是 arm64/linux（`docker image inspect -f '{{.Architecture}}/{{.Os}}'`），`docker images` 报 58.6MB，`docker image inspect -f '{{.Size}}'` 报 8,190,662 字节。
 > **结论：任何体积数字必须连口径、架构与测量命令一起写**，否则无法比较 —— 这正是 R19 报「三处数字不一致」的根因。
 > 当前读数（2026-10-07，镜像 `webees-facedb-web:latest`）：`docker images` = 66.6MB，其中产物（镜像内 `/public`）= 27.4MB。
 > 产物有两种口径，同一份产物差 546 字节：`find /public -type f -exec cat {} + | wc -c` = **27,408,705**（文件字节和）、
@@ -1350,19 +1350,6 @@ rm -rf dist && npm run build && ls dist/static/js/index.*.js
 
 复核方法：直接取容器实供的 bundle 并 grep（`curl -s http://127.0.0.1:3000/static/js/<bundle>.js`），不看源码重建产物。回滚标签 `webees-facedb-web:rollback-r13` 指向修复前那份镜像。
 
-**教训（R14-X5 实测）**：**运行中的容器不等于源码重建产物**。当时宿主机是 arm64，含最新修复的 `webees-facedb-web:latest` 实测为 amd64/linux 无法运行，容器仍在跑 2026-10-06 19:55 的 arm64 备份镜像，3000 端口实供 `index.7211a9f260.js`（不含 `linkTooLong` 闸门、无 `\p{Cc}` 过滤）——**前端源码已修、线上仍是旧行为**。故指纹比对必须取**容器实供产物**，取源码重建产物会得出与线上面貌不符的结论。
-
-**已修复（2026-10-07 07:52）**：`docker compose build web`（宿主 arm64，未覆盖 platform）重建镜像 `webees-facedb-web:latest`（arch=arm64/linux，id `d18adec39ded`），`docker compose up -d web` 重建容器后：
-
-| 项 | 修复前 | 修复后 |
-|---|---|---|
-| 实供 bundle | `/static/js/index.7211a9f260.js` | `/static/js/index.d522b5dd29.js`（34621 字节） |
-| `linkTooLong` 闸门 | 无 | 有（grep 命中 1） |
-| `\p{Cc}` 控制符过滤 | 无（仍是旧的 `\u0000-\u001f` 字面量） | 有（grep 命中 1；旧形态命中 0） |
-| 容器健康 | healthy | healthy |
-
-复核方法：直接对容器实供的 bundle 取回并 grep（`curl -s http://127.0.0.1:3000/static/js/<bundle>.js`），不看源码重建产物。回滚标签 `webees-facedb-web:rollback-r13` 指向修复前那份镜像。
-
 **注**：纯注释改动不影响产物 hash（注释在构建时被剥离），
 所以 hash 相同不代表源码逐字节相同，但能保证**运行时行为**一致 —— 这正是要防的。
 
@@ -1589,6 +1576,25 @@ Cloudflare 隧道 → caddy:80 → facedb-web:3000 / facedb-api:8090（edge-net 
 `created/updated` 会落在 `session_id/meta` 之前。已加收尾迁移
 `1791244016_reorder_captures_fields.js` 统一重排。
 
+⚠️ **「字段顺序」在本工程有两个口径，取值不同，说话必须写明是哪个**（R18 实测）：
+
+| 口径 | 读法 | `captures` 的取值 |
+|---|---|---|
+| **逻辑顺序**（Admin UI / API 权威） | `_collections.fields` 这个 JSON 数组 | `id,note,photos,video,session_id,meta,created,updated` |
+| **物理列序**（SQLite 实际列） | `PRAGMA table_info(captures)` | `id,meta,session_id,photos,created,updated,video,note` |
+
+两者在「生产库」与「空库全量重放」之间**各自都是 0 漂移**，所以「迁移不引入顺序漂移」在两个口径下都成立；
+但任何不写明口径的「字段顺序稳定」都会被两个口径的读者读成互相矛盾。
+
+**③ 改字段位置的迁移，down 必须把字段搬回 up 之前的索引。**
+
+`FieldsList.addAt(index, f)` 的语义是「**按 id 移除旧字段，再插入到 index**」，不是就地替换。
+`1791210403_updated_captures.js` 的 up 把 `video` 从索引 5 搬到 2，down 却写成 `addAt(2, …)` ——
+此时 `video` 已在索引 2，等于**空操作**，回滚后字段序停在 `id,session_id,video,meta,analyzed,photos`（R18 修复，提交 `231c656`）。
+
+判据：全链逐步 up / 逐步 down 走查，要求 `D(m) === U(N-m)`（回退 m 步 == 只应用了 `N-m` 步的那一态）。
+修复前 18 个可比步 EQUAL 16 / DIFF 2，修复后 **EQUAL 18 / DIFF 0**；阴性对照（换回修复前的迁移文件）复现同样的 2 步漂移。
+
 **结论**：**改动 schema 后，不能只验证本地 —— 必须另起一个空库重放一次全部迁移**
 （下面这条命令即可）。
 
@@ -1598,8 +1604,19 @@ mkdir -p /tmp/migcheck && docker run --rm \
   -v /tmp/migcheck:/pb_data \
   -v "$PWD/pb_migrations:/pb_migrations" \
   --entrypoint /usr/local/bin/pocketbase \
-  webees-facedb-pocketbase:0.28.1-zh serve --dir=/pb_data --migrationsDir=/pb_migrations --http=127.0.0.1:18090
+  webees-facedb-pocketbase:0.28.1-zh migrate up --dir=/pb_data --migrationsDir=/pb_migrations
 ```
+
+**为什么是 `migrate up` 而不是 `serve`**：`serve` 会启动服务并**自动应用全部迁移且不退出**，脚本里会一直挂着；
+要「应用一次就返回」必须用 `migrate up`。三个实测坑（R18 踩过，务必遵守）：
+
+| 坑 | 实测表现 | 正确做法 |
+|---|---|---|
+| `migrate up <n>` 的 `<n>` 不生效 | `migrate up 1` 一次应用了**全部 19 条**，打印 19 行 `Applied` | 要「只应用前 k 条」的中间态，只能把前 k 个迁移文件拷进暂存目录再对全新数据目录 up（**前缀暂存法**） |
+| `migrate down` 没有 stdin 时**退出码仍是 0** | 只打印 `The command has been cancelled`，零 schema 变化，却看着像成功 | 判成功必须 grep 输出里的 `Reverted <文件名>`，不能只看退出码 |
+| down 体抛错时**退出码仍是 0** | PB 打印 `Error` 行但继续执行后续迁移，退出码 0 | 同上：判失败必须 grep `Error`，CI 只判退出码会漏掉回滚失败 |
+
+另：运行中的 PB 有 schema 内存缓存，**行为探针判不了 CLI 迁移是否生效** —— 要读 schema 就直连 `data.db`（`sqlite3 'file:…?mode=ro'`）。
 
 **③ 改名后的迁移必须幂等。**
 
@@ -1698,13 +1715,17 @@ PocketBase 自动生成了 `1791217910_deleted_users.js` / `1791217910_deleted_o
 
 | 迁移 | up 做什么 | down 能恢复什么 | down **不能**恢复什么 |
 |---|---|---|---|
-| `1791217910_deleted_users.js` | `app.delete(collection)` 整表删 `users` | 集合定义（10 个字段、id `_pb_users_auth_`） | **记录全部丢失**（实测 1 → 0 条） |
-| `1791217910_deleted_operators.js` | 同上，删 `operators` | 集合定义（6 个字段、id `pbc_2338068732`） | **记录全部丢失**（实测 2 → 0 条） |
-| `1791206415_deleted_employees.js` | 删 `employees`（含先解 captures 引用） | 集合定义 | 记录全部丢失 |
+| `1791217910_deleted_users.js` | `app.delete(collection)` 整表删 `users` | 集合定义（10 个字段、id `_pb_users_auth_`） | **记录全部丢失**（down 只重建空表 → **down 后必为 0 行**；历史样本值 1 → 0） |
+| `1791217910_deleted_operators.js` | 同上，删 `operators` | 集合定义（6 个字段、id `pbc_2338068732`） | **记录全部丢失**（同上；历史样本值 2 → 0） |
+| `1791206415_deleted_employees.js` | 删 `employees`（含先解 captures 引用） | 集合定义（5 个字段、id `pbc_3735627160`） | 记录全部丢失（**同机制推论**：down 只重建空表；本链无任何迁移向 `employees` 写记录，故无正数样本可测） |
 | 字段/规则/顺序类迁移（`updated_captures` 系） | 改字段与规则 | 取值、规则、字段顺序（R11/R13 已逐项对齐） | 被删列上的历史取值（如 `analyzed`、`created/updated` 时间戳） |
 
 原因：`app.delete(collection)` 在 sqlite 层是整表 DROP，表名从 `sqlite_master` 消失，down 只能按定义重建空表。
 需要保留数据时，只能在执行迁移前先导出记录。
+
+⚠️ **「有 down」不等于「数据可回滚」**：上表三行的 down 都能把**集合定义**恢复出来，但**一行记录都恢复不了**。
+R18-E2 实测（`down 1` 后读表）：`users` 重建为 `fields=10 id=_pb_users_auth_`、行数 0；`operators` 重建为 `f=6 id=pbc_2338068732`、行数 0；
+`employees` 重建为 `f=5 id=pbc_3735627160`、行数 0。判断一条迁移能不能回滚，必须分开问「schema 能不能回滚」与「数据能不能回滚」。
 
 ## 采集端权限（安全影响见下）
 
@@ -1721,7 +1742,27 @@ PocketBase 自动生成了 `1791217910_deleted_users.js` / `1791217910_deleted_o
 `_superusers` / `captures`。删除依据见上节。）
 
 ⚠️ 这意味着**知道地址的人即可上传文件**。请只在受控内网部署。
-需要恢复登录时：删除 `*_open_capture_access.js` 并重启容器（两个 migration 内均含回滚逻辑）。
+
+需要恢复登录时：用 `pocketbase migrate down` 回退 `1791152276_open_capture_access.js` 与
+`1791152718_employee_optional.js`（**两个迁移文件必须还在 `pb_migrations/` 里**）。
+
+⚠️ **不要靠「删文件 + 重启容器」**：R18-E2 实测，把 `*_open_capture_access.js` 删掉后重启容器，
+health 返回 200、`captures.createRule` **仍是空串**、`_migrations` 里的记录仍在，**没有任何回退发生** ——
+迁移只在启动时「应用尚未应用的」，**不会因为文件消失而回退已应用的**。
+
+实测有效的做法（前缀暂存法，让 `down 1` 恰好落在目标迁移上）：
+
+```bash
+# 只投放排到目标为止的迁移文件，使 down 1 恰好回退它
+mkdir -p /tmp/migdown && docker run --rm -i \
+  -v /tmp/migdown:/pb_data -v /tmp/migstage:/pb_migrations \
+  --entrypoint /usr/local/bin/pocketbase \
+  webees-facedb-pocketbase:0.28.1-zh migrate down 1 --dir=/pb_data --migrationsDir=/pb_migrations
+# 必须看到 Reverted 1791152276_open_capture_access.js，否则等于什么都没回退
+```
+
+回退后 `captures.createRule` 与 `employees.listRule/viewRule` 都从 `""` 变回 `@request.auth.id != ""`，
+再 `migrate up` 又能变回 `""`（双向可逆，实测通过）。
 
 
 ## ⚠️ 汉化流程会抹掉非汉化补丁（必读）
