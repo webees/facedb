@@ -1872,7 +1872,7 @@ compose 里 `command: ["--migrationsDir=/pb_migrations"]` 首参以 `-` 开头�
 
 ### ⚠️ 由此产生的静默空操作陷阱（P2，R20 实测）
 
-**`docker run <img> migrate up` 与 `docker compose run --rm pocketbase migrate up` 打印「没有可应用的新迁移。」且 exit 0，
+**`docker run <镜像名> migrate up` 与 `docker compose run --rm pocketbase migrate up` 打印「没有可应用的新迁移。」且 exit 0，
 而宿主挂载的数据目录里 0 个文件、没有 `data.db`。**
 
 两条命令走的都是第 38 行那条分支，`--dir` 一个字都没传，于是数据目录落到了**镜像内的

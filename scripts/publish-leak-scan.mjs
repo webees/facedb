@@ -188,8 +188,11 @@ for (const sev of ORDER) {
 }
 console.log()
 if (ignoredSensitive.length) {
-  console.log('  ℹ️ 被 .gitignore 忽略的敏感命名文件 ' + ignoredSensitive.length + ' 个（当前不会被推送；若 `git add -f` 或改忽略规则就会）：')
-  for (const f of ignoredSensitive.slice(0, 12)) console.log('      ' + f)
+  // R22REV 的 low：这里**只报路径、不读内容**（它们不在扫描面内）。措辞必须说清楚，
+  // 否则读者会把「提示区列出来了」理解为「内容已检查且干净」。
+  console.log('  ℹ️ 被 .gitignore 忽略的敏感命名文件 ' + ignoredSensitive.length + ' 个（未扫描其内容，仅列路径）：')
+  for (const f of ignoredSensitive.slice(0, 12)) console.log('      ' + f + '  [未扫描内容]')
+  console.log('      这些文件当前不会被推送；但 `git add -f`、改忽略规则、或它们被外部工具改写后入库都会漏掉内容检查。')
   console.log()
 }
 

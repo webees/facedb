@@ -315,25 +315,59 @@ function checkCsp() {
   check('CSP 声明了 connect-src', /\bconnect-src\b/.test(csp), csp.slice(0, 80))
   check('CSP 声明了 img-src（图片通道唯一防线）', /\bimg-src\b/.test(csp),
     /\bimg-src\b/.test(csp) ? csp.match(/img-src[^;]*/)[0] : '缺失：new Image().src 可绕过 JS 两层防线出网')
+  // 光有 img-src 这个词不够 —— 取值必须是收紧集合。R22REV 实测：把 img-src 改成
+  // `*` 或 `*:*` 后，只验「词存在」的断言仍然 exit 0（整条收紧被无声改回全开）。
+  const imgVal = ((csp.match(/(?:^|;)\s*img-src\s+([^;]*)/) || [])[1] || '').trim()
+  const imgToks = imgVal.split(/\s+/).filter(Boolean)
+  const imgLoose = imgToks.filter((t) => t === '*' || t === '*:*' || /^(https?|ws|wss):$/.test(t))
+  check('CSP 的 img-src 取值落回收紧集合（不得裸 * / *:* / 宽泛 scheme）',
+    imgVal.length > 0 && imgLoose.length === 0 && imgToks.includes("'self'"),
+    imgVal.length === 0 ? 'img-src 没有取值'
+      : imgLoose.length ? `出现宽泛取值：${imgLoose.join(' ')}`
+        : imgToks.includes("'self'") ? imgVal : `缺少 'self'：${imgVal}`)
   check('CSP 没有 default-src（否则会接管 script-src）', !/\bdefault-src\b/.test(csp),
     /\bdefault-src\b/.test(csp) ? '出现 default-src —— 可能拦掉内联防线与 wasm 加载' : '无 default-src')
 
   // 前提锁：界面不渲染 <img> 是「img-src 可以收紧到 self/data/blob/:8090」的前提。
   // 若将来真的加了 <img>（尤其是跨源图片），这条会红，提示维护者同步 CSP 与文档。
+  // R22REV 实测的四条漏检（已全部覆盖）：根 index.html 里的 <img>、.css/.vue 样式里的
+  // 跨源 background-image url()、大写 <IMG SRC=、跨行 <img\n src=。
   const imgTags = []
+  const styleUrls = []
+  const SCAN_EXT = /\.(vue|ts|js|mjs|cjs|html|css)$/
+  const scanFile = (p) => {
+    const rel = relative(ROOT, p)
+    const src = readFileSync(p, 'utf8')
+    // 注释里的字面量不算（R22 自己踩过：index.html 的说明文字里写了「界面不渲染 <img>」，
+    // 按行直扫会把注释判成标签 —— 断言必须锚在语义位置，不能锚在「文件里有没有这个词」）。
+    const masked = src
+      .replace(/<!--[\s\S]*?-->/g, (s) => s.replace(/[^\n]/g, ' '))
+      .replace(/\/\*[\s\S]*?\*\//g, (s) => s.replace(/[^\n]/g, ' '))
+      .replace(/(^|[^:'"\\])\/\/[^\n]*/g, (s) => s.replace(/[^\n]/g, ' '))
+    masked.split('\n').forEach((line, i) => {
+      if (/<img[\s/>]/i.test(line)) imgTags.push(`${rel}:${i + 1}: ${line.trim().slice(0, 60)}`)
+      if (/\.(css|vue)$/.test(rel) && /url\(\s*['"]?(?:https?:)?\/\//i.test(line)) {
+        styleUrls.push(`${rel}:${i + 1}: ${line.trim().slice(0, 60)}`)
+      }
+    })
+  }
   const walk = (dir) => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const p = join(dir, e.name)
-      if (e.isDirectory()) walk(p)
-      else if (/\.(vue|ts|js|html)$/.test(e.name)) {
-        const rel = relative(ROOT, p)
-        for (const line of readFileSync(p, 'utf8').split('\n')) if (/<img[\s>]/.test(line)) imgTags.push(`${rel}: ${line.trim().slice(0, 60)}`)
-      }
+      if (e.isDirectory()) { if (!/^(node_modules|dist|\.git|pb_data)$/.test(e.name)) walk(p) }
+      else if (SCAN_EXT.test(e.name)) scanFile(p)
     }
   }
-  if (existsSync(join(ROOT, 'src'))) walk(join(ROOT, 'src'))
-  check('前提：src/ 里没有任何 <img> 标签（img-src 收紧不损伤功能）', imgTags.length === 0,
+  for (const rel of ['src', 'public', 'docs', 'index.html']) {
+    const p = join(ROOT, rel)
+    if (!existsSync(p)) continue
+    if (statSync(p).isDirectory()) walk(p)
+    else scanFile(p)
+  }
+  check('前提：源码里没有任何 <img> 标签（img-src 收紧不损伤功能）', imgTags.length === 0,
     imgTags.length ? `发现 ${imgTags.length} 处，需同步 CSP 与 RUN.md：${imgTags.slice(0, 3).join(' ｜ ')}` : '0 处')
+  check('前提：样式里没有跨源 url() 图片引用（img-src 同样管它）', styleUrls.length === 0,
+    styleUrls.length ? `发现 ${styleUrls.length} 处：${styleUrls.slice(0, 3).join(' ｜ ')}` : '0 处')
 
   // 文档一致性：仍敞开的三条通道与 img-src 必须写进 RUN.md
   const doc = read('RUN.md')
@@ -418,10 +452,19 @@ function runSelfCheck() {
       mutate: () => put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090" />\n') },
     { name: 'M9 CSP 里引入了 default-src', expectFail: ['CSP 没有 default-src（否则会接管 script-src）'],
       mutate: () => put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="default-src \'self\'; connect-src \'self\' *:8090; img-src \'self\' data: blob: *:8090" />\n') },
-    { name: 'M10 src/ 里新出现 <img> 标签（前提失效）', expectFail: ['前提：src/ 里没有任何 <img> 标签（img-src 收紧不损伤功能）'],
+    { name: 'M10 src/ 里新出现 <img> 标签（前提失效）', expectFail: ['前提：源码里没有任何 <img> 标签（img-src 收紧不损伤功能）'],
       mutate: () => put('src/components/CaptureView.vue', 'const HINT_BUF = 1\n<img src="https://cdn.example.com/x.png" />\n') },
     { name: 'M11 迁移里写回英文内建邮件模板', expectFail: ['迁移里没有 PB 内建的英文邮件模板（zh 版应为中文）'],
       mutate: () => put('pb_migrations/1799900001_en_tpl.js', 'migrate((app) => {\n  const c = { "subject": "Login from a new location" }\n}, (app) => {\n  const p = 1\n})\n') },
+    // R22REV 实测的四条漏检（当时断言全绿 exit 0）→ 补成变异体，锁住不再回退。
+    { name: 'M12 img-src 被放开成裸 *（收紧被无声改回全开）', expectFail: ['CSP 的 img-src 取值落回收紧集合（不得裸 * / *:* / 宽泛 scheme）'],
+      mutate: () => put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090; img-src *" />\n') },
+    { name: 'M13 大写 <IMG SRC=> 注入 .vue', expectFail: ['前提：源码里没有任何 <img> 标签（img-src 收紧不损伤功能）'],
+      mutate: () => put('src/components/CaptureView.vue', 'const HINT_BUF = 1\n<IMG SRC="https://cdn.example.com/x.png" />\n') },
+    { name: 'M14 根 index.html 里注入 <img>（原先只扫 src/）', expectFail: ['前提：源码里没有任何 <img> 标签（img-src 收紧不损伤功能）'],
+      mutate: () => put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090; img-src \'self\' data: blob: *:8090" />\n<img src="https://cdn.example.com/x.png" />\n') },
+    { name: 'M15 样式里注入跨源 background-image url()', expectFail: ['前提：样式里没有跨源 url() 图片引用（img-src 同样管它）'],
+      mutate: () => put('src/style.css', '.a { background-image: url("https://cdn.example.com/a.png"); }\n') },
     // 零样本与崩溃面（R14-C 报的 P1/P2）—— 这些场景过去一律 exit 0
     { name: 'ZS1 迁移目录为空 → 样本为 0 判未判定', expectCode: 2, expectFail: [], mutate: () => rmSync(join(tmp, 'pb_migrations/1759600000_created.js'), { force: true }) },
     { name: 'ZS2 pb-bin/SHA256SUMS 为空 → 样本为 0 判未判定', expectCode: 2, expectFail: [], mutate: () => put('pb-bin/SHA256SUMS', '# 空清单\n') },
@@ -465,10 +508,10 @@ const SECTION_MIN_CHECKS = {
   'i18n': 1,
   'pb-bin 指纹': 3,
   'RUN.md 常量': 3,
-  'CSP 覆盖范围': 5,
+  'CSP 覆盖范围': 7,
 }
 // 全局下限：新增/删除检查必须显式改这个字面量（改它是一次可被 review 的改动）
-const MIN_TOTAL_CHECKS = 21
+const MIN_TOTAL_CHECKS = 23
 
 if (process.argv.includes('--self-check')) {
   runSelfCheck()
