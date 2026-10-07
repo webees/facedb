@@ -1272,7 +1272,20 @@ rm -rf dist && npm run build && ls dist/static/js/index.*.js
 
 脚本：运行根的 `check-image-freshness.mjs` 已把上面两步做成一次比对。
 
-**已验证（2026-10-07 更正）**：源码重建产物与源码指纹一致（`c743010d27`），但**运行中的容器不等于源码重建产物** —— R14-X5 实测：宿主机是 arm64，含最新修复的 `webees-facedb-web:latest` 实测为 amd64/linux 无法运行，3000 端口实供 `index.7211a9f260.js`（不含 `linkTooLong` 闸门、无 `\p{Cc}` 过滤）。指纹比对必须取**容器实供产物**，取源码重建产物会得出与线上面貌不符的结论。
+**已验证（2026-10-07 更正并修复）**：源码重建产物与源码指纹一致（`c743010d27`）。
+
+**教训（R14-X5 实测）**：**运行中的容器不等于源码重建产物**。当时宿主机是 arm64，含最新修复的 `webees-facedb-web:latest` 实测为 amd64/linux 无法运行，容器仍在跑 2026-10-06 19:55 的 arm64 备份镜像，3000 端口实供 `index.7211a9f260.js`（不含 `linkTooLong` 闸门、无 `\p{Cc}` 过滤）——**前端源码已修、线上仍是旧行为**。故指纹比对必须取**容器实供产物**，取源码重建产物会得出与线上面貌不符的结论。
+
+**已修复（2026-10-07 07:52）**：`docker compose build web`（宿主 arm64，未覆盖 platform）重建镜像 `webees-facedb-web:latest`（arch=arm64/linux，id `d18adec39ded`），`docker compose up -d web` 重建容器后：
+
+| 项 | 修复前 | 修复后 |
+|---|---|---|
+| 实供 bundle | `/static/js/index.7211a9f260.js` | `/static/js/index.d522b5dd29.js`（34621 字节） |
+| `linkTooLong` 闸门 | 无 | 有（grep 命中 1） |
+| `\p{Cc}` 控制符过滤 | 无（仍是旧的 `\u0000-\u001f` 字面量） | 有（grep 命中 1；旧形态命中 0） |
+| 容器健康 | healthy | healthy |
+
+复核方法：直接对容器实供的 bundle 取回并 grep（`curl -s http://127.0.0.1:3000/static/js/<bundle>.js`），不看源码重建产物。回滚标签 `webees-facedb-web:rollback-r13` 指向修复前那份镜像。
 
 **注**：纯注释改动不影响产物 hash（注释在构建时被剥离），
 所以 hash 相同不代表源码逐字节相同，但能保证**运行时行为**一致 —— 这正是要防的。
