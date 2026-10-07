@@ -57,6 +57,19 @@ npm run build       # 生产构建必须成功
 docker compose config -q   # 若改动 docker-compose.yml
 ```
 
+下面几条是**仓库标准件**与**配置卫生**的机检，CI 会逐步执行；改了 README、治理文件、
+`.github/`、`scripts/`、`.editorconfig`、`.gitattributes` 或哈希资产时请一并跑：
+
+```bash
+npm run verify:standards    # 24 项：文档 / 治理文件 / 工作流 / 脚本之间的交叉核对
+npm run verify:hygiene      # 5 项：零命中规则、哈希资产保护、行尾口径
+npm run verify:standards-selftest   # 判据自身的变异自检（15 个变异体必须全部被抓到）
+npm run verify:all          # 上面除变异自检外的全部（本地一键）
+```
+
+被判据挡下来时，先看它打印的失败原因，不要直接改判据：断言都锚在仓库自己声明的规范
+或生态硬约束上，报红通常意味着**代码与文档已经不一致**。
+
 改动 `pb_migrations/` 时，必须实测「空库重放」与「`down` 回退」；改动阈值或约束时，
 必须附**边界两侧**的实测值（例如 200 通过 / 201 拒绝），不能只测中间值。
 

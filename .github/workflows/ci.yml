@@ -35,6 +35,12 @@ jobs:
       - name: 发布卫生闸门（凭据 / 地址 / 本地路径 / 媒体文件）
         run: npm run verify:publish
 
+      - name: 仓库标准件判据（README / 治理文件 / .github / scripts 交叉核对）
+        run: npm run verify:standards
+
+      - name: 配置卫生判据（零命中规则 / 哈希资产保护 / 行尾口径）
+        run: npm run verify:hygiene
+
       - name: 类型检查（样本数 + 阳性对照，防零样本假通过）
         run: npm run verify:types
 
@@ -46,3 +52,22 @@ jobs:
 
       - name: Docker Compose 配置校验
         run: docker compose config -q
+
+  standards-selftest:
+    name: 判据自检（变异体必须全部被抓到）
+    runs-on: ubuntu-latest
+    # 每个变异体都会完整跑一遍判据（含 vue-tsc），单个 job 放不下 15 分钟的墙。
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 判据自身的变异自检（15 个变异体必须全部被抓到，且未变异的副本全绿）
+        run: npm run verify:standards-selftest
