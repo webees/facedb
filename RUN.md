@@ -8,7 +8,10 @@
 1. `cp .env.example .env`（**无需填写 `PUBLIC_PB_URL`**：留空时前端在运行时按页面地址推导后端地址；只有后端不在同主机的 8090 端口时才需要填绝对地址）
 2. `docker compose up -d --build` → 采集端 `http://localhost:3000`，后台 `http://localhost:8090/_/`
    **两个容器**：`web`（前端，生产构建，:3000）/ `pocketbase`（后端，直接暴露 :8090）。
-   `pocketbase` 用**本地构建镜像** `webees-facedb-pocketbase:0.28.1-zh`（`pb-bin/Dockerfile`：
+   `pocketbase` 用**本地构建镜像**（**部署态**：`webees-facedb-pocketbase:0.40.4-zh`，生产容器 `facedb-pocketbase`
+   正在跑这一版；**仓库态**：见 `docker-compose.yml` 的 `image:` 标签 —— 工作区已改成 `0.40.4-zh`，
+   但该文件与 `pb-bin/*` 仍是**未提交的在途改动**，`HEAD` 上还写着 `0.28.1-zh`。判「仓库态是什么」
+   永远读文件，不要读本文）（`pb-bin/Dockerfile`：
    官方运行时 + COPY 进源码汉化后交叉编译的 `pb-bin/pocketbase-zh-linux-<arch>`（arm64 / amd64 各一份，
    由 `ARG TARGETARCH` 经中间 stage 选一），构建期逐项断言 sha256 / md5 / size / ELF `e_machine` 命中白名单、
    且 `TARGETARCH` 在 `PB_ALLOWED_ARCH` 内，任一不符即 `REFUSED:` 构建失败）。
@@ -482,7 +485,13 @@ docker image inspect -f '{{.Size}}' <镜像>   # 字节
 |---|---|
 | `node:22-slim` | `sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392` |
 | `joseluisq/static-web-server:2-alpine` | `sha256:c6704bc8f1fe05378d91c3288495ce2e0131cf31cf8956f117cb1c7d83c49c31` |
-| `ghcr.io/muchobien/pocketbase:0.28.1` | `sha256:c11d164acd6266e31d2b5e88160b7bb3902c472c1ec90e0f403f56e802f23935` |
+| `ghcr.io/muchobien/pocketbase:0.40.4`（**部署态**，2026-10-08 起） | `sha256:9390b7b63ce114dbab577be72e6ef75f718a19083866607fcbdd1b915632b943` |
+| `ghcr.io/muchobien/pocketbase:0.28.1`（历史，R19 及以前） | `sha256:c11d164acd6266e31d2b5e88160b7bb3902c472c1ec90e0f403f56e802f23935` |
+
+> 两行都列出来是因为**「仓库态」这一列必须是文件实况**：`pb-bin/Dockerfile` 的 `FROM` 在工作区里
+> 已改成 `0.40.4@sha256:9390b7b6…`，但那是**未提交的在途改动**，`HEAD`（`868da0d`）上仍是
+> `0.28.1@sha256:c11d164a…`。要判断当前仓库态，`grep '^FROM' pb-bin/Dockerfile` 与
+> `git show HEAD:pb-bin/Dockerfile | grep '^FROM'` 各读一次，别拿本文当结论。
 
 为什么：标签可被上游改指，同一个 Dockerfile 会构建出不同的镜像；digest 固定后同样的 Dockerfile
 在同一平台上产出同样的镜像。**digest 取的是 manifest list（index）**，所以多架构仍然可用
@@ -923,12 +932,14 @@ s = s.replaceAll('{' + k + '}', String(v))          // ❌
 
 ## 后台汉化覆盖率（第 71 轮实测）
 
-打开后台 6 个主要界面逐个抽取英文短语，再按「是否该翻译」分类。结果：
+打开后台 6 个主要界面逐个抽取英文短语，再按「是否该翻译」分类。结果（**版本号按基座陈述**：
+下表读数取自 0.28.1 时代，0.40.4 下同一位置显示的是 `PocketBase v0.40.4` —— 版本号来自运行时而非文案，
+汉化管不到，结论不变）：
 
 | 界面 | 未翻译英文 | 是否问题 |
 |---|---|---|
-| 集合列表 / 记录列表 / 新建记录 / 集合编辑 | `captures`、记录 id、`PocketBase v0.28.1` | 否 —— 集合名、数据、版本号 |
-| 设置 | `PocketBase v0.28.1` | 否 |
+| 集合列表 / 记录列表 / 新建记录 / 集合编辑 | `captures`、记录 id、`PocketBase v0.28.1`（部署态现为 `PocketBase v0.40.4`） | 否 —— 集合名、数据、版本号 |
+| 设置 | `PocketBase v0.28.1`（部署态现为 `PocketBase v0.40.4`） | 否 |
 | 日志 | 见下 | **曾是问题** |
 
 ### 日志页曾漏翻 8 项
@@ -1540,13 +1551,20 @@ Cloudflare 隧道 → caddy:80 → facedb-web:3000 / facedb-api:8090（edge-net 
 **刻意没做的两项，及原因**：
 
 - **不以非 root 运行 PB（理由只在 Linux 宿主成立）**：`pb_data` 是宿主目录挂载，其属主不是容器内的普通 uid；改成非 root 后 SQLite 写不进去。要么改宿主属主（会动到真实采集数据的所有权），要么给容器内 uid 对齐 —— 两者都不值得为这点收益冒险。**接受的风险**：容器内进程以 root 运行（但无 capability、无法提权、只挂载两个目录）。⚠️ 本机（macOS + OrbStack，`/pb_data` 是 virtiofs）容器内**不校验权限位**，实测 `--user 1000:1000` 与 `--user 65534:65534` 都能 healthy 且真实写入成功 —— 这是**宿主差异**，不是这条理由错了，别拿本机读数否证它。
-- ~~**PB 不开只读根**~~ → **R19 已改为开启**。原先的理由（「PB 除 `/pb_data` 外还要写 `-wal`/`-shm` 与临时文件，位置未逐项验证」）经实测**不成立**：`-wal`/`-shm` 就在 `/pb_data` 内。只读根下 PB 启动、超管 upsert、`POST /api/backups` 建包（217778 B）、`POST /api/collections/captures/records` 全部成功，日志 EROFS/PermissionDenied 命中 0。唯一先决条件是 `/pb_data` 可写（把它也挂 `:ro` → `Exited(1)`，`unable to open database file: out of memory (14)`）。
+- ~~**PB 不开只读根**~~ → **R19 已改为开启**。原先的理由（「PB 除 `/pb_data` 外还要写 `-wal`/`-shm` 与临时文件，位置未逐项验证」）经实测**不成立**：`-wal`/`-shm` 就在 `/pb_data` 内。只读根下 PB 启动、超管 upsert、`POST /api/backups` 建包、`POST /api/collections/captures/records` 全部成功，日志 EROFS/PermissionDenied 命中 0。唯一先决条件是 `/pb_data` 可写（把它也挂 `:ro` → `Exited(1)`，`unable to open database file: out of memory (14)`）。
+  **备份包体积按基座陈述**（同一个 `POST /api/backups`，两个基座产物大小不同，别当基座无关常量用）：
+  0.28.1 实测 **217778 B**（R19 取证时点 2026-10-07）、**217818 B**（R19 成对验收的空数据目录定点复核，
+  同为 2026-10-07）；0.40.4 实测 **226434 B**（R20 取证时点 2026-10-08，`evidence/W20-B-07-hardening-sessionid.log`，
+  `204` 后列出的产物 `pb_backup_acme_20261007174944.zip` = 226434 B）。差异来自新基座多出的两条内置迁移与
+  `.notify/` 等目录进了包，**不是**回归。
 
 **验证方式**（每条都有实测值，不是「应该可以」）：`<运行根>/lib/r14-r19-hardening-verify.mjs` 共 **22 项** —— 运行与健康态、`docker inspect` 的 `CapDrop`/`SecurityOpt`/`ReadonlyRootfs`（**两容器都要求 `true`**，与 compose 声明逐条对齐）、容器内 `CapEff`、PB 的 tmpfs `size=64m` 与 `TZ=UTC` 与日志轮转 `20m×5` 运行值、PB 根不可写而 `/pb_data` 仍可写、首页与 wasm 与 SPA 回退三个真 HTTP 200、容器内 `/public` 与根目录写入确实被拒、超管登录 + `captures` 记录数不变（加固不伤数据）、含 U+0085 的 `session_id` 仍被 400 拒（迁移约束仍在）。结果见 `evidence/R14-r19-hardening.log`。
 
 **声明面机检**（静态、随时可跑、已进回归）：`<运行根>/lib/check-compose-hardening.mjs` A1–A9 —— 只读根 / tmpfs size / logging 轮转 / TZ / `cap_drop`+`no-new-privileges` 在**两个服务上都要有**，外加两条反向断言（每个服务块必须出现全部必需键；挂载点必须真实存在）与「RUN.md 不得再把『PB 不开只读根』写成现状」。四关探针 9/9（值级变异 5 个各只打红对应断言、块级变异 2 个、零样本防线 exit 2），见 `evidence/R19-compose-judge-probe.log`。
 
-**成对验收**（「PB 开只读根」这件事本身的证据）：同一份 `docker-compose.yml`，`read_only` 关/开各起一次真实栈（派生文件只改项目名/容器名/端口/数据目录，diff 逐行留档），**19/19 通过** —— 关时根可写、开时 `Read-only file system`；两种情况下 `/api/health` 200、超管认证拿到 token、带鉴权 `GET captures` 200（迁移已应用）、`POST /api/backups` 204 且列得出 `.zip` 产物、web 首页 200、PB 日志 EROFS/PermissionDenied 命中 0、`CapEff` 均为 0。另在**全新空数据目录**上定点复核「备份产物确实由这一次 POST 产生」（POST 前 0 个、POST 后恰 1 个 217818 B 的 zip），见 `evidence/R19-LEAD-compose-ab.log`。
+**成对验收**（「PB 开只读根」这件事本身的证据）：同一份 `docker-compose.yml`，`read_only` 关/开各起一次真实栈（派生文件只改项目名/容器名/端口/数据目录，diff 逐行留档），**19/19 通过** —— 关时根可写、开时 `Read-only file system`；两种情况下 `/api/health` 200、超管认证拿到 token、带鉴权 `GET captures` 200（迁移已应用）、`POST /api/backups` 204 且列得出 `.zip` 产物、web 首页 200、PB 日志 EROFS/PermissionDenied 命中 0、`CapEff` 均为 0。另在**全新空数据目录**上定点复核「备份产物确实由这一次 POST 产生」（POST 前 0 个、POST 后恰 1 个 217818 B 的 zip，**0.28.1 口径**），见 `evidence/R19-LEAD-compose-ab.log`。
+
+**加固在 0.40.4 上原样成立（R20 实测）**：同一份 `docker-compose.yml`（`read_only: true` + `tmpfs /tmp:size=64m` + `TZ=UTC` + `cap_drop:[ALL]` + `no-new-privileges`）对**运行中的 0.40.4 栈**重跑 `<运行根>/lib/r14-r19-hardening-verify.mjs`，**22/22 通过**（`evidence/R20REV-04-hardening.log`）。基座升级没有让任何一条加固断言失效。
 
 **部署状态**：本机栈已于 2026-10-07 23:39（+07）用 `docker compose up -d --no-build` 重建，声明与运行值一致（见 `evidence/R19-deploy.log`）。
 
@@ -1651,11 +1669,14 @@ sqlite3 'file:<data.db>?mode=ro' \
 
 ```bash
 # 用空库验证迁移链（不动现有数据）
+# 镜像标签按基座写：部署态是 0.40.4-zh；仓库态读 docker-compose.yml 的 image: 标签。
+# --entrypoint 必须显式给绝对路径，否则 0.40.x 起会走 entrypoint.sh 的「普通词」分支而不带 --dir
+# （静默空操作陷阱，见下节「基座 entrypoint 与数据目录路径（0.40.4 起）」）。
 mkdir -p /tmp/migcheck && docker run --rm \
   -v /tmp/migcheck:/pb_data \
   -v "$PWD/pb_migrations:/pb_migrations" \
   --entrypoint /usr/local/bin/pocketbase \
-  webees-facedb-pocketbase:0.28.1-zh migrate up --dir=/pb_data --migrationsDir=/pb_migrations
+  webees-facedb-pocketbase:0.40.4-zh migrate up --dir=/pb_data --migrationsDir=/pb_migrations
 ```
 
 **为什么是 `migrate up` 而不是 `serve`**：`serve` 会启动服务并**自动应用全部迁移且不退出**，脚本里会一直挂着；
@@ -1663,16 +1684,134 @@ mkdir -p /tmp/migcheck && docker run --rm \
 
 | 坑 | 实测表现 | 正确做法 |
 |---|---|---|
-| `migrate up <n>` 的 `<n>` 不生效 | `migrate up 1` 一次应用了**全部 19 条**，打印 19 行 `Applied` | 要「只应用前 k 条」的中间态，只能把前 k 个迁移文件拷进暂存目录再对全新数据目录 up（**前缀暂存法**） |
+| `migrate up <n>` 的 `<n>` 不生效 | `migrate up 1` 一次应用了**全部 19 条工程迁移**（`pb_migrations/*.js` 共 19 个），打印 19 行 `Applied` | 要「只应用前 k 条」的中间态，只能把前 k 个迁移文件拷进暂存目录再对全新数据目录 up（**前缀暂存法**） |
 | `migrate down` 没有 stdin 时**退出码仍是 0** | 只打印 `The command has been cancelled`，零 schema 变化，却看着像成功 | 判成功必须 grep 输出里的 `Reverted <文件名>`，不能只看退出码 |
 | down 体抛错时**退出码仍是 0** | PB 打印 `Error` 行但继续执行后续迁移，退出码 0 | 同上：判失败必须 grep `Error`，CI 只判退出码会漏掉回滚失败 |
 
 另：运行中的 PB 有 schema 内存缓存，**行为探针判不了 CLI 迁移是否生效** —— 要读 schema 就直连 `data.db`（`sqlite3 'file:…?mode=ro'`）。
 
+**⚠️ `_migrations` 行数是基座相关的，不是常量**（R20 实测，三个读数各有口径）：
+
+| 口径 | 0.28.1 | 0.40.4 |
+|---|---|---|
+| 空目录全量 `migrate up` | **25 行** | **27 行** = 19 条工程迁移 + 8 条内置 `.go` |
+| 生产 `pb_data/data.db`（0.28.1 时代创建） | 28 行 | 28 行（**未被重放**，逐字节不变） |
+
+0.40.4 比 0.28.1 多出的两条内置迁移是
+`1763020353_update_default_auth_alert_templates.go` 与 `1778828400_normalize_indexes.go`
+（`evidence/W20-B-10-base028-compare.log`）。生产库那 28 行里含早期已删除迁移的历史记录，
+所以「生产库 28」既不等于 25 也不等于 27 —— **凡把 `_migrations` 行数当基座无关常量写的句子都要改成分基座陈述**。
+
 **③ 改名后的迁移必须幂等。**
 
 已应用过旧文件名的库会把改名后的迁移当新迁移重跑，此时目标对象可能早已不存在
 （`sql: no rows in result set`）。删除类迁移应加「不存在则跳过」的守卫。
+
+## 基座 entrypoint 与数据目录路径（0.40.4 起）
+
+**这一节解释为什么 0.40.4 起「不加参数跑 migrate」会静默什么都不做。** 0.28.1 的镜像
+`ENTRYPOINT` 直接就是 `pocketbase serve --http=0.0.0.0:8090 --dir=/pb_data --publicDir=/pb_public --hooksDir=/pb_hooks`；
+0.40.4 的镜像换成了 `/usr/local/bin/entrypoint.sh`（`Cmd=null`）。行为面因此变了。
+
+### entrypoint.sh 的三条分支
+
+真名是 `/usr/local/bin/entrypoint.sh`，**1166 B**（`docker … cat` 取回的字节数）。
+`HOST=${PB_HOST:-0.0.0.0}`、`PORT=${PB_PORT:-8090}`，
+`DEFAULT_SERVE_ARGS="serve --http=${HOST}:${PORT} --dir=/pb_data --publicDir=/pb_public --hooksDir=/pb_hooks"`。三条分支：
+
+| 触发条件 | 实际执行 |
+|---|---|
+| **无参**（`$# -eq 0`，脚本 19–22 行） | 先 `create_superuser`，再 `exec pocketbase serve --http=${PB_HOST:-0.0.0.0}:${PB_PORT:-8090} --dir=/pb_data --publicDir=/pb_public --hooksDir=/pb_hooks` |
+| **首参带 `-`**（`${1#-} != $1`，32–35 行） | 先 `create_superuser`，再 `exec pocketbase $DEFAULT_SERVE_ARGS "$@"`（即上面那条再追加 `"$@"`） |
+| **`--help` / `-h` / `--version` / `-v`**（25–29 行） | 直接 `exec /usr/local/bin/pocketbase "$@"`（不拼 serve 参数、不建超管） |
+| **首参是普通词**（如 `migrate`、`superuser`，38 行） | **只** `exec /usr/local/bin/pocketbase "$@"` —— **不带任何 `--dir`，也不建超管** |
+
+`create_superuser()`（12–16 行）只在 `PB_ADMIN_EMAIL` 与 `PB_ADMIN_PASSWORD` **同时非空**时执行
+`/usr/local/bin/pocketbase superuser upsert "$PB_ADMIN_EMAIL" "$PB_ADMIN_PASSWORD" --dir=/pb_data`。
+
+compose 里 `command: ["--migrationsDir=/pb_migrations"]` 首参以 `-` 开头，走的是第 32–35 行那条；
+最终 argv 由假 `pocketbase` 实测为
+`serve --http=0.0.0.0:8090 --dir=/pb_data --publicDir=/pb_public --hooksDir=/pb_hooks --migrationsDir=/pb_migrations`
+（`evidence/R20-LEAD-entrypoint.log`、`evidence/R20REV-01-argv.log`）。
+
+### ⚠️ 由此产生的静默空操作陷阱（P2，R20 实测）
+
+**`docker run <img> migrate up` 与 `docker compose run --rm pocketbase migrate up` 打印「没有可应用的新迁移。」且 exit 0，
+而宿主挂载的数据目录里 0 个文件、没有 `data.db`。**
+
+两条命令走的都是第 38 行那条分支，`--dir` 一个字都没传，于是数据目录落到了**镜像内的
+`/usr/local/bin/pb_data`**。原因：0.40.x 的默认 `--dir` 是相对 **`argv[0]` 所在目录**解析的，而 entrypoint
+调的是绝对路径 `/usr/local/bin/pocketbase`，所以默认值印出来就是
+`default "/usr/local/bin/pb_data"`（`--help` 原文）。
+
+判别实验（`argv[0]` 是相对还是绝对，落点就跟着变，与 CWD 无关的那一份才是绝对的）：
+
+| `argv[0]` | CWD | 落点 |
+|---|---|---|
+| `pocketbase`（相对） | `/` | `/pb_data` |
+| `pocketbase`（相对） | `/tmp` | `/tmp/pb_data`（随 CWD 解析） |
+| `/usr/local/bin/pocketbase`（绝对） | 任意 | `/usr/local/bin/pb_data` |
+
+同一机制也命中 `superuser upsert`：不带 `--dir` 时打印「超级用户 "x@y" 保存成功！」而**宿主数据目录零文件、
+账号根本不存在**（`evidence/R20-LEAD-migrate-path.log`、`R20-LEAD-compose-run.log`）。
+**用于恢复登录时会让操作员以为建好了却仍登录不上** —— 这是本节最危险的一条。
+
+**为什么这台机器上特别容易踩**：`docker compose run` 默认还会把 CWD 设成镜像的 `WORKDIR`（本镜像是 `/`），
+所以连「随 CWD 解析」这个唯一能救命的行为也被抵消了。
+
+### 安全写法（两条，各自都带 `--entrypoint /usr/local/bin/pocketbase` 与显式 `--dir=/pb_data`）
+
+```bash
+docker compose run --rm --entrypoint /usr/local/bin/pocketbase pocketbase migrate up --dir=/pb_data --migrationsDir=/pb_migrations
+```
+
+```bash
+docker compose stop pocketbase && docker compose run --rm --entrypoint /usr/local/bin/pocketbase pocketbase superuser upsert <邮箱> <密码> --dir=/pb_data && docker compose start pocketbase
+```
+
+要点：`--entrypoint /usr/local/bin/pocketbase` 让容器跳过 `entrypoint.sh`（曲线救国地绕开第 38 行分支），
+再显式给 `--dir=/pb_data` 指回挂载点。两条缺一不可。
+
+### ❌ 反例（危险写法，逐字照抄会静默什么都没做）
+
+```bash
+docker compose run --rm pocketbase migrate up ❌ 反例
+```
+
+```bash
+docker compose run --rm pocketbase superuser upsert <邮箱> <密码> ❌ 反例
+```
+
+这两条 exit 0、输出看着像成功，实际数据目录落在镜像内、宿主上什么都没发生。**不要用。**
+
+### ⚠️ `PB_ADMIN_EMAIL` / `PB_ADMIN_PASSWORD` 不得出现在编排里
+
+这两个变量**同时非空**时，每次启动都会执行一次
+`pocketbase superuser upsert … --dir=/pb_data`（第 20、33 行各一处，即无参与首参带 `-` 两条路径）。
+后果（R20 实测，`evidence/R20-LEAD-entrypoint.log`）：
+
+| 情形 | 实测 |
+|---|---|
+| 全新数据目录 + 注入凭据 | 日志 `Successfully saved superuser "…"!`，注入凭据登录 **200**，`_superusers` 1 行 |
+| **既有超管** + 换 `PB_ADMIN_PASSWORD` 重启 | **旧密码 400、新密码 200** → 既有超管密码被重置 |
+| 换 `PB_ADMIN_EMAIL` 重启 | `_superusers` 由 1 行变 **2 行**（旧账号仍在） |
+| 换 `PB_ADMIN_PASSWORD` 重启 | `password` 被重写、`tokenKey` 被轮换（后者取自 PB upsert 语义，R20 未单独定点取证） |
+| **只设其一**（阴性对照） | `create_superuser` 不执行，`_superusers` 行数不变 |
+
+**结论：这两个变量不得出现在 `docker-compose.yml`、`.env` 或任何编排里。**
+生产容器实测 Env 里没有它们。
+
+### `PB_HOST` / `PB_PORT` 与裸 `serve`
+
+`PB_HOST` / `PB_PORT` 会改写监听地址（默认 `0.0.0.0:8090`，实测注入 `-e PB_HOST=127.0.0.1 -e PB_PORT=9999` 后，
+假 `pocketbase` 收到的 argv 里出现 `--http=127.0.0.1:9999`）。**裸 `serve` 子命令会绕过这些默认参数并绑 127.0.0.1:8090**
+（`serve --help` 原文：「未指定域名时默认使用 127.0.0.1:8090」）—— **不要用**：容器外访问不到，
+且这个失败是「连不上」而不是「起不来」，很容易误判成网络问题。
+
+### `_migrations` 行数按基座陈述
+
+见上一节的表：空库全量 `migrate up` 在 0.28.1 是 **25 行**、0.40.4 是 **27 行**（19 条工程迁移 + 8 条内置 `.go`），
+生产库是 **28 行**（0.28.1 时代创建，0.40.4 下未被重放）。**不要在文档或脚本里把它写成基座无关的常量。**
 
 ## 照片与视频规格
 
@@ -1805,10 +1944,12 @@ health 返回 200、`captures.createRule` **仍是空串**、`_migrations` 里�
 
 ```bash
 # 只投放排到目标为止的迁移文件，使 down 1 恰好回退它
+# 镜像标签按基座写：部署态是 0.40.4-zh；仓库态读 docker-compose.yml 的 image: 标签。
+# --entrypoint 与显式 --dir 都不能省（见「基座 entrypoint 与数据目录路径（0.40.4 起）」）。
 mkdir -p /tmp/migdown && docker run --rm -i \
   -v /tmp/migdown:/pb_data -v /tmp/migstage:/pb_migrations \
   --entrypoint /usr/local/bin/pocketbase \
-  webees-facedb-pocketbase:0.28.1-zh migrate down 1 --dir=/pb_data --migrationsDir=/pb_migrations
+  webees-facedb-pocketbase:0.40.4-zh migrate down 1 --dir=/pb_data --migrationsDir=/pb_migrations
 # 必须看到 Reverted 1791152276_open_capture_access.js，否则等于什么都没回退
 ```
 
@@ -1871,13 +2012,17 @@ bash <运行根>/lib/legacy/pb-rebuild-deploy.sh
 
 ## 后台汉化（源码编译 + 本地镜像方案）
 
-`../webees@pocketbase`（PocketBase v0.28.1 源码）已就地汉化并编译，
+`../webees@pocketbase`（PocketBase 源码，**部署态基座是 v0.40.4**；R19 及以前用的是 v0.28.1）已就地汉化并编译，
 产物按架构分文件 `pb-bin/pocketbase-zh-linux-arm64` / `pb-bin/pocketbase-zh-linux-amd64`（各自交叉编译）
-由 `pb-bin/Dockerfile` 经中间 stage 按 `ARG TARGETARCH` 选一份 COPY 进本地镜像
-`webees-facedb-pocketbase:0.28.1-zh`（`FROM ghcr.io/muchobien/pocketbase:0.28.1`，
+由 `pb-bin/Dockerfile` 经中间 stage 按 `ARG TARGETARCH` 选一份 COPY 进本地镜像。
+**镜像标签与 `FROM` 都按双态读**：部署态是 `webees-facedb-pocketbase:0.40.4-zh`、
+`FROM ghcr.io/muchobien/pocketbase:0.40.4@sha256:9390b7b63ce114dbab577be72e6ef75f718a19083866607fcbdd1b915632b943`；
+仓库态读文件 —— 工作区已改成这一版，但那 4 个文件仍是**未提交的在途改动**，`HEAD`（`868da0d`）上
+还是 `webees-facedb-pocketbase:0.28.1-zh` / `FROM ghcr.io/muchobien/pocketbase:0.28.1@sha256:c11d164acd6266e31d2b5e88160b7bb3902c472c1ec90e0f403f56e802f23935`。
 构建期按架构逐项断言 sha256 / md5 / size / ELF `e_machine` 全部命中白名单，
-且 `TARGETARCH` 必须在 `PB_ALLOWED_ARCH`（`arm64 amd64`）内，任一不符即 `REFUSED:`）。
-换二进制后必须同步 `pb-bin/SHA256SUMS` 与 `pb-bin/Dockerfile` 里的期望常量，否则构建期 `REFUSED`。
+且 `TARGETARCH` 必须在 `PB_ALLOWED_ARCH`（`arm64 amd64`）内，任一不符即 `REFUSED:`。
+换二进制后必须同步 `pb-bin/SHA256SUMS` 与 `pb-bin/Dockerfile` 里的期望常量，否则构建期 `REFUSED`
+（换基座版本同样要同步，因为汉化二进制本身也随上游源码重编而变）。
 改文案后重新产出：
 
 ```bash
