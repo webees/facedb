@@ -19,6 +19,23 @@ const read = (rel) => readFileSync(R(rel), 'utf8')
 const has = (rel) => existsSync(R(rel))
 const sh = (cmd, args, opts = {}) => spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', ...opts })
 const tracked = sh('git', ['ls-files']).stdout.split('\n').filter(Boolean)
+
+// 【R22-21】大小写不敏感文件系统造成的「本地绿、CI 红」：
+// `.github/pull_request_template.md` 在 macOS（APFS 默认不敏感）上会把**实际跟踪的**
+// `.github/PULL_REQUEST_TEMPLATE.md` 解析出来，在 Linux CI 上却是 ENOENT —— 判据的绿/红
+// 取决于跑在哪种文件系统上，与工程内容无关。规矩：仓库内路径一律用 `git ls-files` 的
+// **字面结果**解析（git 的输出与文件系统大小写无关）；大小写变体多于一个直接判失败
+// （歧义比缺失更危险：读哪一个取决于文件系统）。
+const resolveTracked = (rel) => {
+  const want = rel.toLowerCase()
+  const hits = tracked.filter((t) => t.toLowerCase() === want)
+  if (hits.length === 0) return { path: null, reason: `没有跟踪这个路径（大小写敏感查找）：${rel}` }
+  if (hits.length > 1) return { path: null, reason: `有 ${hits.length} 个大小写变体，读哪个取决于文件系统：${hits.join(' / ')}` }
+  if (!existsSync(R(hits[0]))) return { path: null, reason: `已跟踪但工作区缺失：${hits[0]}` }
+  return { path: hits[0], reason: null }
+}
+const isDirPath = (rel) => tracked.some((t) => t.startsWith(rel.replace(/\/$/, '') + '/'))
+
 const lines = []
 let pass = 0
 let fail = 0
@@ -576,8 +593,11 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
     if (!new RegExp(`^\\s*run:\\s*npm run ${s}\\s*$`, 'm').test(ci)) miss.push(`CI 没有以独立步骤跑：npm run ${s}`)
   }
   // 文档口径：PR 模板与 CI 步骤名必须写明真实阻断线（R14REV must_fix：旧文案声称覆盖「地址/本地路径」而默认只挡 P0）
-  const pr = has('.github/pull_request_template.md') ? read('.github/pull_request_template.md') : ''
-  if (!/verify:publish/.test(pr) || !/阻断/.test(pr)) miss.push('PR 模板没有写明发布卫生闸门的真实阻断线')
+  // 读取点必须大小写敏感解析 —— 否则该断言在 macOS 上恒绿、在 Linux CI 上恒红（R22-21）。
+  const prHit = resolveTracked('.github/pull_request_template.md')
+  if (!prHit.path) miss.push(`PR 模板：${prHit.reason}`)
+  const pr = prHit.path ? read(prHit.path) : ''
+  if (prHit.path && (!/verify:publish/.test(pr) || !/阻断/.test(pr))) miss.push('PR 模板没有写明发布卫生闸门的真实阻断线')
   if (!/P1/.test(ci.split('\n').find((l) => /name: 发布卫生闸门/.test(l)) || '')) miss.push('CI 步骤名没有写明阻断线（P0/P1）')
   return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（禁扩展名白名单回退）· 未判定 exit 2 · 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 13+2+2+1 场景 · npm/CI 接线 · 文档口径一致' }
 } })
@@ -621,6 +641,37 @@ add({ id: 'S28', covers: ['scripts/verify-repo.mjs', 'package.json', '.github/wo
     if (!/process\.exit\(bad \? 1 : 0\)/.test(v)) miss.push('自检失败没有非零退出（自检本身变成恒真）')
   }
   return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '3 个文件 · npm script 指向真文件且带 --self-check · CI 独立步骤 · 取值断言 + 前提锁扩面 + 注释遮蔽 · M12–M15 · 自检非零退出' }
+} })
+
+// 【R22-21】判据自己不许依赖大小写不敏感文件系统：本文件与仓库判据里每一处
+// 「按字面量读仓库内文件」的点，都必须能在 **git ls-files 的字面结果**里唯一命中且真实存在。
+// 触发这件事的真实事故：S27 读 `.github/pull_request_template.md`（小写），而仓库实际跟踪的是
+// `.github/PULL_REQUEST_TEMPLATE.md`（大写）⇒ 本地 macOS 全绿、CI（Ubuntu）判红，且红的原因
+// 与工程无关、纯属路径大小写。变异体 M27 守着这条断言。
+add({ id: 'S29', covers: ['scripts/check-repo-standards.mjs', 'scripts/verify-repo.mjs'], name: '判据里的仓库内读取点都按大小写敏感语义唯一命中（禁止依赖不敏感文件系统）', run() {
+  const SCAN = ['scripts/check-repo-standards.mjs', 'scripts/verify-repo.mjs', 'scripts/publish-leak-scan.mjs', 'scripts/publish-leak-scan-selftest.mjs']
+  // 只扫**读取点**的字面量参数：散文、变异体夹具路径、目录名都不是读取点，扫进来只会造噪音
+  // （干跑实测：不限定调用点时 117 条里 24 条是噪音；限定 read/has/existsSync 后只剩目录那一类）。
+  // 参数必须与 `git ls-files` 的字面结果**逐字符相等**：大小写差一个字母时 macOS 读得到、
+  // Linux 读不到 —— 那正是「本地绿、CI 红」的来源，必须在这里判死。
+  // 例外：`resolveTracked(…)` 自身就是「按大小写不敏感解析但要求唯一命中」的合法读取器，不扫它的参数。
+  const RE = /\b(?:read|has|readFileSync|existsSync)\(\s*'([^'\n]+)'/g
+  const miss = []
+  let scanned = 0
+  for (const f of SCAN) {
+    if (!has(f)) { miss.push(`${f} 不存在`); continue }
+    for (const m of read(f).matchAll(RE)) {
+      const lit = m[1]
+      if (isDirPath(lit)) continue          // 目录不是 git 跟踪的对象，另有断言守目录内容
+      scanned++
+      if (tracked.includes(lit)) continue
+      const variants = tracked.filter((t) => t.toLowerCase() === lit.toLowerCase())
+      miss.push(variants.length
+        ? `${f} 的读取点 ${lit} 大小写与跟踪名不一致（实际是 ${variants[0]}）—— macOS 上能读到、Linux CI 上 ENOENT`
+        : `${f} 的读取点 ${lit} 没有跟踪这个路径`)
+    }
+  }
+  return { ok: miss.length === 0, detail: miss.length ? miss.slice(0, 4).join('；') : `${SCAN.length} 个判据脚本 · ${scanned} 个读取点全部与跟踪名逐字符一致` }
 } })
 
 for (const c of CHECKS) {

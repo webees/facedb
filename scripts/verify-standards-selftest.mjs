@@ -145,6 +145,11 @@ const M = [
     apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/\s*- name: 仓库判据的变异自检[^\n]*\n\s*run: npm run verify:selfcheck\n/, '\n')) },
   { id: 'M25', target: 'scripts/verify-repo.mjs', expect: 'S28', desc: 'img-src 取值断言被摘（退回「img-src 这个词存在即通过」）',
     apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace(/const imgLoose = [^\n]*\n/, '')) },
+  // 【R22-21】CI 上真实发生过的两条：判据的绿/红取决于文件系统大小写。
+  { id: 'M26', target: '.github/PULL_REQUEST_TEMPLATE.md', expect: 'S27', desc: 'PR 模板被删（判据必须说「已跟踪但工作区缺失」，而不是静默读空串后放行）',
+    apply: () => { rmSync(join(WT, '.github/PULL_REQUEST_TEMPLATE.md'), { force: true }) } },
+  { id: 'M27', target: 'scripts/check-repo-standards.mjs', expect: 'S29', desc: '判据里新增一个大小写写错的读取点（macOS 上解析得到、Linux 上 ENOENT）',
+    apply: () => mutate('scripts/check-repo-standards.mjs', (t) => t + "\nconst _r22caseProbe = () => has('.github/issue_template/bug_report.yml')\n") },
 ]
 
 let caught = 0
