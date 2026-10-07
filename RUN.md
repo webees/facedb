@@ -433,12 +433,23 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 > `docker images` 的 `Size`、`docker image inspect .Size`（本镜像 17.7MiB = 18583983 字节）、镜像内 `du -sb /public`（27.4MB）、
 > 以及「基座 + 产物」相加，四者各不相同；连**架构**也要确认：本机 `joseluisq/static-web-server:2-alpine` 就是 arm64/linux（`docker image inspect -f '{{.Architecture}}/{{.Os}}'`），`docker images` 报 58.6MB，`docker image inspect -f '{{.Size}}'` 报 8,190,662 字节。
 > **结论：任何体积数字必须连口径、架构与测量命令一起写**，否则无法比较 —— 这正是 R19 报「三处数字不一致」的根因。
-> 当前读数：`docker images` = 66.6MB，其中产物（镜像内 `/public`）= 27.4MB（`du -sb` = 27409329 字节）。
+> 当前读数（2026-10-07，镜像 `webees-facedb-web:latest`）：`docker images` = 66.6MB，其中产物（镜像内 `/public`）= 27.4MB。
+> 产物有两种口径，同一份产物差 546 字节：`find /public -type f -exec cat {} + | wc -c` = **27,408,705**（文件字节和）、
+> `du -sb /public` = **27,409,251**（`du` 把目录项自身也算进去：12 个文件 + 1 个目录）。
+> 复测命令（可原样复跑））：
+
+```bash
+docker run --rm --entrypoint sh webees-facedb-web:latest -c 'find /public -type f | wc -l; find /public -type f -exec cat {} + | wc -c; du -sb /public'
+```
 >
 > （R21 删掉不可达的 `vision_wasm_module_internal.*` 后，产物由 39.5MB 降到 27.4MB。）
 
 
-**关键认识**：`dist` 只有 27.4MB（12 个文件合计 27,408,705 字节），**镜像的大头从来不是产物，而是「托管它的服务器」**。
+**关键认识**：`dist` 只有 27.4MB（12 个文件），**镜像的大头从来不是产物，而是「托管它的服务器」**。
+
+> **产物字节数会随内容变动，不是恒定事实**：27,408,705 是 2026-10-07 从 `webees-facedb-web:latest` 里实测的快照；
+> 同一天另一次本地构建得到 27,408,703 —— 差 2 字节，因为那次构建包含尚未进镜像的 `index.html` 改动。
+> 所以**要比较就当场复测，不要把文档里的字节数当断言**（R15 复核席正是按这一点把「文档数字可复现」判为 FALSIFIED）。
 `nginx:1.27-alpine` 空载即 78.2MB，而它在这里只做一件事——把目录里的文件发出去。
 
 各静态服务器空载体积实测（两个口径都列出来，命令可原样复跑）：
