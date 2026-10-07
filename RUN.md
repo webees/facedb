@@ -1595,6 +1595,19 @@ Cloudflare 隧道 → caddy:80 → facedb-web:3000 / facedb-api:8090（edge-net 
 判据：全链逐步 up / 逐步 down 走查，要求 `D(m) === U(N-m)`（回退 m 步 == 只应用了 `N-m` 步的那一态）。
 修复前 18 个可比步 EQUAL 16 / DIFF 2，修复后 **EQUAL 18 / DIFF 0**；阴性对照（换回修复前的迁移文件）复现同样的 2 步漂移。
 
+**④ 引用 schema 摘要时必须写明口径。**（R18 裁定）
+
+同一份 schema 用两种口径会算出**两个不同的 md5**（R18 实测：`66a82a57…` 与 `b08697d4…`），
+读者无法判断「两个 md5 不同」是缺陷还是口径差异。**本工程规定的规范口径**：
+
+```bash
+sqlite3 'file:<data.db>?mode=ro' \
+  "SELECT type||'|'||name||'|'||COALESCE(sql,'') FROM sqlite_master ORDER BY type,name" | md5
+```
+
+理由：只依赖 sqlite 自身输出、不随 PocketBase 版本漂移、任何人可一行复现。
+用别的口径（例如全量 `.dump`）得到的值**不得与它直接比较**。
+
 **结论**：**改动 schema 后，不能只验证本地 —— 必须另起一个空库重放一次全部迁移**
 （下面这条命令即可）。
 
