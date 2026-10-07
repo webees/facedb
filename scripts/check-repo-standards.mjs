@@ -216,31 +216,40 @@ add({ id: 'S14', covers: ['.github/dependabot.yml'], name: 'dependabot 结构与
 } })
 
 // ── S15 CI 步骤引用的东西都存在 ───────────────────────────────────────
-add({ id: 'S15', covers: ['.github/workflows/ci.yml'], name: 'CI 步骤引用的 npm script 都存在，action 版本不过期，权限不写 write-all', run() {
-  const rel = '.github/workflows/ci.yml'
-  const p = parseYaml(rel)
-  if (p.err) return { ok: false, detail: p.err }
+// 按磁盘枚举**所有**工作流：只查 ci.yml 的话，新加一个工作流就没人查它的 script/action/权限，
+// 而 S22 会声称「这个 YAML 有归属」（它只验可解析）—— 归属必须由做实质检查的断言提供。
+add({ id: 'S15', covers: yamlFilesUnder('.github/workflows'), name: '每个工作流的 npm script 都存在，action 版本不过期，权限不写 write-all', run() {
+  const rels = yamlFilesUnder('.github/workflows')
+  if (rels.length === 0) return { ok: false, detail: '.github/workflows 下没有工作流 —— 不得判通过' }
   const scripts = Object.keys(JSON.parse(read('package.json')).scripts || {})
-  const txt = read(rel)
   const miss = []
   let runs = 0
   let uses = 0
+  let checked = 0
+  for (const rel of rels) {
+  const p = parseYaml(rel)
+  if (p.err) { miss.push(`${rel}：${p.err}`); continue }
+  checked++
+  const txt = read(rel)
+  const m0 = miss.length
   for (const m of txt.matchAll(/^\s*(?:-\s*)?run:\s*(.+)$/gm)) {
     runs++
     const v = m[1].trim()
-    if (!v) miss.push('有空 run:')
-    for (const n of v.matchAll(/npm run ([a-zA-Z0-9:_-]+)/g)) if (!scripts.includes(n[1])) miss.push(`CI 里的 npm run ${n[1]} 不存在于 package.json`)
+    if (!v) miss.push(`${rel}: 有空 run:`)
+    for (const n of v.matchAll(/npm run ([a-zA-Z0-9:_-]+)/g)) if (!scripts.includes(n[1])) miss.push(`${rel} 里的 npm run ${n[1]} 不存在于 package.json`)
   }
   for (const m of txt.matchAll(/uses:\s*([^\s@]+)@(\S+)/g)) {
     uses++
     const [, act, ver] = m
     const num = Number(String(ver).replace(/^v/, '').split('.')[0])
-    if (Number.isFinite(num) && num < 4) miss.push(`action 版本过旧（${act}@${ver}）：低于 v4 的 action 跑在已弃用的 Node 运行时上`)
+    if (Number.isFinite(num) && num < 4) miss.push(`${rel}: action 版本过旧（${act}@${ver}）：低于 v4 的 action 跑在已弃用 Node 运行时上`)
   }
   const permsOk = /\bpermissions:/.test(txt) && !/permissions:\s*write-all/.test(txt)
-  if (!permsOk) miss.push('缺 permissions 或写成了 write-all')
-  if (runs === 0) miss.push('没有解析到任何 run: 步骤')
-  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : `${runs} 个 run 步骤、${uses} 个 action，权限已收窄` }
+  if (!permsOk) miss.push(`${rel}: 缺 permissions 或写成了 write-all`)
+  if (miss.length === m0 && !/^\s*(?:-\s*)?run:/m.test(txt)) miss.push(`${rel}: 没有解析到任何 run: 步骤`)
+  }
+  if (checked === 0) miss.push('没有一个工作流被真正检查到')
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : `${rels.length} 个工作流、${runs} 个 run 步骤、${uses} 个 action，权限已收窄` }
 } })
 
 // ── S16 CODEOWNERS 每条模式真的命中文件 ───────────────────────────────
@@ -424,6 +433,11 @@ add({ id: 'S24', covers: [], name: '仓库根与 .github 下的每个受管文�
   const covered = new Set()
   for (const c of CHECKS) for (const v of c.covers || []) if (!v.includes('*')) covered.add(v)
   const missing = watched.filter((f) => !covered.has(f))
+  // 定向归属：工作流文件的实质检查只可能在 S15，被别的断言（如「能解析」的 S22）覆盖不算数。
+  const wfOwner = new Set((CHECKS.find((c) => c.id === 'S15')?.covers || []).filter((v) => !v.includes('*')))
+  for (const f of watched) {
+    if (/^\.github\/workflows\/.+\.ya?ml$/.test(f) && !wfOwner.has(f)) missing.push(`${f}（未被 S15 逐个检查，只是被别的断言覆盖）`)
+  }
   return { ok: missing.length === 0, detail: missing.length ? '没有任何断言覆盖：' + missing.join('、') : `${watched.length} 个受管文件全部有归属` }
 } })
 
