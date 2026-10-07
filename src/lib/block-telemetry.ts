@@ -29,16 +29,28 @@ function isBlocked(input: RequestInfo | URL): boolean {
 const EMPTY = (): Response =>
   new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
 
-// fetch
-const origFetch = window.fetch.bind(window)
-window.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
-  isBlocked(input) ? Promise.resolve(EMPTY()) : origFetch(input, init)) as typeof window.fetch
+// 一层「可还原的补丁」。
+// 重复安装（HMR 重新 import、模块被再次求值）以前会一层套一层：实测层数 1→2→3→4，
+// 每个请求多穿一层、旧层闭包永远不可回收。
+// 这里做成「先撤上一层、再装新的」而不是「已有就跳过」—— 跳过会留下旧代码的补丁，
+// 于是改了规则却不生效，比多一层更难发现。
+// 内联层（index.html）与模块层各用各的 window 槽位：模块层撤层时**不能**把内联层一起撤掉。
+type Layer = { uninstall: () => void }
+const w = window as unknown as { __facedbBlockModule?: Layer }
+
+function install(): Layer {
+// 刻意不 bind：bind 会造出新的函数对象，上层撤层后 window.fetch 与我们装的这个不再是同一个对象，
+// 于是「还原」永远失败（实测过）。原生 fetch 要求 this 是 window，所以在调用点用 call。
+const prevFetch = window.fetch
+const patchedFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+  isBlocked(input) ? Promise.resolve(EMPTY()) : prevFetch.call(window, input, init)) as typeof window.fetch
+window.fetch = patchedFetch
 
 // XMLHttpRequest
 const origOpen = XMLHttpRequest.prototype.open
 const origSend = XMLHttpRequest.prototype.send
 const blockedXhr = new WeakSet<XMLHttpRequest>()
-XMLHttpRequest.prototype.open = function (
+const patchedOpen = function (
   this: XMLHttpRequest,
   method: string,
   url: string | URL,
@@ -52,13 +64,24 @@ XMLHttpRequest.prototype.open = function (
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (origOpen as any).call(this, method, url, ...rest)
 } as typeof XMLHttpRequest.prototype.open
-XMLHttpRequest.prototype.send = function (this: XMLHttpRequest, ...args: unknown[]) {
+XMLHttpRequest.prototype.open = patchedOpen
+const patchedSend = function (this: XMLHttpRequest, ...args: unknown[]) {
   if (blockedXhr.has(this)) {
     // 不真正发送，但要模拟一次【完整且成功】的响应：
     // 只补发事件而不设置 readyState/status/responseText 的话，调用方读到的是 status=0、
     // 空响应体，会当成失败（MediaPipe 可能因此重试，反而制造更多请求）。
     // 这里与 fetch 路径保持一致：200 + '{}'。
+    // abort() 之后不得再派发这组假事件：调用方会在 abort 里清理状态，之后再收到 load
+    // 会当成「成功」处理（实测 abort 后仍派发 load 1 次）。标记挂在实例上，不动原型。
+    let aborted = false
+    const prevAbort = this.abort
+    this.abort = function (this: XMLHttpRequest, ...a: unknown[]) {
+      aborted = true
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (prevAbort as any).apply(this, a)
+    } as typeof XMLHttpRequest.prototype.abort
     setTimeout(() => {
+      if (aborted) return
       const def = (k: string, v: unknown) =>
         Object.defineProperty(this, k, { value: v, configurable: true })
       def('readyState', 4)
@@ -76,10 +99,27 @@ XMLHttpRequest.prototype.send = function (this: XMLHttpRequest, ...args: unknown
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (origSend as any).apply(this, args)
 } as typeof XMLHttpRequest.prototype.send
+XMLHttpRequest.prototype.send = patchedSend
 
 // navigator.sendBeacon
 const origBeacon = navigator.sendBeacon?.bind(navigator)
-if (origBeacon) {
-  navigator.sendBeacon = ((url: string | URL, data?: BodyInit | null) =>
-    isBlocked(url) ? true : origBeacon(url, data)) as typeof navigator.sendBeacon
+const patchedBeacon = origBeacon
+  ? (((url: string | URL, data?: BodyInit | null) =>
+      isBlocked(url) ? true : origBeacon(url, data)) as typeof navigator.sendBeacon)
+  : undefined
+if (patchedBeacon) navigator.sendBeacon = patchedBeacon
+
+return {
+  uninstall() {
+    // 只还原「仍然是我们装的那一层」——别人后来改过就不要动它
+    if (window.fetch === patchedFetch) window.fetch = prevFetch
+    if (XMLHttpRequest.prototype.open === patchedOpen) XMLHttpRequest.prototype.open = origOpen
+    if (XMLHttpRequest.prototype.send === patchedSend) XMLHttpRequest.prototype.send = origSend
+    if (patchedBeacon && navigator.sendBeacon === patchedBeacon) navigator.sendBeacon = origBeacon!
+  },
 }
+}
+
+// 装之前先撤掉上一次模块层（内联层不受影响）
+w.__facedbBlockModule?.uninstall?.()
+w.__facedbBlockModule = install()

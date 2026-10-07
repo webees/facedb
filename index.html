@@ -153,26 +153,45 @@
         var empty = function () {
           return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
-        var of = window.fetch.bind(window)
-        window.fetch = function (i, init) {
-          return isBlocked(i) ? Promise.resolve(empty()) : of(i, init)
+        // 与 block-telemetry.ts 一致：本层可还原，装之前先撤掉上一次**内联层**。
+        // 模块层用另一个槽位（__facedbBlockModule），两层互不牵连。
+        if (window.__facedbBlockInline && window.__facedbBlockInline.uninstall) {
+          try {
+            window.__facedbBlockInline.uninstall()
+          } catch (e) {}
         }
+        // 刻意不 bind：bind 会造出新函数对象，上层撤层后 window.fetch 与这里装的就不是同一个了，
+        // 「还原」会永远失败。原生 fetch 要求 this 是 window，所以在调用点用 call。
+        var of = window.fetch
+        var patchedFetch = function (i, init) {
+          return isBlocked(i) ? Promise.resolve(empty()) : of.call(window, i, init)
+        }
+        window.fetch = patchedFetch
         var oo = XMLHttpRequest.prototype.open
         var os = XMLHttpRequest.prototype.send
         var blocked = new WeakSet()
-        XMLHttpRequest.prototype.open = function (m, u) {
+        var patchedOpen = function (m, u) {
           // 必须成对：同一个 XHR 可以反复 open，只 add 不 delete 会让复用的对象被一直拦着，
           // 连真正要发的请求也不发（还伪造 200 '{}'）。与 block-telemetry.ts 保持一致。
           if (isBlocked(u)) blocked.add(this)
           else blocked.delete(this)
           return oo.apply(this, arguments)
         }
-        XMLHttpRequest.prototype.send = function () {
+        XMLHttpRequest.prototype.open = patchedOpen
+        var patchedSend = function () {
           if (blocked.has(this)) {
             // 模拟一次【完整且成功】的响应，与 src/lib/block-telemetry.ts 保持一致：
             // 只补事件而不设 readyState/status/responseText 的话，调用方读到 status=0 会判为失败。
             var self = this
+            // abort() 之后不得再派发假事件（调用方会在 abort 里清状态，之后收到 load 会当成成功）
+            var aborted = false
+            var prevAbort = this.abort
+            this.abort = function () {
+              aborted = true
+              return prevAbort.apply(this, arguments)
+            }
             setTimeout(function () {
+              if (aborted) return
               var def = function (k, v) {
                 Object.defineProperty(self, k, { value: v, configurable: true })
               }
@@ -189,11 +208,23 @@
           }
           return os.apply(this, arguments)
         }
+        XMLHttpRequest.prototype.send = patchedSend
+        var patchedBeacon
         if (navigator.sendBeacon) {
           var ob = navigator.sendBeacon.bind(navigator)
-          navigator.sendBeacon = function (u, d) {
+          patchedBeacon = function (u, d) {
             return isBlocked(u) ? true : ob(u, d)
           }
+          navigator.sendBeacon = patchedBeacon
+        }
+        window.__facedbBlockInline = {
+          uninstall: function () {
+            // 只还原仍然是我们装的那一层
+            if (window.fetch === patchedFetch) window.fetch = of
+            if (XMLHttpRequest.prototype.open === patchedOpen) XMLHttpRequest.prototype.open = oo
+            if (XMLHttpRequest.prototype.send === patchedSend) XMLHttpRequest.prototype.send = os
+            if (patchedBeacon && navigator.sendBeacon === patchedBeacon) navigator.sendBeacon = ob
+          },
         }
       })()
     </script>
