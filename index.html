@@ -211,9 +211,10 @@
         XMLHttpRequest.prototype.send = patchedSend
         var patchedBeacon
         if (navigator.sendBeacon) {
-          var ob = navigator.sendBeacon.bind(navigator)
+          // 不能 bind：bind 造出新函数对象，撤层时按身份还原必然失败
+          var ob = navigator.sendBeacon
           patchedBeacon = function (u, d) {
-            return isBlocked(u) ? true : ob(u, d)
+            return isBlocked(u) ? true : ob.call(navigator, u, d)
           }
           navigator.sendBeacon = patchedBeacon
         }

@@ -102,10 +102,11 @@ const patchedSend = function (this: XMLHttpRequest, ...args: unknown[]) {
 XMLHttpRequest.prototype.send = patchedSend
 
 // navigator.sendBeacon
-const origBeacon = navigator.sendBeacon?.bind(navigator)
-const patchedBeacon = origBeacon
+// 不能 bind：bind 返回新函数对象，撤层时按身份还原必然失败（fetch 段踩过同一个坑）。
+const prevBeacon = navigator.sendBeacon
+const patchedBeacon = prevBeacon
   ? (((url: string | URL, data?: BodyInit | null) =>
-      isBlocked(url) ? true : origBeacon(url, data)) as typeof navigator.sendBeacon)
+      isBlocked(url) ? true : prevBeacon.call(navigator, url, data)) as typeof navigator.sendBeacon)
   : undefined
 if (patchedBeacon) navigator.sendBeacon = patchedBeacon
 
@@ -115,7 +116,7 @@ return {
     if (window.fetch === patchedFetch) window.fetch = prevFetch
     if (XMLHttpRequest.prototype.open === patchedOpen) XMLHttpRequest.prototype.open = origOpen
     if (XMLHttpRequest.prototype.send === patchedSend) XMLHttpRequest.prototype.send = origSend
-    if (patchedBeacon && navigator.sendBeacon === patchedBeacon) navigator.sendBeacon = origBeacon!
+    if (patchedBeacon && navigator.sendBeacon === patchedBeacon) navigator.sendBeacon = prevBeacon!
   },
 }
 }
