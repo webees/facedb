@@ -17,6 +17,7 @@
 
 - [ ] 改动只触及本 PR 声明的范围，未触碰无关文件
 - [ ] `npm run verify` 通过
+- [ ] `npm run verify:publish` 通过（发布卫生：凭据 / 地址 / 本地路径 / 媒体文件）
 - [ ] `npm run verify:types` 通过（类型检查防线：样本数下限 + 阳性对照）
 - [ ] `npm run typecheck` 通过
 - [ ] `npm run build` 通过
