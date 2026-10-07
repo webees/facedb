@@ -24,7 +24,8 @@
     "typecheck": "vue-tsc --noEmit",
     "verify": "node scripts/verify-repo.mjs",
     "verify:selfcheck": "node scripts/verify-repo.mjs --self-check",
-    "verify:types": "node scripts/typecheck-guard.mjs"
+    "verify:types": "node scripts/typecheck-guard.mjs",
+    "verify:publish": "node scripts/publish-leak-scan.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",

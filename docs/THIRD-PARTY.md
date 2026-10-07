@@ -25,6 +25,12 @@
 | [vue](https://github.com/vuejs/core) | MIT | 前端框架 |
 | [Rsbuild](https://github.com/web-infra-dev/rsbuild) | MIT | 构建工具 |
 | [Tailwind CSS](https://github.com/tailwindlabs/tailwindcss) | MIT | 样式 |
+| [@rsbuild/plugin-vue](https://github.com/web-infra-dev/rsbuild) | MIT | 构建期 Vue 单文件组件支持 |
+| [@tailwindcss/postcss](https://github.com/tailwindlabs/tailwindcss) | MIT | 构建期 Tailwind PostCSS 插件 |
+| [typescript](https://github.com/microsoft/TypeScript) | Apache-2.0 | 构建期类型检查（tsc / 类型擦除） |
+| [vue-tsc](https://github.com/vuejs/language-tools) | MIT | 构建期 `.vue` 类型检查 |
+
+上表最后四行是开发 / 构建期依赖（`devDependencies`），不进运行产物。
 
 ## 后端
 
