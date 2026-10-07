@@ -96,8 +96,23 @@ const M = [
     apply: () => writeFileSync(join(WT, 'ARCHITECTURE.md'), '# 架构\n\n（新增根文档，尚无任何断言覆盖）\n') },
   { id: 'M13', target: 'RUN.md', expect: 'S23', desc: 'RUN.md 提到一个不存在的仓库内文件',
     apply: () => mutate('RUN.md', (t) => t + '\n参见 `src/lib/does-not-exist-at-all.ts`。\n') },
-  { id: 'M14', target: 'scripts/orphan-check.mjs', expect: 'S18', desc: 'scripts/ 下多一个没人引用的脚本（死文件）',
-    apply: () => writeFileSync(join(WT, 'scripts/orphan-check.mjs'), '// 没人跑它\nexport const x = 1\n') },
+  { id: 'M15', target: '.github/workflows/deploy.yml', expect: 'S15', desc: '新增工作流里引用不存在的 npm script 且 action 版本过期（S22 只验可解析，S24 会误判有归属）',
+    apply: () =>
+      writeFileSync(
+        join(WT, '.github/workflows/deploy.yml'),
+        [
+          'name: deploy',
+          'on: { push: { branches: [main] } }',
+          'permissions: { contents: read }',
+          'jobs:',
+          '  deploy:',
+          '    runs-on: ubuntu-latest',
+          '    steps:',
+          '      - uses: actions/checkout@v1',
+          '      - run: npm run verify:nope',
+          '',
+        ].join('\n'),
+      ) },
 ]
 
 let caught = 0
