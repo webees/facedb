@@ -25,7 +25,11 @@
     "verify": "node scripts/verify-repo.mjs",
     "verify:selfcheck": "node scripts/verify-repo.mjs --self-check",
     "verify:types": "node scripts/typecheck-guard.mjs",
-    "verify:publish": "node scripts/publish-leak-scan.mjs"
+    "verify:publish": "node scripts/publish-leak-scan.mjs",
+    "verify:standards": "node scripts/check-repo-standards.mjs",
+    "verify:hygiene": "node scripts/check-repo-config-hygiene.mjs",
+    "verify:standards-selftest": "node scripts/verify-standards-selftest.mjs",
+    "verify:all": "npm run verify && npm run verify:types && npm run verify:publish && npm run verify:standards && npm run verify:hygiene"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",
