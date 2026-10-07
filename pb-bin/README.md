@@ -20,10 +20,10 @@
 ## 来源
 
 - 源码：`../webees@pocketbase`（PocketBase v0.28.1 源码，git HEAD `e73077e7e7eb2005a244b748ecc9bbf5d32d4ea9`）
-  - 该工作树就地做过汉化替换（`git status` 显示 259 个已修改文件），汉化词表脚本为运行根下的
+  - 该工作树就地做过汉化替换（`git status --porcelain` 实测 316 行：**254 个已修改** + 29 个已删除 + 33 个未跟踪，2026-10-07 读数），汉化词表脚本为运行根下的
     `pb-source-i18n-v2.mjs`（注意：运行根 `run-20261006-160618` 下**该脚本已不存在**，
     只存在于上一轮运行根 `run-20261005-010657`，见 `findings/R01-C.json` C-13——重建前需先把它找回来）。
-- 编译方式（与 `RUN.md` 1531-1542 行一致；两份产物只差 `GOARCH`，UI 产物已 `go:embed` 进二进制）：
+- 编译方式（与 `RUN.md`「容器权限」小节一致；两份产物只差 `GOARCH`，UI 产物已 `go:embed` 进二进制）：
 
 ```bash
 cd ../webees@pocketbase
@@ -78,7 +78,7 @@ done
 | arm64 | `85a10d0baf5d42d631735304baaaefd79e8a118658daf64981ecda30ebea8ef0` | `115ca8dd9bcbdd667ecc617175c803ed` | 已被替换（仓库内无相符文件） |
 | amd64 | `3786b4f5cbc35379129a35123dd5d2303744036d7fd9c0974d0d089ce3eb0490` | `ac39fb7771e03eb49a986f99a1789313` | 已被替换（仓库内无相符文件） |
 
-重锚依据：生产镜像 `webees-facedb-pocketbase:0.28.1-zh` 创建于 2026-10-07T03:47:11（＝二进制写入时刻），
+重锚依据：生产镜像 `webees-facedb-pocketbase:0.28.1-zh` 创建于 2026-10-07T07:52:06Z（本地 14:52:06 +07，2026-10-07 实测 `docker image inspect` 读数；镜像创建时刻与二进制 mtime 03:47:09Z **不是同一时刻**），
 容器内 `/usr/local/bin/pocketbase` 的 sha256 与新常量一致；两份二进制均为汉化版
 （`集合` 各 122 处、`API 运行正常` 各 1 处），运行实例 `/api/health` 返回 `{"message":"API 运行正常。"}`。
 `run-20261006-160618/evidence/R02-CT-13-b3b5-mutants-after.log:41`（旧值实测）、

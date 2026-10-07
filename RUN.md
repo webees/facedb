@@ -430,7 +430,7 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 
 > **体积口径（必须连口径一起写）**：上表用的是 `docker images` 报的 `Size`（arm64、OrbStack、2026-10-07 实测）。
 > 本仓库历史上出现过三个互不相等的数字 —— RUN.md 的 80MB、`Dockerfile` 头注的 ~68MB、R19 复核的 82.3MB —— 它们**不是同一个口径**：
-> `docker images` 的 `Size`、`docker image inspect .Size`（本镜像 17.7MiB = 18583983 字节）、镜像内 `du -sb /public`（27.4MB）、
+> `docker images` 的 `Size`、`docker image inspect .Size`（本镜像 17.7MiB = 18583948 字节，2026-10-07 实测 `docker image inspect -f '{{.Size}}' webees-facedb-web:latest`）、镜像内 `du -sb /public`（27.4MB）、
 > 以及「基座 + 产物」相加，四者各不相同。连**架构**也要确认：本机 `joseluisq/static-web-server:2-alpine` 就是 arm64/linux（`docker image inspect -f '{{.Architecture}}/{{.Os}}'`），`docker images` 报 58.6MB，`docker image inspect -f '{{.Size}}'` 报 8,190,662 字节。
 > **结论：任何体积数字必须连口径、架构与测量命令一起写**，否则无法比较 —— 这正是 R19 报「三处数字不一致」的根因。
 > 当前读数（2026-10-07，镜像 `webees-facedb-web:latest`）：`docker images` = 66.6MB，其中产物（镜像内 `/public`）= 27.4MB。
@@ -1335,7 +1335,7 @@ rm -rf dist && npm run build && ls dist/static/js/index.*.js
 
 两者 hash 不同即说明镜像已落后，先 `docker compose build web` 再推送。
 
-脚本：运行根的 `check-image-freshness.mjs` 已把上面两步做成一次比对。
+脚本：`<运行根>/lib/legacy/check-image-freshness.mjs` 已把上面两步做成一次比对。
 
 **教训（R14-X5 实测）**：**运行中的容器不等于源码重建产物**。当时宿主机是 arm64，含最新修复的 `webees-facedb-web:latest` 实测为 amd64/linux 无法运行，容器仍在跑 2026-10-06 19:55 的 arm64 备份镜像，当时 3000 端口实供 `index.7211a9f260.js`（不含 `linkTooLong` 闸门、无 `\p{Cc}` 过滤）——**前端源码已修、线上仍是旧行为**。故指纹比对必须取**容器实供产物**。
 
@@ -1535,14 +1535,52 @@ Cloudflare 隧道 → caddy:80 → facedb-web:3000 / facedb-api:8090（edge-net 
 |---|---|---|---|
 | `cap_drop: [ALL]` | ✅ | ✅ | PB 只监听 8090（非特权端口）、只写 /pb_data 与只读的 /pb_migrations；静态服务器只读文件并发送。实测 `CapEff: 0000000000000000` |
 | `security_opt: no-new-privileges:true` | ✅ | ✅ | 即使镜像里有 setuid 二进制也无法提权 |
-| `read_only: true` + `tmpfs: /tmp` | ❌ | ✅ | 静态服务器不需要写任何路径。可写根意味着一旦托管进程被拿下，**改过的 JS 能被写回镜像层持久化**（与「pb_migrations 必须只读」是同一类风险）。实测 `touch /public/x` → `Read-only file system` |
+| `read_only: true` + `tmpfs` | ✅ | ✅ | web：静态服务器不需要写任何路径，可写根意味着一旦托管进程被拿下，**改过的 JS 能被写回镜像层持久化**（与「pb_migrations 必须只读」是同一类风险）。实测 `touch /public/x` → `Read-only file system`。PB：R19 实测 SQLite 的 `-wal`/`-shm` 落在 `/pb_data` 内，只读根下功能完整（见下条） |
 
 **刻意没做的两项，及原因**：
 
-- **不以非 root 运行 PB**：`pb_data` 是宿主目录挂载，其属主不是容器内的普通 uid；改成非 root 后 SQLite 写不进去。要么改宿主属主（会动到真实采集数据的所有权），要么给容器内 uid 对齐 —— 两者都不值得为这点收益冒险。**接受的风险**：容器内进程以 root 运行（但无 capability、无法提权、只挂载两个目录）。
-- **PB 不开只读根**：PB 除 `/pb_data` 外还要写 SQLite 的 `-wal`/`-shm` 与临时文件，位置未逐项验证。**未验证 ≠ 可用**，故不开（记为接受的风险）。
+- **不以非 root 运行 PB（理由只在 Linux 宿主成立）**：`pb_data` 是宿主目录挂载，其属主不是容器内的普通 uid；改成非 root 后 SQLite 写不进去。要么改宿主属主（会动到真实采集数据的所有权），要么给容器内 uid 对齐 —— 两者都不值得为这点收益冒险。**接受的风险**：容器内进程以 root 运行（但无 capability、无法提权、只挂载两个目录）。⚠️ 本机（macOS + OrbStack，`/pb_data` 是 virtiofs）容器内**不校验权限位**，实测 `--user 1000:1000` 与 `--user 65534:65534` 都能 healthy 且真实写入成功 —— 这是**宿主差异**，不是这条理由错了，别拿本机读数否证它。
+- ~~**PB 不开只读根**~~ → **R19 已改为开启**。原先的理由（「PB 除 `/pb_data` 外还要写 `-wal`/`-shm` 与临时文件，位置未逐项验证」）经实测**不成立**：`-wal`/`-shm` 就在 `/pb_data` 内。只读根下 PB 启动、超管 upsert、`POST /api/backups` 建包（217778 B）、`POST /api/collections/captures/records` 全部成功，日志 EROFS/PermissionDenied 命中 0。唯一先决条件是 `/pb_data` 可写（把它也挂 `:ro` → `Exited(1)`，`unable to open database file: out of memory (14)`）。
 
-**验证方式**（每条都有实测值，不是「应该可以」）：`lib/r14-r19-hardening-verify.mjs` 共 16 项 —— 运行与健康态、`docker inspect` 的 `CapDrop`/`SecurityOpt`/`ReadonlyRootfs`、容器内 `CapEff`、首页与 wasm 与 SPA 回退三个真 HTTP 200、容器内 /public 与根目录写入确实被拒、超管登录 + `captures` 记录数不变（加固不伤数据）、含 U+0085 的 `session_id` 仍被 400 拒（迁移约束仍在）。结果见 `evidence/R14-r19-hardening.log`。
+**验证方式**（每条都有实测值，不是「应该可以」）：`<运行根>/lib/r14-r19-hardening-verify.mjs` 共 **22 项** —— 运行与健康态、`docker inspect` 的 `CapDrop`/`SecurityOpt`/`ReadonlyRootfs`（**两容器都要求 `true`**，与 compose 声明逐条对齐）、容器内 `CapEff`、PB 的 tmpfs `size=64m` 与 `TZ=UTC` 与日志轮转 `20m×5` 运行值、PB 根不可写而 `/pb_data` 仍可写、首页与 wasm 与 SPA 回退三个真 HTTP 200、容器内 `/public` 与根目录写入确实被拒、超管登录 + `captures` 记录数不变（加固不伤数据）、含 U+0085 的 `session_id` 仍被 400 拒（迁移约束仍在）。结果见 `evidence/R14-r19-hardening.log`。
+
+**声明面机检**（静态、随时可跑、已进回归）：`<运行根>/lib/check-compose-hardening.mjs` A1–A9 —— 只读根 / tmpfs size / logging 轮转 / TZ / `cap_drop`+`no-new-privileges` 在**两个服务上都要有**，外加两条反向断言（每个服务块必须出现全部必需键；挂载点必须真实存在）与「RUN.md 不得再把『PB 不开只读根』写成现状」。四关探针 9/9（值级变异 5 个各只打红对应断言、块级变异 2 个、零样本防线 exit 2），见 `evidence/R19-compose-judge-probe.log`。
+
+**成对验收**（「PB 开只读根」这件事本身的证据）：同一份 `docker-compose.yml`，`read_only` 关/开各起一次真实栈（派生文件只改项目名/容器名/端口/数据目录，diff 逐行留档），**19/19 通过** —— 关时根可写、开时 `Read-only file system`；两种情况下 `/api/health` 200、超管认证拿到 token、带鉴权 `GET captures` 200（迁移已应用）、`POST /api/backups` 204 且列得出 `.zip` 产物、web 首页 200、PB 日志 EROFS/PermissionDenied 命中 0、`CapEff` 均为 0。另在**全新空数据目录**上定点复核「备份产物确实由这一次 POST 产生」（POST 前 0 个、POST 后恰 1 个 217818 B 的 zip），见 `evidence/R19-LEAD-compose-ab.log`。
+
+**部署状态**：本机栈已于 2026-10-07 23:39（+07）用 `docker compose up -d --no-build` 重建，声明与运行值一致（见 `evidence/R19-deploy.log`）。
+
+### ⚠️ PB 的 healthcheck 只证明「进程活着」：四条边界必读（R19 实测）
+
+compose 给 PB 的 healthcheck 打 `/api/health`，该端点**是静态应答**（实测 0.8–1.7ms，不打开数据库）。
+四组读数由独立席位与主线各跑一遍，结论一致（`evidence/R19-LEAD-health-probe6.log`、`evidence/W19-A-*.log`）：
+
+| 故障形态 | 容器 `health` | compose 那条命令的退出码 | 真实 API 表现 |
+|---|---|---|---|
+| 库被**容器侧**独占锁（`BEGIN EXCLUSIVE`） | healthy | 0 | `GET records` **400**、`POST records` **60 s 超时** |
+| `data.db` **缺失**后重启 | healthy | 0 | **静默新建空库**（4096 B）、旧超管 400、`captures` 0 条、数据全丢 |
+| `data.db` **损坏**后重启 | 无容器（`Exited(1)`） | 1 | PB 拒绝启动，日志 `file is not a database (26)`，**坏文件原样保留、不静默重建** |
+| `--migrationsDir` 指向空目录 | healthy | 0 | `GET /api/collections/captures` **404**（集合全缺） |
+
+四条纪律：
+
+1. **`healthy` ≠ 采集服务可用**。它只证明进程在监听。要判可用性，必须发一个真的带鉴权业务请求。
+2. **`data.db` 缺失是静默数据丢失**（PB 当成首次运行并重放迁移），编排层完全无信号 —— 库文件必须有编排之外的备份。
+3. **库损坏时 PB `exit 1`**，配 `restart: unless-stopped` 会变成无限重启、容器永不 healthy；这一形态没有「活着但不可用」的中间态。
+4. `timeout: 5s` 与 `retries: 3` **对数据库故障永不触发**（探测端点与故障路径不相交，响应时间差四个数量级）。
+
+**故障注入的装置要求（否则是假覆盖）**：本机 `/pb_data` 是 virtiofs，**宿主侧** `sqlite3 … BEGIN EXCLUSIVE`
+的锁**不会传播到容器** —— 容器内 PB 照常写成功。必须让**同挂载的另一个容器**持锁，并先用第二个容器
+`BEGIN IMMEDIATE` 验证锁真的生效（`evidence/R19-LEAD-readiness-probe6.log`）。
+
+### ⚠️ 只读核对也会改写生产库：超管认证会写 `data.db`
+
+「只做只读核对、不写生产库」在 PocketBase 上**不成立**：一次**超管认证**就会写 `data.db`（写入先进 WAL，主库只在 checkpoint 时变字节）。实测（`evidence/R19-LEAD-prodwrite-source.log`）：静止 20 s 主库与 `-wal` 均不变 → 只发一次超管认证 → **`-wal` 366712 → 379072 字节（+12360）** → 只发一次 `/api/health`、只发一次匿名列表读 → 两者**都不动主库、也不动 WAL**。
+
+因此：
+
+- 核对生产库**先 `cp` 副本、读副本**（`--dir` 指向副本），绝不原地打开。
+- 「`data.db` 的 md5 前后逐字相同」**不是**可靠的合规不变量：本工程一轮审计里它就变了三次（`53564bbb…` → `a4d4a5fb…` → `52db9103…`，size 恒 4382720）。该断言的是**逻辑完整性**：`_collections WHERE system=0` 的集合数、关键表行数、超管可登录。
 
 **通用教训**：加固必须验证**功能与数据都没被一起关掉**。只证明「写不进去」而不跑一遍正常读写路径，等于把「服务挂了」误当成「加固成功」。
 
@@ -1550,7 +1588,7 @@ Cloudflare 隧道 → caddy:80 → facedb-web:3000 / facedb-api:8090（edge-net 
 ## 部署（nanopc-t6-lts）
 
 已部署到 `nanopc-t6-lts:/data/apps/facedb/`，服务名 `web`（前台）+ `api`（后台）。
-完整记录见**审计运行根**的 `DEPLOY-nanopc.md`（该文件不入库，仓库内不存在同名文件）。
+完整记录见**审计运行根**的 `DEPLOY-nanopc.md` —— 该文件不入库，且**只存在于上一轮运行根** `run-20261005-010657/DEPLOY-nanopc.md`，当前运行根 `run-20261006-160618/` 下并没有它（引用悬空，见 `findings/R19-LEAD.json`）。
 
 ### ⚠️ 迁移链的两个陷阱（只在「从零部署」时暴露）
 
