@@ -211,7 +211,12 @@ async function post(build: () => FormData, what: string, deadline: number): Prom
     } finally {
       clearTimeout(timer)
       // 只清自己那一个：若下一次尝试已经接手，不能把它也清掉
-      if (inflightCtl === ctl) inflightCtl = null
+      if (inflightCtl === ctl) {
+        inflightCtl = null
+        // 后台宽限定时器也一并清（R13-F10）：早先只有「成功」与「回到前台」两条路径调
+        // clearGrace()，而失败 / 永久错误 / 预算耗尽都会留下一个 5 秒定时器（实测 1 个）。
+        clearGrace()
+      }
     }
     if (attempt < 2) {
       const backoff = 1000 * 2 ** attempt

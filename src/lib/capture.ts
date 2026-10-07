@@ -85,6 +85,13 @@ const MIN_SEGMENT_BYTES = 60 * 1024
 let lastSegment: { blob: Blob; mime: string } | null = null
 /** 正在进行的收尾操作；用于串行化，避免并发调用读到尚未赋值的 lastSegment */
 let finalizing: Promise<void> | null = null
+/**
+ * 所有「创建成功」的录制器都登记在这里，拆卸时逐个停（R13-F10）。
+ * 为什么不能只靠模块级的 rec：它只指最新那一个实例，而下面两条路径都会让更早的实例
+ * 落到 rec 之外 —— ① 收尾还在飞时上层又开了新段（retry 与 advance 交叉）；② 收尾在飞时组件被卸载。
+ * 实测（桩环境）：拆卸后仍有 4 个非 inactive 的录制器没人停。
+ */
+const liveRecorders = new Set<MediaRecorder>()
 /** 正在录制的采集点；未录制时为 null。用于让「开段」幂等。 */
 let currentPose: string | null = null
 /**
@@ -215,8 +222,27 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
  * （代价见 STOP_TIMEOUT_MS 的说明：兜底路径可能丢最后 ≤500ms 的尾块）。
  */
 function finalize(): Promise<void> {
-  // 已有一个收尾在跑：直接复用，避免并发时重复 stop 与竞态
-  if (finalizing) return finalizing
+  // 已有一个收尾在跑：复用它的 promise（不能重复收尾，否则 stop 与 collectSegment 互相抢），
+  // 但**不能就此把当前这一段丢在外面**：并发窗口里上层可能已经重开了段，那个新实例既不在
+  // 老收尾的持有范围内，也没有别人会停它 —— 实测它会一直录到页面销毁。
+  if (finalizing) {
+    if (timer) {
+      clearTimeout(timer)
+      timer = undefined
+    }
+    const stray = rec
+    rec = null
+    recStream = null
+    if (stray && stray.state !== 'inactive') {
+      liveRecorders.delete(stray)
+      try {
+        stray.stop()
+      } catch {
+        // 已停止 / 实现不支持 stop：句柄已清空，不再持有
+      }
+    }
+    return finalizing
+  }
   // 记下本段属于哪一代、以及哪一代的 chunk 数组：
   // 收段是异步落地的，期间采集点可能已经翻篇、新段也已开始攒数据。
   const myEpoch = epoch
@@ -275,12 +301,30 @@ function begin(stream: MediaStream, pose: string | null): boolean {
   currentPose = pose
   segmentStart = performance.now()
   mime = pickVideoMime()
+  // 开新段前先停掉上一个还活着的实例（若有）：它已经不属于任何一段了，
+  // 留着就是「界面以为没在录、实际还在录」。
+  if (rec && rec.state !== 'inactive') {
+    const prev = rec
+    liveRecorders.delete(prev)
+    try {
+      prev.stop()
+    } catch {
+      // 已停止：忽略
+    }
+  }
+  if (timer) {
+    clearTimeout(timer)
+    timer = undefined
+  }
   // 本代自己的 chunk 数组：本代回调只写这一份（闭包捕获 mine，不再读模块级 chunks）。
   // 为什么必须这样：finalize() 调 stop() 后排队的 dataavailable 可能在本代结束之后才派发，
   // 若回调读模块级 chunks，那一块就会被 push 进【新段】的数组，成为新 blob 的第一个 chunk ——
   // 上一采集点的画面接在新采集点头上，而时长与体积都看不出异常。
   const mine: Blob[] = []
   chunks = mine
+  // 本段属于哪一代：8 秒上限的回调会跨代执行（收尾在飞时又开了新段），
+  // 到点时若代次已经翻篇，这次续录不再属于任何一段，必须放弃。
+  const myEpoch = epoch
   let r: MediaRecorder
   try {
     r = new MediaRecorder(
@@ -294,6 +338,7 @@ function begin(stream: MediaStream, pose: string | null): boolean {
   }
   rec = r
   recStream = stream
+  liveRecorders.add(r)
   r.ondataavailable = (e) => {
     if (e.data.size > 0) mine.push(e.data)
   }
@@ -309,7 +354,11 @@ function begin(stream: MediaStream, pose: string | null): boolean {
   // 直到切采集点或卸载页面。这里让「自发停止」也走同一条收尾路径。
   // 注意：finalize() 会把 rec 置空后再覆盖 onstop，因此本回调里用 `rec !== r` 判定是否已被接管。
   r.onstop = () => {
-    if (rec !== r) return // 已被 finalize 接管，或已经换了新实例
+    if (rec !== r) {
+      liveRecorders.delete(r) // 已被 finalize 接管：登记表里也不能再留着它
+      return
+    }
+    liveRecorders.delete(r)
     clearTimeout(timer)
     timer = undefined
     collectSegment(mine, epoch)
@@ -324,6 +373,7 @@ function begin(stream: MediaStream, pose: string | null): boolean {
     // 启动失败（流已结束、编解码组合不被支持）时必须把句柄清干净：
     // 否则 isPoseRecording() 会返回 true，上层以为在录、不再重试，而一个字节都没录到。
     console.warn('[seg] 录制器启动失败', e)
+    liveRecorders.delete(r)
     rec = null
     recStream = null
     currentPose = null
@@ -336,11 +386,13 @@ function begin(stream: MediaStream, pose: string | null): boolean {
     // 这样「用户迟迟不达标」不会导致无限录制，也不会出现空档。
     // 已被拆卸（cleanup/卸载）：不再收段、不再续录（R13-F8）
     if (!autoRearm) return
+    // 代次已翻篇（本段早已被收掉、上层开了新段）：这次到点不属于任何一段，放弃续录（R13-F10）
+    if (epoch !== myEpoch) return
     console.debug('[seg] 到 ' + POSE_MAX_MS / 1000 + ' 秒上限，收段并续录')
     const keepPose = currentPose
     void finalize().then(() => {
-      // 收尾期间可能已被拆卸：续录前再判一次，堵住「收尾在飞时空转」这条路径
-      if (autoRearm) begin(stream, keepPose) // begin 内部会重置 segmentStart
+      // 收尾期间可能已被拆卸或已换代：续录前再判一次，堵住「收尾在飞时空转」这条路径
+      if (autoRearm && epoch === myEpoch) begin(stream, keepPose) // begin 内部会重置 segmentStart
     })
   }, POSE_MAX_MS)
 
@@ -420,6 +472,17 @@ export function teardownRecorder(): void {
   rec = null
   recStream = null
   currentPose = null
+  // 登记表里的每一个都要停：模块级 rec 只覆盖最新那一个（R13-F10）
+  for (const other of [...liveRecorders]) {
+    if (other === r) continue
+    liveRecorders.delete(other)
+    try {
+      if (other.state !== 'inactive') other.stop()
+    } catch {
+      // 已停止 / 实现不支持 stop：忽略
+    }
+  }
+  if (r) liveRecorders.delete(r)
   if (r && r.state !== 'inactive') {
     try {
       r.stop()
