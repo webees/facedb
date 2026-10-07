@@ -627,6 +627,28 @@ if (ok + fail === 0) console.log('⚠️ 未执行任何用例，不能判定为
 
 **已按此复核**：文档里的 14 条命令逐条真正执行（含远端），全部跑通。
 
+### 第三种：前置条件恒为假（断言永不执行，却仍报通过）
+
+R20 实测：指纹判据用 `git ls-files` 判「二进制本体是否入库」，而该文件在 `.gitignore` 里 →
+`tracked` 恒为 `false` → 后面三条「本体 sha256/md5/大小必须命中清单」的断言**一次都没执行**，
+判据却照常打印「通过」。它因此**结构性无法发现「二进制被替换但清单未重锚」**。
+
+**做法**：前置条件失败必须**判红或判未判定**，不能静默跳过。若「文件未入库」本身是合法状态，
+也要把该状态下的断言换成另一套等价强度（例：未入库时直接读实际文件比对清单，而不是跳过）。
+
+### 第四种：前缀匹配冒充「某条命令/断言存在」
+
+`npm run verify:notices` 是 `npm run verify:notices-selftest` 的**前缀**；`I1` 是 `I11` 的前缀。
+用 `includes('npm run verify:notices')` 检查 CI 是否跑了真判据，会让「删掉真判据、只留自检」照样判绿
+（R20 实测：写这条断言时漏抓，加了专用变异体才暴露）。
+
+**做法**：凡「要求某条命令/断言存在」的断言，必须**行级或词边界**匹配
+（如 `^\s*run:\s*npm run verify:notices\s*$`），并且**必须有一个变异体专门验证这一条**。
+
+### 第五种：按状态码判「可达」
+
+见下一节「静态资源存在性：200 不等于存在」。
+
 ## 注释与实现脱节是本项目的高发问题
 
 已经出现过多次，且每次都只在刻意核对时才发现：
@@ -1508,6 +1530,48 @@ SPA 回退（`SERVER_FALLBACK_PAGE`）**只对 GET 请求生效** —— 这是 
 - `GET /api/health` —— 后端是否可用
 
 （此行为已裁定为接受，见 `decisions/R03-05-head-vs-get.md`。）
+
+### 静态资源存在性：200 不等于存在（R20 实测）
+
+上面那条说的是「HEAD 会误判 404」，反方向同样成立：**GET 拿到 200 也不代表那个文件被提供了** ——
+SPA 回退会把不存在的路径交给 `index.html`，于是返回 200 加一整页 HTML。
+
+实测（镜像未重建、`dist` 里还没有该文件时）：
+
+| 请求 | 状态码 | content-type | 正文 | 正文 sha256 |
+|---|---|---|---|---|
+| `GET /THIRD-PARTY-NOTICES.md` | 200 | `text/html` | 10357 B（就是 index.html） | 与 index.html 相同 |
+| `GET /SHA256SUMS` | 200 | 与本地 `dist/SHA256SUMS` 相同 | 逐字节相同 | `e0357ae4fdee5d24…` |
+
+**做法**：校验静态资源是否真的被分发，必须**比内容**（sha256 或「长度 + content-type」），
+不能只看状态码。`node scripts/check-third-party-notices.mjs --live <url>` 就是按 sha256 比对的实现，
+它在镜像重建前会如实报红，并在输出里点明「这是 SPA 回退（返回的是 index.html），不是声明文件」。
+
+## 第三方许可随分发物提供（R20）
+
+**问题**：源码树里有许可、`dist` 里没有，等于**分发时没有**。实测 `dist` 里承载 MediaPipe 的 chunk
+（`m.79c0ab86b6.js`，154243 B，`FaceLandmarker` 出现 13 处）此前没有任何许可文本，唯一侧车
+`lib-vue.*.js.LICENSE.txt` 只含 4 条 `@vue/*` 的 MIT；`node_modules/@mediapipe/tasks-vision` 包内也没有许可原文。
+
+**处置**：
+
+- `THIRD-PARTY-NOTICES.md`（仓库根）—— Apache-2.0 **官方全文**（11357 B / 201 行，含 APPENDIX；
+  取自 `node_modules/detect-libc/LICENSE`，**不要用 TypeScript 那份**：它被重排且删了 APPENDIX）、
+  MIT 全文、MediaPipe 归属段、按运行期闭包逐行列出的 32 个包（`name | version | license`）。
+- `rsbuild.config.ts` 的 `output.copy` 把它复制进 `dist/`，使分发物自带许可原文。
+- `docs/THIRD-PARTY.md` 补运行期闭包表与「随镜像分发的第三方资源」节（`public/wasm` 4 文件 +
+  `face_landmarker.task` 3758596 B，Apache-2.0 —— `Dockerfile:66-70` 会断言它们必须进镜像）。
+
+**判据**（`scripts/check-third-party-notices.mjs`，N1–N10）：
+
+```
+npm run verify:notices            # 需要 dist：先 npm run build；dist 不存在判「未判定」exit 2，不判通过
+npm run verify:notices-selftest   # 9 个变异体，必须 9/9 被抓
+node scripts/check-third-party-notices.mjs --live http://localhost:3000   # 按 sha256 比对线上副本
+```
+
+判据故意**不进 `verify:all`**：它需要 `dist`，进链会让全新克隆无构建即失败。
+CI 在「生产构建」之后单独跑 `npm run verify:notices`（`.github/workflows/ci.yml`）。
 
 ## 暴露面：生产部署不发布宿主机端口
 
