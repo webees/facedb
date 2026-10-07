@@ -2,8 +2,13 @@
 * text=auto eol=lf
 
 # 二进制资源：禁用行尾转换与差异文本化。
+# 当前命中的（真资产，按 public/SHA256SUMS 登记）：
 *.wasm binary
 *.task binary
+
+# 预留：本仓库当前 0 命中。留着是为了「以后加图片/字体/视频时不会忘配」，
+# 但**不要假设它们正在生效** —— 本文件由审计判据 check-repo-config-hygiene.mjs 的 A1 检查
+# 「每条规则要么命中 ≥1 个已跟踪文件、要么标注『预留』」，零命中又没标注即判红。
 *.png binary
 *.jpg binary
 *.jpeg binary

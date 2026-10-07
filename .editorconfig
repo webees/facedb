@@ -14,5 +14,14 @@ trim_trailing_whitespace = false
 [*.{yml,yaml,json}]
 indent_size = 2
 
-[Makefile]
-indent_style = tab
+# vendored 运行时：被 public/SHA256SUMS 按 sha256 逐字节登记，不是手写代码。
+# 实测 public/wasm/vision_wasm_internal.js 与 vision_wasm_nosimd_internal.js 各有 16 行带行尾空格 ——
+# 任何遵循本文件的编辑器/格式化钩子一旦保存它们，哈希就变：public-integrity 判据红，
+# 且实际运行的运行时与登记值不符（而「文件被换过」正是这份清单要防的事）。
+# 故这里显式关掉所有会改写内容的项。判据见审计运行根的 check-repo-config-hygiene.mjs（A3）。
+[public/wasm/*.js]
+trim_trailing_whitespace = false
+insert_final_newline = false
+
+# 预留：本仓库当前没有 Makefile（0 命中）。加回一条 `[Makefile] indent_style = tab` 之前，
+# 请先让 `check-repo-config-hygiene.mjs` 的 A2（零命中段落必须标注「预留」）能过。
