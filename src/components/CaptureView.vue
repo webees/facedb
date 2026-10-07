@@ -303,6 +303,13 @@ async function startCamera(deviceId?: string): Promise<void> {
   else video.facingMode = 'user'
   // 先取到新流再停旧流：切换失败时旧流仍可用，采集会话不作废。
   const next = await navigator.mediaDevices.getUserMedia({ video, audio: false })
+  // 卸载守卫（R13-F10）：等待期间组件可能已经卸载（onBeforeUnmount 里的 stopStream/cleanup
+  // 早就跑完了）。这条流此刻没有任何接管者，必须就地停掉 —— 否则轨道一直活着、
+  // 摄像头指示灯亮着。实测修复前：tracks_live=1 / tracks_stopped=0 / streams_live=1。
+  if (disposed) {
+    for (const t of next.getTracks()) t.stop()
+    return
+  }
   stopStream()
   stream = next
   // 采集中途设备断开时 video 会停在最后一帧，逐帧判定只会报「未检测到人脸」，
@@ -657,7 +664,12 @@ onMounted(async () => {
     cameraError(e)
     return
   }
-  if (disposed) return
+  if (disposed) {
+    // 卸载竞态：模型/摄像头是异步拿到的，等它回来时组件已经卸载，
+    // 这条流不会被任何后续逻辑接管，必须在这里释放。
+    stopStream()
+    return
+  }
   // 摄像头就绪即为第 1 个采集点开录（后续各段由 advance() 启动）。
   // 注意：必须在 onMounted 里调用一次，不能放在 loop() 里 —— 那会变成每帧调用，
   // 既是无谓开销，也会在录制器异常置空后反复重开段。

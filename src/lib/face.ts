@@ -29,6 +29,12 @@ const DEG = 180 / Math.PI
 let landmarker: FaceLandmarker | null = null
 /** 进行中的初始化；并发调用时复用它，避免重复创建模型（会泄漏一个实例）。 */
 let initPromise: Promise<void> | null = null
+/**
+ * 初始化代次：closeFace() 每调一次就自增。模型加载要数秒，这期间组件可能已经卸载并
+ * 调过 closeFace() —— 那次 close 手上没有实例可关，若初始化落地后仍写回 landmarker，
+ * 这个实例就再也没人关（实测 created=1 / closed=0，且关闭后仍被 detectFace 使用）。
+ */
+let initGen = 0
 
 /**
  * 最多检测的人脸数。**必须 >= 2**。
@@ -42,6 +48,19 @@ let initPromise: Promise<void> | null = null
 const NUM_FACES = 2
 
 async function createLandmarker(): Promise<void> {
+  const gen = initGen
+  // 落地即检查代次：不一致说明这次创建已被 closeFace 作废，直接关掉、绝不写回模块变量。
+  const adopt = (inst: FaceLandmarker): void => {
+    if (gen !== initGen) {
+      try {
+        inst.close()
+      } catch {
+        // 已关闭：忽略
+      }
+      return
+    }
+    landmarker = inst
+  }
   const fileset = await FilesetResolver.forVisionTasks('/wasm')
   const base = {
     runningMode: 'VIDEO' as const,
@@ -50,16 +69,20 @@ async function createLandmarker(): Promise<void> {
     outputFacialTransformationMatrixes: true,
   }
   try {
-    landmarker = await FaceLandmarker.createFromOptions(fileset, {
-      ...base,
-      baseOptions: { modelAssetPath: '/face_landmarker.task', delegate: 'GPU' },
-    })
+    adopt(
+      await FaceLandmarker.createFromOptions(fileset, {
+        ...base,
+        baseOptions: { modelAssetPath: '/face_landmarker.task', delegate: 'GPU' },
+      }),
+    )
   } catch {
     // GPU 委托不可用时回退 CPU（部分设备/浏览器没有可用的 WebGL2）
-    landmarker = await FaceLandmarker.createFromOptions(fileset, {
-      ...base,
-      baseOptions: { modelAssetPath: '/face_landmarker.task', delegate: 'CPU' },
-    })
+    adopt(
+      await FaceLandmarker.createFromOptions(fileset, {
+        ...base,
+        baseOptions: { modelAssetPath: '/face_landmarker.task', delegate: 'CPU' },
+      }),
+    )
   }
 }
 
@@ -75,6 +98,8 @@ export function initFace(): Promise<void> {
 
 /** 释放模型资源；不释放会在移动端残留耗电与显存占用。 */
 export function closeFace(): void {
+  // 自增代次：让还在地飞中的初始化在落地时自我作废（R13-F10）
+  initGen++
   landmarker?.close()
   landmarker = null
   initPromise = null
