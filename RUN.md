@@ -436,9 +436,23 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 > `docker images` 的 `Size`、`docker image inspect .Size`（本镜像 17.7MiB = 18583948 字节，2026-10-07 实测 `docker image inspect -f '{{.Size}}' webees-facedb-web:latest`）、镜像内 `du -sb /public`（27.4MB）、
 > 以及「基座 + 产物」相加，四者各不相同。连**架构**也要确认：本机 `joseluisq/static-web-server:2-alpine` 就是 arm64/linux（`docker image inspect -f '{{.Architecture}}/{{.Os}}'`），`docker images` 报 58.6MB，`docker image inspect -f '{{.Size}}'` 报 8,190,662 字节。
 > **结论：任何体积数字必须连口径、架构与测量命令一起写**，否则无法比较 —— 这正是 R19 报「三处数字不一致」的根因。
-> 当前读数（2026-10-07，镜像 `webees-facedb-web:latest`）：`docker images` = 66.6MB，其中产物（镜像内 `/public`）= 27.4MB。
-> 产物有两种口径，同一份产物差 546 字节：`find /public -type f -exec cat {} + | wc -c` = **27,408,705**（文件字节和）、
-> `du -sb /public` = **27,409,251**（`du` 把目录项自身也算进去：12 个文件 + 1 个目录）。
+> 当前读数（R21 复测，2026-10-08；**从 HEAD 全新构建**的镜像，不是线上那份旧构建）：`docker images` = 66.7MB，其中产物（镜像内 `/public`）= 27.4MB。
+> **同一镜像、同一次构建，六套口径两两不等**（2026-10-08 实测，运行根 `evidence/R21-LEAD-size-calibers.log`）：
+>
+> | 口径 | 测量命令 | 读数 |
+> |---|---|---|
+> | `docker images` 显示值 | `docker images webees-facedb-web:latest` | 66.7MB |
+> | 镜像压缩层总大小 | `docker image inspect -f '{{.Size}}' …` | 18,593,780 字节（17.73 MiB） |
+> | 各层解压后之和 | `docker history` 的 `Size` 逐层求和 | 48,136,900 字节 |
+> | 容器内整棵根文件系统 | `docker run --rm --entrypoint sh … -c 'du -sb /'` | 85,863,301 字节 |
+> | 容器内产物目录 | `… -c 'du -sb /public'` | 27,430,235 字节 |
+> | 宿主 `dist` 文件字节和 | `find dist -type f -exec stat -f %z {} + \| awk '{s+=$1} END{print s}'` | 27,429,645 字节 |
+>
+> 注意 `docker image inspect .Size`（18.6MB）竟然**小于**镜像内 `/public`（27.4MB）—— 机制未查证，此处只作口径事实登记，不据此下结论。
+> 产物文件数：**13 个**（宿主 `dist` 与镜像内 `/public` 一致）。历史上写的「12 个文件」是 R20-F7 之前的读数 ——
+> 第 13 个是 `THIRD-PARTY-NOTICES.md`（17,084 字节），由提交 `55f576b` 引入并经 `rsbuild.config.ts` 的 `output.copy` 拷进产物。
+> 产物有两种口径，同一份产物差 590 字节：`find /public -type f -exec cat {} + | wc -c` = **27,429,645**（文件字节和）、
+> `du -sb /public` = **27,430,235**（`du` 把目录项自身也算进去：13 个文件 + 1 个目录）。
 > 复测命令（可原样复跑））：
 
 ```bash
@@ -447,8 +461,14 @@ docker run --rm --entrypoint sh webees-facedb-web:latest -c 'find /public -type 
 >
 > （R21 删掉不可达的 `vision_wasm_module_internal.*` 后，产物由 39.5MB 降到 27.4MB。）
 
+**⚠️ 产物清单哈希隐含绑定构建环境**（R21 实测，运行根 `evidence/R21REV-05-*.log`）：设置 `PUBLIC_PB_URL` 后重新构建，
+`index.html` 的 sha256 由 `38a0c86f…` 变成 `2a5906d0…`、入口 chunk 由 `index.cbc909cd34.js` 变成 `index.b2807a9a8b.js`，
+CSP 里还会追加 `https://pb.example.com wss://pb.example.com`。因此**任何「产物逐文件 sha256 清单」类基线都必须写明它的构建环境前提**：
+仓库 `.env`（被 `.gitignore` 忽略，当前 `PUBLIC_PB_URL=` 为空）一旦被本地填值，清单类判据会**整体变红**而不是报「环境不同」。
+`scripts/check-dist-size-budget.mjs` 对此的处理是：**检测到 `PUBLIC_PB_URL` 非空即判未判定（exit 2），绝不判通过**。
 
-**关键认识**：`dist` 只有 27.4MB（12 个文件），**镜像的大头从来不是产物，而是「托管它的服务器」**。
+
+**关键认识**：`dist` 只有 27.4MB（13 个文件），**镜像的大头从来不是产物，而是「托管它的服务器」**。
 
 > **产物字节数会随内容变动，不是恒定事实**：27,408,705 是 2026-10-07 从 `webees-facedb-web:latest` 里实测的快照；
 > 同一天另一次本地构建得到 27,408,703 —— 差 2 字节，因为那次构建包含尚未进镜像的 `index.html` 改动。
@@ -1753,6 +1773,22 @@ mkdir -p /tmp/migcheck && docker run --rm \
 | down 体抛错时**退出码仍是 0** | PB 打印 `Error` 行但继续执行后续迁移，退出码 0 | 同上：判失败必须 grep `Error`，CI 只判退出码会漏掉回滚失败 |
 
 另：运行中的 PB 有 schema 内存缓存，**行为探针判不了 CLI 迁移是否生效** —— 要读 schema 就直连 `data.db`（`sqlite3 'file:…?mode=ro'`）。
+
+**⚠️ `migrate down N` 的回退顺序：实测与上游源码不一致，且有一条记录永远回退不掉**（R21 实测，运行根 `evidence/R21-LEAD-down-order.log` 与 `evidence/R21-LEAD-ghost-row*.log`）：
+
+| 场景（全部在**生产库只读副本**上） | 实测回退对象 |
+|---|---|
+| `down 1` | **`1640988000_aux_init.go`**（PB 内置的 auxiliary 库初始化迁移）—— 不是最新那条 |
+| 紧接着再 `down 1` | **还是它**，且 `_migrations` 行数**不再变化**（纯空操作） |
+| `down 2` | `[1640988000_aux_init.go, 1778828400_normalize_indexes.go]` |
+| `down 16` / `down 17` | 分别删掉 16/17 行，但 `Reverted` 只打印 15/16 行（差 1） |
+| 空库全量 `up`（27 行）后 `down 1` | **正常**：回退最新一条 `1791281100_restrict_session_id_control_chars.js` |
+| 空目录直接 `down 1` | **正常**：回退 `1778828400_normalize_indexes.go` |
+
+→ 异常**只在既有生产库上**出现。能同时解释全部观测的唯一模型：走链顺序是「`1640988000_aux_init.go` 排第一，其余按 `applied` 降序；`_migrations` 里**文件已不存在**的行被静默跳过（不报错、不删记录、也不占 N）」。
+上游源码 `core/migrations_runner.go` 的 `lastAppliedMigrations` 是**纯 `applied DESC`**（`OrderBy("substr(applied||'0000000000000000', 0, 17) DESC")`）；把该 SQL（含 `file IN names` 过滤）在真实生产库上复算，`limit 2` 得到 `[1778828400_normalize_indexes.go, 1763020353_update_default_auth_alert_templates.go]`，与二进制实际行为**不一致**。**成因未查证**（疑与汉化 fork 的二进制有关：镜像内二进制 `--version` 只打印 `(untracked)`、无 vcs 信息）。此处只登记**实测行为**：**不要用 `down N` 去撤销某一条特定迁移**，要撤某条就用「前缀暂存法」（见上表）；也**不要**据此改源码或加硬断言。
+
+**幽灵记录（正常现象，不是缺陷）**：生产库 `_migrations` 有 28 行而仓库只有 19 个 `.js`，多出的那一行是 `1791206104_deleted_employees.js` —— 该迁移改名为 `1791206415_…` 之前已被应用过，改名后 PB 把新名字当新迁移重跑（up 体用 `try { … } catch { return }` 幂等跳过），而**旧名字的记录永远留在表里**：`down 27`（一路到底）之后表里**只剩这一行**。任何「`_migrations` 行数 == 迁移文件数」的断言都会误报。
 
 **⚠️ `_migrations` 行数是基座相关的，不是常量**（R20 实测，三个读数各有口径）：
 
