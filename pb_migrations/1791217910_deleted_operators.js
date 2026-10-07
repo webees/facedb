@@ -11,18 +11,18 @@ migrate((app) => {
   const collection = new Collection({
     "authAlert": {
       "emailTemplate": {
-        "body": "<p>Hello,</p>\n<p>We noticed a login to your {APP_NAME} account from a new location.</p>\n<p>If this was you, you may disregard this email.</p>\n<p><strong>If this wasn't you, you should immediately change your {APP_NAME} account password to revoke access from all other locations.</strong></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>",
-        "subject": "Login from a new location"
+        "body": "<p>你好，</p>\n<p>我们注意到你的 {APP_NAME} 账号在新位置登录：</p>\n<p><em>{ALERT_INFO}</em></p>\n<p><strong>如果这不是你本人，你应该立即更改你的 {APP_NAME} 账号密码，以撤销其他所有位置的访问权限。</strong></p>\n<p>如果是你本人，可以忽略此邮件。</p>\n<p>\n  此致，<br/>\n  {APP_NAME} 团队\n</p>",
+        "subject": "从新位置登录"
       },
       "enabled": true
     },
     "authRule": "",
     "authToken": {
-      "duration": 604800
+      "duration": 432000
     },
     "confirmEmailChangeTemplate": {
-      "body": "<p>Hello,</p>\n<p>Click on the button below to confirm your new email address.</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-email-change/{TOKEN}\" target=\"_blank\" rel=\"noopener\">Confirm new email</a>\n</p>\n<p><i>If you didn't ask to change your email address, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>",
-      "subject": "Confirm your {APP_NAME} new email address"
+      "body": "<p>你好，</p>\n<p>点击下方按钮确认你的新邮箱地址。</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-email-change/{TOKEN}\" target=\"_blank\" rel=\"noopener\">确认新邮箱</a>\n</p>\n<p><i>如果你没有请求更改邮箱地址，请忽略此邮件。</i></p>\n<p>\n  此致，<br/>\n  {APP_NAME} 团队\n</p>",
+      "subject": "确认你的{APP_NAME} 新邮箱地址"
     },
     "createRule": null,
     "deleteRule": null,
@@ -112,7 +112,7 @@ migrate((app) => {
     "listRule": null,
     "manageRule": null,
     "mfa": {
-      "duration": 1800,
+      "duration": 600,
       "enabled": false,
       "rule": ""
     },
@@ -129,8 +129,8 @@ migrate((app) => {
     "otp": {
       "duration": 180,
       "emailTemplate": {
-        "body": "<p>Hello,</p>\n<p>Your one-time password is: <strong>{OTP}</strong></p>\n<p><i>If you didn't ask for the one-time password, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>",
-        "subject": "OTP for {APP_NAME}"
+        "body": "<p>你好，</p>\n<p>你的一次性密码是：<strong>{OTP}</strong></p>\n<p><i>如果你没有请求一次性密码，可以忽略此邮件。</i></p>\n<p>\n  此致，<br/>\n  {APP_NAME} 团队\n</p>",
+        "subject": "{APP_NAME} 的一次性密码"
       },
       "enabled": false,
       "length": 8
@@ -145,18 +145,18 @@ migrate((app) => {
       "duration": 1800
     },
     "resetPasswordTemplate": {
-      "body": "<p>Hello,</p>\n<p>Click on the button below to reset your password.</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-password-reset/{TOKEN}\" target=\"_blank\" rel=\"noopener\">Reset password</a>\n</p>\n<p><i>If you didn't ask to reset your password, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>",
-      "subject": "Reset your {APP_NAME} password"
+      "body": "<p>你好，</p>\n<p>点击下方按钮重置你的密码。</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-password-reset/{TOKEN}\" target=\"_blank\" rel=\"noopener\">重置密码</a>\n</p>\n<p><i>如果你没有请求重置密码，请忽略此邮件。</i></p>\n<p>\n  此致，<br/>\n  {APP_NAME} 团队\n</p>",
+      "subject": "重置您的{APP_NAME} 密码"
     },
     "system": false,
     "type": "auth",
     "updateRule": null,
     "verificationTemplate": {
-      "body": "<p>Hello,</p>\n<p>Thank you for joining us at {APP_NAME}.</p>\n<p>Click on the button below to verify your email address.</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-verification/{TOKEN}\" target=\"_blank\" rel=\"noopener\">Verify</a>\n</p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>",
-      "subject": "Verify your {APP_NAME} email"
+      "body": "<p>你好，</p>\n<p>感谢你加入 {APP_NAME}。</p>\n<p>点击下方按钮验证你的邮箱地址。</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-verification/{TOKEN}\" target=\"_blank\" rel=\"noopener\">验证</a>\n</p>\n<p><i>如果你最近没有注册，请忽略此邮件。</i></p>\n<p>\n  此致，<br/>\n  {APP_NAME} 团队\n</p>",
+      "subject": "验证您的{APP_NAME} 邮箱"
     },
     "verificationToken": {
-      "duration": 259200
+      "duration": 86400
     },
     "viewRule": null
   });
