@@ -129,6 +129,18 @@ const M = [
     apply: () => mutate('package.json', (t) => t.replace(/\s*"verify:size": "node scripts\/check-dist-size-budget\.mjs",/, '')) },
   { id: 'M18', target: '.github/workflows/ci.yml', expect: 'S26', desc: 'CI 里那一步体积判据被删（构建之后没人量产物）',
     apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/\s*- name: 产物体积与构成判据[^\n]*\n\s*run: npm run verify:size\n/, '\n')) },
+  // R22：S27 守的是「发布卫生闸门已接线且修复不许回退」。五个接线段各来一个变异体 ——
+  // 旧版闸门的六类漏检全部来自「按扩展名当二进制跳过」，所以回退这类修复必须报红。
+  { id: 'M19', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '闸门退回按扩展名白名单判二进制（.pem/.bak 里的凭据会被静默跳过）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace('const RULES = [', "const TEXT_EXT = ['.txt', '.md', '.js']\n\nconst RULES = [")) },
+  { id: 'M20', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '阻断线默认退回 P0（公网 IP / Tailscale / 超管口令命中不再阻断）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace("process.env.LEAK_BLOCK_AT || 'P1'", "process.env.LEAK_BLOCK_AT || 'P0'")) },
+  { id: 'M21', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '令牌前缀收窄（摘掉 sk-proj- 这类新式形态）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace("  'sk-proj-[A-Za-z0-9_-]{20,}',\n", '')) },
+  { id: 'M22', target: 'package.json', expect: 'S27', desc: '闸门的变异自检 npm script 被摘掉（写了没人跑）',
+    apply: () => mutate('package.json', (t) => t.replace(/\s*"verify:publish-selftest": "node scripts\/publish-leak-scan-selftest\.mjs",/, '')) },
+  { id: 'M23', target: '.github/workflows/ci.yml', expect: 'S27', desc: 'CI 里那一步发布卫生闸门被删（PUBLIC 仓库推送前没人扫）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/\s*- name: 发布卫生闸门[^\n]*\n\s*run: npm run verify:publish\n/, '\n')) },
 ]
 
 let caught = 0

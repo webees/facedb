@@ -515,6 +515,73 @@ add({ id: 'S26', covers: ['scripts/lib/checker.mjs', 'scripts/check-dist-size-bu
   return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '3 个新文件 · 自定位（SIZE_ROOT / --dist）· 5 个阈值常量 · npm script 与 CI 步骤接线 · 阈值来源写明 · 未塞进 verify:all' }
 } })
 
+// ── S27 发布卫生闸门与它的变异自检的接线（R22） ──────────────────────
+// 为什么单独立一条：`webees/facedb` 是 PUBLIC 仓库，闸门漏检 = 不可逆泄露。R14REV 复核席实测
+// 旧版闸门对 6 类真实泄露形态全部 exit 0 命中 0（.bak 等非白名单扩展名被当二进制跳过、
+// .pem 私钥同样跳过、新式令牌前缀无规则、>2MB 文本跳过、被忽略的 .env 不在扫描面、
+// 默认阻断线只到 P0）。这里守的是**修复不许被改回去** + **接线是真的**：
+// 内容判二进制（不许退回扩展名白名单）、未判定必须 exit 2、阻断线默认 P1、
+// 令牌前缀齐、npm script 与 CI 以独立步骤跑闸门与电池。
+add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak-scan-selftest.mjs'], name: '发布卫生闸门已接线且修复不许回退（内容判二进制 / 未判定 exit 2 / 阻断线 P1 / 令牌前缀 / 电池接线）', run() {
+  const GATE = 'scripts/publish-leak-scan.mjs'
+  const MUT = 'scripts/publish-leak-scan-selftest.mjs'
+  const miss = []
+  for (const f of [GATE, MUT]) if (!has(f)) miss.push(`${f} 不存在`)
+  const g = has(GATE) ? read(GATE) : ''
+  const m = has(MUT) ? read(MUT) : ''
+  if (g) {
+    if (!/process\.env\.LEAK_SCAN_ROOT/.test(g) || !/import\.meta\.dirname/.test(g)) miss.push('闸门没有 LEAK_SCAN_ROOT / import.meta.dirname 自定位通道')
+    // 注意：闸门里允许出现 `/Users/<name>/` —— 那是 LOCAL-PATH 规则自身的正则文本（不是硬编码根）。
+    // 这里禁的是「拿本机绝对路径当扫描根」，即 /Users/<真用户名>/<真实目录>。
+    if (/\/Users\/[A-Za-z0-9_.-]+\/(Desktop|__GITHUB__|Projects|Documents)/.test(g)) miss.push('闸门里出现硬编码的本机绝对路径')
+    // 修复不许回退：内容判二进制（NUL 字节），且不许再出现扩展名白名单
+    if (!/subarray\(0,\s*8192\)\.includes\(0\)/.test(g)) miss.push('闸门没有按内容判二进制（前 8KB NUL 字节）—— 会退回按扩展名跳过 .pem/.bak')
+    if (/TEXT_EXT/.test(g)) miss.push('闸门里又出现了扩展名白名单 TEXT_EXT（R22 已删）')
+    if (/st\.size > 2 \* 1024 \* 1024/.test(g)) miss.push('闸门又按 2MB 静默跳过（R22 已改为全量扫 + 超上限判未判定）')
+    if (!/LEAK_MAX_BYTES/.test(g)) miss.push('闸门没有 LEAK_MAX_BYTES 扫描上限通道')
+    // 未判定语义：读不到 / 超上限 ⇒ exit 2，绝不判通过
+    if (!/voided/.test(g) || !/process\.exit\(2\)/.test(g)) miss.push('闸门没有未判定（voided → exit 2）语义')
+    // 阻断线默认 P1（PUBLIC 仓库）
+    if (!/process\.env\.LEAK_BLOCK_AT \|\| 'P1'/.test(g)) miss.push('闸门默认阻断线不是 P1')
+    // 令牌前缀扩面：必须在 **TOKEN_PATTERNS 数组内**逐条存在。
+    // 只对整份源码做 includes 会被文件头注释满足（M21 实测：摘掉数组里的 sk-proj- 仍然判绿）。
+    const tp = (g.match(/const TOKEN_PATTERNS = \[([\s\S]*?)\n\]/) || [])[1] || ''
+    if (!tp) miss.push('闸门里找不到 TOKEN_PATTERNS 数组')
+    for (const k of ['github_pat_', 'glpat-', 'xox[baprs]-', 'AKIA', 'ASIA', 'sk-proj-', 'sk-ant-', 'AIza', 'ya29', 'hf_', 'npm_', 'dckr_pat_', 'pypi-', 'SG\\', 'eyJ']) {
+      if (!tp.includes(k)) miss.push(`TOKEN_PATTERNS 缺 ${k}`)
+    }
+    // 被忽略的敏感文件必须可见（提示区）
+    if (!/'--others', '--ignored', '--exclude-standard'/.test(g) || !/SENSITIVE_IGNORED/.test(g)) miss.push('闸门没有「被 .gitignore 忽略的敏感命名文件」提示区')
+    // 自匹配防护（R13-F9 自阻断教训）：私钥头不许以完整字面量出现。
+    // 注意：断言自己也不能写这个字面量 —— 否则 check-repo-standards.mjs 本身
+    // 就会被发布闸门判成 P0 PRIVATEKEY（R22 实测踩中：闸门自扫 exit 1）。
+    const SSH_HDR = ['-----BEGIN', 'OPENSSH PRIVATE KEY-----'].join(' ')
+    if (g.includes(SSH_HDR)) miss.push('闸门源码里出现完整 OPENSSH 私钥头字面量（会自阻断）')
+  }
+  if (m) {
+    // 电池的覆盖面：13 阳性 + 2 阴性 + 未判定语义 + 提示区 + 自扫
+    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'n1 ', 'n2 ', 'u1 ', 'i1 ', 's1 自扫真实仓库']) {
+      if (!m.includes(k)) miss.push(`电池缺场景 ${k.trim()}`)
+    }
+    if (!/process\.exit\(1\)/.test(m)) miss.push('电池失败时不 exit 1（会把失败读成通过）')
+  }
+  // 接线：npm script + CI 独立步骤（includes 会让「摘掉真判据只留自检」也判绿）
+  const pkg = has('package.json') ? read('package.json') : ''
+  for (const s of ['verify:publish', 'verify:publish-selftest']) {
+    if (!new RegExp(`"${s}":`).test(pkg)) miss.push(`package.json 缺 script ${s}`)
+  }
+  if (/verify:all[^\n]*verify:publish-selftest/.test(pkg)) miss.push('电池被塞进 verify:all（应只在 CI 的判据自检 job 里跑）')
+  const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
+  for (const s of ['verify:publish', 'verify:publish-selftest']) {
+    if (!new RegExp(`^\\s*run:\\s*npm run ${s}\\s*$`, 'm').test(ci)) miss.push(`CI 没有以独立步骤跑：npm run ${s}`)
+  }
+  // 文档口径：PR 模板与 CI 步骤名必须写明真实阻断线（R14REV must_fix：旧文案声称覆盖「地址/本地路径」而默认只挡 P0）
+  const pr = has('.github/pull_request_template.md') ? read('.github/pull_request_template.md') : ''
+  if (!/verify:publish/.test(pr) || !/阻断/.test(pr)) miss.push('PR 模板没有写明发布卫生闸门的真实阻断线')
+  if (!/P1/.test(ci.split('\n').find((l) => /name: 发布卫生闸门/.test(l)) || '')) miss.push('CI 步骤名没有写明阻断线（P0/P1）')
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（禁扩展名白名单回退）· 未判定 exit 2 · 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 13+2+2+1 场景 · npm/CI 接线 · 文档口径一致' }
+} })
+
 for (const c of CHECKS) {
   let r
   try { r = c.run() } catch (e) { r = { ok: false, detail: '断言抛错：' + e.message } }

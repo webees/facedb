@@ -32,7 +32,9 @@ jobs:
       - name: 仓库自检（资源指纹 / 迁移不变量 / 文案键对称 / 二进制指纹）
         run: npm run verify
 
-      - name: 发布卫生闸门（凭据 / 地址 / 本地路径 / 媒体文件）
+      # 阻断线默认 P1：凭据 / 私钥 / 媒体文件 / 公网 IP / Tailscale 网段 / 超管口令；
+      # P2（本机路径 / 私网地址 / 域名 / 邮箱）只提示。可用 LEAK_BLOCK_AT=P0|P1|P2 覆盖。
+      - name: 发布卫生闸门（P0 凭据/私钥/媒体 + P1 公网 IP/Tailscale/超管口令 阻断；P2 提示）
         run: npm run verify:publish
 
       - name: 仓库标准件判据（README / 治理文件 / .github / scripts 交叉核对）
@@ -91,3 +93,8 @@ jobs:
 
       - name: 产物体积判据的变异自检（6 个变异体：删 wasm / 同大小换内容 / web 注入 / SHA256SUMS 漂移 / 缺 dist / 对照）
         run: npm run verify:size-selftest
+
+      # 13 个阳性形态（.bak 令牌 / .pem 私钥 / 新式令牌前缀 / 超大文本 / OpenSSH 私钥 / 跟踪的 .env / 公网 IP / Tailscale / 媒体）
+      # 必须全部被抓；2 组阴性对照必须零误报；「索引有而工作区缺失」必须判未判定（exit 2）；闸门自扫不得自阻断
+      - name: 发布卫生闸门的变异自检（13 阳性 + 2 阴性 + 未判定语义 + 自扫）
+        run: npm run verify:publish-selftest
