@@ -89,4 +89,4 @@ npm run build      # 生产构建
 
 ## 许可
 
-见 [`LICENSE`](LICENSE)。
+本项目以 **MIT** 许可证发布，全文见 [`LICENSE`](LICENSE)。

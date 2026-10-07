@@ -31,6 +31,7 @@ body:
     id: expected
     attributes:
       label: 期望结果
+      placeholder: 例如：应当提示采集完成并写入 captures，而不是显示「上传失败」。
     validations:
       required: true
   - type: input

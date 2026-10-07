@@ -3,6 +3,9 @@
 本文件记录本项目的显著变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+> **尚未打 tag**（当前 `git tag -l` 为空）：下面各版本的 `releases/tag/...` 链接要等首次
+> 发布后才会生效；在此之前，「未发布」段即 `main` 分支的最新提交。
+
 ## [未发布]
 
 ### 新增
