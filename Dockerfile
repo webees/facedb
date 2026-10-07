@@ -6,9 +6,12 @@
 #   多阶段 + static-web-server:alpine      66.6MB  ← 当前（docker images 口径、arm64，2026-10-07 实测；
 #                                                      同口径下删掉死 wasm 模块前为 80MB。体积必须连口径一起写）
 #
-# 关键认识：dist 只有 39.5MB，镜像的大头从来不是产物，而是「托管它的服务器」。
-# nginx:1.27-alpine 空载即 78.2MB，而它在这里只做一件事——把目录里的文件发出去；
-# static-web-server 同样功能只要 28.9MB，且原生支持 SPA 回退。
+# 关键认识：dist 只有 27.4MB（12 个文件合计 27,408,705 字节；39.5MB 是删掉死 wasm 变体之前的读数），
+# 镜像的大头从来不是产物，而是「托管它的服务器」。
+# 两个口径都实测过（2026-10-07，arm64）：
+#   docker images 的 Size          nginx:1.27-alpine 78.2MB   static-web-server:2-alpine 58.6MB
+#   docker image inspect .Size     nginx:1.27-alpine 21,832,241 字节   static-web-server:2-alpine 8,190,662 字节
+# 两个口径下 static-web-server 都明显更小，且原生支持 SPA 回退。
 
 # ─────────────────────────── 构建阶段 ───────────────────────────
 FROM node:22-slim AS build
