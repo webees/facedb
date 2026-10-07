@@ -28,12 +28,13 @@
     "verify:publish": "node scripts/publish-leak-scan.mjs",
     "verify:standards": "node scripts/check-repo-standards.mjs",
     "verify:hygiene": "node scripts/check-repo-config-hygiene.mjs",
+    "verify:notices": "node scripts/check-third-party-notices.mjs",
+    "verify:notices-selftest": "node scripts/check-third-party-notices-mutants.mjs",
     "verify:standards-selftest": "node scripts/verify-standards-selftest.mjs",
     "verify:all": "npm run verify && npm run verify:types && npm run verify:publish && npm run verify:standards && npm run verify:hygiene"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",
-    "pocketbase": "^0.28.1",
     "vue": "^3.5.43"
   },
   "devDependencies": {
