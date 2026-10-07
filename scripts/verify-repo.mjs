@@ -37,7 +37,9 @@ function notExecuted(name, why, byDesign = false) {
 
 // 每个检查组单独隔离：任何一项抛异常（来源文件缺失、解析失败…）都记成一条失败项，
 // 而不是让进程崩掉 —— 崩掉会吞掉汇总行，且崩溃点之后的检查组会静默不执行。
+const ranSections = []
 function section(name, fn) {
+  ranSections.push(name)
   try {
     fn()
   } catch (e) {
@@ -295,13 +297,22 @@ function runSelfCheck() {
     put('pb-bin/Dockerfile', `case "\${TARGETARCH}" in\n  arm64) want_sha256=${bsha} ;;\nesac\n`)
     put('pb-bin/README.md', `| arm64 | \`${bsha}\` |\n`)
   }
-  const run = () => {
-    const r = spawnSync(process.execPath, [join(ROOT, 'scripts/verify-repo.mjs')], {
-      encoding: 'utf8', env: { ...process.env, VERIFY_REPO_ROOT: tmp },
-    })
+  const parse = (r) => {
     const failed = (r.stdout.match(/^❌ (.+)$/gm) || []).map((l) => l.replace(/^❌ /, '').split('  ——')[0])
     const undet = Number((r.stdout.match(/未执行（样本为 0，覆盖面不完整）/) || []).length)
     return { code: r.status, failed, undet, out: r.stdout }
+  }
+  const run = () => parse(spawnSync(process.execPath, [join(ROOT, 'scripts/verify-repo.mjs')], {
+    encoding: 'utf8', env: { ...process.env, VERIFY_REPO_ROOT: tmp },
+  }))
+  // 脚本级变异：把被测脚本本身复制到临时目录改一处再跑（用于验证「结构类」断言）。
+  const runMutantScript = (mutateSrc) => {
+    const src = readFileSync(join(ROOT, 'scripts/verify-repo.mjs'), 'utf8')
+    const out = mutateSrc(src)
+    if (out === src) throw new Error('变异未生效（脚本文本未变化）—— 本次不构成结论')
+    const p = join(tmp, 'verify-repo-mutant.mjs')
+    writeFileSync(p, out)
+    return parse(spawnSync(process.execPath, [p], { encoding: 'utf8', env: { ...process.env, VERIFY_REPO_ROOT: tmp } }))
   }
 
   const cases = [
@@ -317,14 +328,16 @@ function runSelfCheck() {
     { name: 'ZS3 源码常量来源文件缺失 → 记失败项而非崩溃', expectCode: 1, expectFail: ['常量来源文件齐备'], mutate: () => rmSync(join(tmp, 'src/lib/hints.ts'), { force: true }) },
     { name: 'ZS4 public/SHA256SUMS 缺失 → 记失败项而非崩溃', expectCode: 1, expectFail: ['public/SHA256SUMS 存在'], mutate: () => rmSync(join(tmp, 'public/SHA256SUMS'), { force: true }) },
     { name: 'M6 二进制定位指纹与清单不一致', expectFail: ['SHA256SUMS 与 Dockerfile 期望常量双向一致'], mutate: () => put('pb-bin/Dockerfile', `case "\${TARGETARCH}" in\n  arm64) want_sha256=${'c'.repeat(64)} ;;\nesac\n`) },
+    // 结构类断言：删掉一个 section(...) 调用 —— 以前 executed 只会变小，没人发现。
+    { name: 'M7 检查组整体漏调（删掉 section 调用）', scriptMutate: (s) => s.replace("  section('i18n', checkI18n)\n", ''), expectCode: 2, expectFail: ['所有检查组都被调用'] },
   ]
 
   console.log('=== 变异自检（验证每一项断言有判别力）===')
   let bad = 0
   for (const c of cases) {
     pristine()
-    c.mutate()
-    const { code, failed, out } = run()
+    c.mutate?.()
+    const { code, failed, out } = c.scriptMutate ? runMutantScript(c.scriptMutate) : run()
     // 三态：expectCode 缺省时按「无 expectFail 即 exit 0、有 expectFail 即 exit 1」推断
     const wantCode = c.expectCode ?? (c.expectFail.length === 0 ? 0 : 1)
     const asExpected = code === wantCode && c.expectFail.every((f) => failed.includes(f))
@@ -340,6 +353,11 @@ function runSelfCheck() {
   process.exit(bad ? 1 : 0)
 }
 
+// 前向防线：每个检查组都必须在下面被真的调用一次。
+// 漏调一个 section 时 `executed` 只会变小、不会变成 0，所以单看 `executed === 0`
+// 发现不了「整段检查消失」（复核席 P3 实测：空 ROOT 仍执行 1 项）。
+const EXPECTED_SECTIONS = ['public/ 资源指纹', 'pb_migrations', 'i18n', 'pb-bin 指纹', 'RUN.md 常量']
+
 if (process.argv.includes('--self-check')) {
   runSelfCheck()
 } else {
@@ -349,6 +367,18 @@ if (process.argv.includes('--self-check')) {
   section('pb-bin 指纹', checkPbbin)
   section('RUN.md 常量', checkRunmdConstants)
 
+  const missingSections = EXPECTED_SECTIONS.filter((n) => !ranSections.includes(n))
+  const extraSections = ranSections.filter((n) => !EXPECTED_SECTIONS.includes(n))
+  const sectionsOk = missingSections.length === 0 && extraSections.length === 0
+  check('所有检查组都被调用', sectionsOk,
+    sectionsOk
+      ? `已执行 ${ranSections.length} 个检查组`
+      : `缺少 ${missingSections.join('、') || '无'}；多出 ${extraSections.join('、') || '无'}`)
+  if (!sectionsOk) {
+    console.log('❌ 检查组调用不齐 —— 有整段检查没有运行，本次不构成结论')
+    process.exit(2)
+  }
+
   const failed = results.filter((r) => r.ok === false)
   console.log(`\n=== 汇总 ===`)
   console.log(`执行 ${executed} 项，通过 ${executed - failed.length}，失败 ${failed.length}；`
@@ -357,6 +387,8 @@ if (process.argv.includes('--self-check')) {
     console.log('失败项：')
     for (const f of failed) console.log(`  ❌ ${f.name}  —— ${f.detail}`)
   }
+  // 兜底：上面的「所有检查组都被调用」已经覆盖「整段消失」，这一条只在
+  // 连一个检查项都没注册时才可能命中（例如有人在 section 里提前 return）。
   if (executed === 0) {
     console.log('❌ 没有任何检查被真正执行 —— 本次不构成结论')
     process.exit(2)
