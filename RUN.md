@@ -425,8 +425,8 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 | 方案 | 体积 | 说明 |
 |---|---|---|
 | 单阶段 `node:22-slim` + `node_modules` | 934MB | `node_modules` 319MB 全打进镜像，运行期用不到 |
-| 多阶段 + `nginx:alpine` | 131MB | dist 39.5MB + **nginx 自身 78.2MB** |
-| 多阶段 + `static-web-server:alpine` | **66.6MB** | 产物（镜像内 `/public`）27.4MB + 服务器基座 28.9MB；80MB 是 R21 删掉死 wasm 模块（-11.5MB）之前的读数 |
+| 多阶段 + `nginx:alpine` | 131MB | dist 27.4MB + **nginx 自身 78.2MB** |
+| 多阶段 + `static-web-server:alpine` | **66.6MB** | 产物（镜像内 `/public`）27.4MB、服务器基座 58.6MB（同口径，两者有共享层，不能简单相加）；80MB 是 R21 删掉死 wasm 模块（-11.5MB）之前的读数 |
 
 > **体积口径（必须连口径一起写）**：上表用的是 `docker images` 报的 `Size`（arm64、OrbStack、2026-10-07 实测）。
 > 本仓库历史上出现过三个互不相等的数字 —— RUN.md 的 80MB、`Dockerfile` 头注的 ~68MB、R19 复核的 82.3MB —— 它们**不是同一个口径**：
@@ -438,18 +438,28 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 > （R21 删掉不可达的 `vision_wasm_module_internal.*` 后，产物由 39.5MB 降到 27.4MB。）
 
 
-**关键认识**：`dist` 只有 39.5MB，**镜像的大头从来不是产物，而是「托管它的服务器」**。
+**关键认识**：`dist` 只有 27.4MB（12 个文件合计 27,408,705 字节），**镜像的大头从来不是产物，而是「托管它的服务器」**。
 `nginx:1.27-alpine` 空载即 78.2MB，而它在这里只做一件事——把目录里的文件发出去。
 
-各静态服务器空载体积实测：
+各静态服务器空载体积实测（两个口径都列出来，命令可原样复跑）：
 
-| 镜像 | 体积 | SPA 回退 |
-|---|---|---|
-| busybox:musl | 2.6MB | 需手工配（无 try_files） |
-| alpine:3.21 | 13.8MB | 需自己放服务器 |
-| **static-web-server:2-alpine** | **28.9MB** | **原生 `--page-fallback`** |
-| nginx:1.27-alpine | 78.2MB | 有 |
-| caddy:2-alpine | 90.7MB | 有 |
+```bash
+docker images --format '{{.Size}}' <镜像>
+docker image inspect -f '{{.Size}}' <镜像>   # 字节
+```
+
+| 镜像 | `docker images` Size | `inspect .Size`（字节） | SPA 回退 |
+|---|---|---|---|
+| busybox:musl | 2.64MB | 925,089 | 需手工配（无 try_files） |
+| alpine:3.21 | 26.9MB | 3,985,371 | 需自己放服务器 |
+| **static-web-server:2-alpine** | **58.6MB** | **8,190,662** | **原生 `--page-fallback`** |
+| nginx:1.27-alpine | 78.2MB | 21,832,241 | 有 |
+| nginx:alpine | 104MB | 29,017,379 | 有 |
+| caddy:2-alpine | 90.7MB | 23,647,917 | 有 |
+
+> 早期版本这张表里 `alpine:3.21` 写 13.8MB、`static-web-server:2-alpine` 写 28.9MB，
+> 这两个数字用上面两条命令都复现不出来（复核席按四种口径试过），已按实测值更正。
+> 选型结论不变：两个口径下 `static-web-server` 都明显小于 `nginx`。
 
 选 `static-web-server`：原生支持 SPA 回退、gzip、缓存分层，且以非 root（uid 1000）运行。
 
