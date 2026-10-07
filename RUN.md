@@ -426,7 +426,17 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 |---|---|---|
 | 单阶段 `node:22-slim` + `node_modules` | 934MB | `node_modules` 319MB 全打进镜像，运行期用不到 |
 | 多阶段 + `nginx:alpine` | 131MB | dist 39.5MB + **nginx 自身 78.2MB** |
-| 多阶段 + `static-web-server:alpine` | **80MB** | dist 39.5MB + 服务器 28.9MB |
+| 多阶段 + `static-web-server:alpine` | **66.6MB** | 产物（镜像内 `/public`）27.4MB + 服务器基座 28.9MB；80MB 是 R21 删掉死 wasm 模块（-11.5MB）之前的读数 |
+
+> **体积口径（必须连口径一起写）**：上表用的是 `docker images` 报的 `Size`（arm64、OrbStack、2026-10-07 实测）。
+> 本仓库历史上出现过三个互不相等的数字 —— RUN.md 的 80MB、`Dockerfile` 头注的 ~68MB、R19 复核的 82.3MB —— 它们**不是同一个口径**：
+> `docker images` 的 `Size`、`docker image inspect .Size`（本镜像 17.7MiB = 18583983 字节）、镜像内 `du -sb /public`（27.4MB）、
+> 以及「基座 + 产物」相加，四者各不相同；连**架构**也会改数：本机 `joseluisq/static-web-server:2-alpine` 标签报 58.6MB，而 arm64 基座实测仅 28.9MB。
+> **结论：任何体积数字必须连口径、架构与测量命令一起写**，否则无法比较 —— 这正是 R19 报「三处数字不一致」的根因。
+> 当前读数：`docker images` = 66.6MB，其中产物（镜像内 `/public`）= 27.4MB（`du -sb` = 27409329 字节）。
+>
+> （R21 删掉不可达的 `vision_wasm_module_internal.*` 后，产物由 39.5MB 降到 27.4MB。）
+
 
 **关键认识**：`dist` 只有 39.5MB，**镜像的大头从来不是产物，而是「托管它的服务器」**。
 `nginx:1.27-alpine` 空载即 78.2MB，而它在这里只做一件事——把目录里的文件发出去。
@@ -1475,6 +1485,26 @@ Cloudflare 隧道 → caddy:80 → facedb-web:3000 / facedb-api:8090（edge-net 
 而这两个服务的设计前提是「只经网关进入」。
 
 调试用 SSH 端口转发，不要为此改 compose。
+
+## 容器权限（R19 加固，实测）
+
+两个服务都收紧了内核权限面（`docker-compose.yml`）：
+
+| 项 | pocketbase | web | 为什么 |
+|---|---|---|---|
+| `cap_drop: [ALL]` | ✅ | ✅ | PB 只监听 8090（非特权端口）、只写 /pb_data 与只读的 /pb_migrations；静态服务器只读文件并发送。实测 `CapEff: 0000000000000000` |
+| `security_opt: no-new-privileges:true` | ✅ | ✅ | 即使镜像里有 setuid 二进制也无法提权 |
+| `read_only: true` + `tmpfs: /tmp` | ❌ | ✅ | 静态服务器不需要写任何路径。可写根意味着一旦托管进程被拿下，**改过的 JS 能被写回镜像层持久化**（与「pb_migrations 必须只读」是同一类风险）。实测 `touch /public/x` → `Read-only file system` |
+
+**刻意没做的两项，及原因**：
+
+- **不以非 root 运行 PB**：`pb_data` 是宿主目录挂载，其属主不是容器内的普通 uid；改成非 root 后 SQLite 写不进去。要么改宿主属主（会动到真实采集数据的所有权），要么给容器内 uid 对齐 —— 两者都不值得为这点收益冒险。**接受的风险**：容器内进程以 root 运行（但无 capability、无法提权、只挂载两个目录）。
+- **PB 不开只读根**：PB 除 `/pb_data` 外还要写 SQLite 的 `-wal`/`-shm` 与临时文件，位置未逐项验证。**未验证 ≠ 可用**，故不开（记为接受的风险）。
+
+**验证方式**（每条都有实测值，不是「应该可以」）：`lib/r14-r19-hardening-verify.mjs` 共 16 项 —— 运行与健康态、`docker inspect` 的 `CapDrop`/`SecurityOpt`/`ReadonlyRootfs`、容器内 `CapEff`、首页与 wasm 与 SPA 回退三个真 HTTP 200、容器内 /public 与根目录写入确实被拒、超管登录 + `captures` 记录数不变（加固不伤数据）、含 U+0085 的 `session_id` 仍被 400 拒（迁移约束仍在）。结果见 `evidence/R14-r19-hardening.log`。
+
+**通用教训**：加固必须验证**功能与数据都没被一起关掉**。只证明「写不进去」而不跑一遍正常读写路径，等于把「服务挂了」误当成「加固成功」。
+
 
 ## 部署（nanopc-t6-lts）
 

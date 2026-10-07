@@ -11,6 +11,15 @@ services:
     image: webees-facedb-pocketbase:0.28.1-zh
     container_name: facedb-pocketbase
     restart: unless-stopped
+    # 加固（R19 P3）：PB 只监听 8090（非特权端口）、只写 /pb_data 与 /pb_migrations(ro)，
+    # 不需要任何 Linux capability；也不该能通过 setuid 提权。
+    # 未做的两项及原因：`user:` 非 root 会因宿主挂载目录属主不是容器内 uid 而写不进 pb_data；
+    # `read_only: true` 需要 PB 在别处可写（SQLite 的 -wal/-shm、临时文件），
+    # 属未验证面，故不冒然开启（记为接受的风险，见 RUN.md「容器权限」小节）。
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       # 直接对外暴露：原由 admin(nginx) 反代并注入汉化脚本，现改用源码汉化的二进制，
       # 注入层与其映射（集合名/字段名）一并移除，故不再需要反代。
@@ -50,6 +59,17 @@ services:
     image: webees-facedb-web
     container_name: facedb-web
     restart: unless-stopped
+    # 加固（R19 P3）：静态服务器只需要读 /public 并把文件发出去。
+    # `read_only` 让 /public 所在的可写层彻底只读 —— 否则一旦托管进程被拿下，
+    # 攻击者可以把改过的 JS 写回镜像层持久化（与 pb_migrations 可写是同一类风险）。
+    # 实测只读下功能完全正常（首页与全部静态资源 200、健康检查通过）。
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       pocketbase:
         condition: service_healthy

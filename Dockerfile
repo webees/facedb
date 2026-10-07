@@ -3,7 +3,8 @@
 # 体积演进：
 #   单阶段 node:22-slim + node_modules     934MB
 #   多阶段 + nginx:alpine                  131MB   ← nginx 自身就占 78.2MB
-#   多阶段 + static-web-server:alpine      ~68MB   ← 当前
+#   多阶段 + static-web-server:alpine      66.6MB  ← 当前（docker images 口径、arm64，2026-10-07 实测；
+#                                                      同口径下删掉死 wasm 模块前为 80MB。体积必须连口径一起写）
 #
 # 关键认识：dist 只有 39.5MB，镜像的大头从来不是产物，而是「托管它的服务器」。
 # nginx:1.27-alpine 空载即 78.2MB，而它在这里只做一件事——把目录里的文件发出去；
