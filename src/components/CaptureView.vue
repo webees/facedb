@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { MAX_BRIGHT, MIN_BRIGHT } from '../lib/quality'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { createHints } from '../lib/hints'
 import { closeFace, detectFace, drawOverlay, emptyFrame, initFace } from '../lib/face'
 import { judge, POSE_KEY, roiStats, STABLE_FRAMES, type Pose } from '../lib/quality'
 import {
@@ -77,10 +78,10 @@ const camRes = ref('')
 
 const pose = computed(() => POSES[idx.value])
 const retryable = computed(() => fails.value >= MAX_FAILS)
-const hint = computed(() => t(hintKey.value, hintParams.value))
+const hint = computed(() => t(hints.key.value, hints.params.value))
 // 需要转头时，在椭圆外侧给出方向箭头（复用提示状态，不额外判断几何）
 const turnDir = computed<'left' | 'right' | null>(() =>
-  hintKey.value === 'hintTurnLeft' ? 'left' : hintKey.value === 'hintTurnRight' ? 'right' : null,
+  hints.key.value === 'hintTurnLeft' ? 'left' : hints.key.value === 'hintTurnRight' ? 'right' : null,
 )
 
 // 提示框固定高度：只有一行主文案（20/24px）＋内边距，取 56 保证手机与桌面都不溢出。
@@ -171,64 +172,9 @@ const DEBUG = new URLSearchParams(location.search).has('debug')
 const dbg = (...a: unknown[]) => {
   if (DEBUG) console.log('[capture]', ...a)
 }
-let lastLoggedHint = ''
 
-// 提示稳定化：yaw 在区间边界附近抖动时，「请再向左转」与「转过头了」会逐帧反复横跳。
-// 因此普通提示要求最近若干帧中达成多数共识才切换；错误/无人脸一类必须立即显示，不走表决。
-const URGENT_HINTS: MessageKey[] = [
-  'cameraDenied', 'cameraNotFound', 'cameraBusy', 'cameraFailed', 'modelFailed',
-  'failedMax', 'hintNoFace', 'hintMultiFace', 'hintTooFar', 'hintUploading',
-  // 收尾阶段的「正在处理」取代了原先过早出现的「上传中…」，同样必须立即显示：
-  // 收尾期间 loop 因 busy 已停止投提示，但收尾前最后一帧投出的姿态提示还留在表决缓冲里，
-  // 走表决的话它会被反复压回「保持不动，正在拍摄…」，用户就看不到「正在收尾」。
-  'hintFinalizing',
-  // 提交失败的终态必须立即显示：它同时是「失败」与「有重试入口」的唯一提示
-  'hintUploadFailed',
-  // 录制段创建失败：该采集点不会有视频，必须立即告知而不是被姿态提示盖掉
-  'segmentFailed',
-  // 设备断开需要立即显示：否则会被逐帧判定投出的姿态提示盖掉
-  'cameraLost',
-  // 采集失败同样如此：画面达标时 loop 每帧都在投 hintHoldStill，
-  // 会把「失败」挤成「保持不动，正在拍摄…」——而实际并没有在拍。
-  'failed',
-]
-const HINT_BUF = 5
-const HINT_NEED = 3
-const hintBuf: MessageKey[] = []
-
-function applyHint(key: MessageKey, params?: Record<string, string | number>): void {
-  if (key !== lastLoggedHint) {
-    dbg('hint:', lastLoggedHint || '(none)', '→', key)
-    lastLoggedHint = key
-  }
-  hintKey.value = key
-  hintParams.value = params ?? {}
-}
-
-function setHint(key: MessageKey, params?: Record<string, string | number>): void {
-  if (URGENT_HINTS.includes(key)) {
-    hintBuf.length = 0
-    applyHint(key, params)
-    return
-  }
-  hintBuf.push(key)
-  if (hintBuf.length > HINT_BUF) hintBuf.shift()
-  const agree = hintBuf.filter(k => k === key).length
-  if (key !== hintKey.value && agree < HINT_NEED) return
-  applyHint(key, params)
-}
-
-/**
- * 立刻换文案（不等 5/3 多数表决），用于「进新采集点」与用户主动重试。
- *
- * 不清空缓冲的话：buffer 里还留着上一步的键，新一步开头会继续显示旧文案
- * （换文案要 3 票），「请{姿态}」这类提示还会因为旧键占位而更难攒够票数。
- * 普通提示仍然走 setHint() 的多数表决，避免单帧噪声抖动界面。
- */
-function setHintNow(key: MessageKey, params?: Record<string, string | number>): void {
-  hintBuf.length = 0
-  applyHint(key, params)
-}
+// 提示稳定化与表决逻辑在 src/lib/hints.ts（R13-F11 外移：组件行数曾越过 800 行高风险阈值）。
+const hints = createHints('loadingModel', (from, to) => dbg('hint:', from || '(none)', '→', to))
 
 // 质量分仅供诊断展示（不参与判定）。
 // 亮度门槛直接引用 quality.ts 的常量，避免两处各写一份、改一处漏一处。
@@ -245,10 +191,10 @@ function qualityScore(): number {
 
 function cameraError(e: unknown): void {
   const n = (e as DOMException | undefined)?.name
-  if (n === 'NotAllowedError') setHint('cameraDenied')
-  else if (n === 'NotFoundError' || n === 'OverconstrainedError') setHint('cameraNotFound')
-  else if (n === 'NotReadableError') setHint('cameraBusy')
-  else setHint('cameraFailed', { err: n ?? 'unknown' })
+  if (n === 'NotAllowedError') hints.set('cameraDenied')
+  else if (n === 'NotFoundError' || n === 'OverconstrainedError') hints.set('cameraNotFound')
+  else if (n === 'NotReadableError') hints.set('cameraBusy')
+  else hints.set('cameraFailed', { err: n ?? 'unknown' })
 }
 
 function stopStream(): void {
@@ -281,7 +227,7 @@ function openPoseSegment(): boolean {
   console.warn('[seg] startPoseRecording 失败：本采集点将没有视频段')
   dbg('录制器创建失败，本采集点无视频段')
   sfx.warn()
-  setHint('segmentFailed')
+  hints.set('segmentFailed')
   return false
 }
 
@@ -320,7 +266,7 @@ async function startCamera(deviceId?: string): Promise<void> {
       if (stream !== next) return
       dbg('摄像头轨道 ended，判定设备断开')
       camLost.value = true
-      setHint('cameraLost')
+      hints.set('cameraLost')
     }
     track.addEventListener('ended', onEnded)
     trackEndHandlers.push({ track, fn: onEnded })
@@ -337,7 +283,7 @@ async function startCamera(deviceId?: string): Promise<void> {
   if (videoEl.value?.videoWidth) videoSize.w = videoEl.value.videoWidth
   const all = await navigator.mediaDevices.enumerateDevices()
   cameras.value = all.filter(d => d.kind === 'videoinput')
-  setHint('hintCameraOn', { pose: t(POSE_KEY[pose.value]) })
+  hints.set('hintCameraOn', { pose: t(POSE_KEY[pose.value]) })
 }
 
 // 切换设备期间的守卫：避免连点触发多次 getUserMedia（多出来的流没人释放）
@@ -414,7 +360,7 @@ async function shoot(): Promise<void> {
     // （stop() 被接受但 onstop 永不触发），界面便永久停在「上传中」，服务端一条请求都收不到。
     // 只在最后一步设：非最后一步收尾完就 advance()，多设一次只会让下一步的姿态提示
     // 被表决缓冲多挡几帧才显示（那一步的收尾通常只有几十毫秒，不值得为它换文案）。
-    if (isLastStep) setHint('hintFinalizing')
+    if (isLastStep) hints.set('hintFinalizing')
     // 用户可能瞬间达标（例如正脸很标准），此时本段还不到 0.4 秒、体积低于有效性门槛，
     // 取出来也会被丢弃，导致该采集点没有视频。这里补足最短录制时长再取
     // —— 秒过的用户最多多等不到 1.2 秒，却能保证每段视频都可用。
@@ -462,8 +408,8 @@ async function shoot(): Promise<void> {
     // shoot() 就不会被再次触发 —— 界面承诺的「保持姿态会自动重试」会变成不重试。
     resetHold()
     fails.value++
-    if (fails.value >= MAX_FAILS) setHint('failedMax')
-    else setHint('failed', { msg: t('captureFailed') })
+    if (fails.value >= MAX_FAILS) hints.set('failedMax')
+    else hints.set('failed', { msg: t('captureFailed') })
   } finally {
     recording.value = false
     busy.value = false
@@ -484,7 +430,7 @@ function advance(): void {
   // 进入新的采集点：开始录这一段（上一段已在 shoot() 里取走）
   openPoseSegment()
   sfx.step()
-  setHintNow('hintCameraOn', { pose: t(POSE_KEY[pose.value]) })
+  hints.setNow('hintCameraOn', { pose: t(POSE_KEY[pose.value]) })
 }
 
 /** 提交整批文件；成功后切到完成页，失败则留在本页等待重试。 */
@@ -500,7 +446,7 @@ async function submit(): Promise<void> {
   // 「上传中…」与 uploading（驱动旋转动画）必须与「真的开始上传」同一时刻出现。
   // 此前这行提示提前到了 shoot() 里用户刚达标的那一刻，收尾阶段就已经显示「上传中」，
   // 收尾一旦卡住，界面便永久停在这个文案上 —— 用户以为在上传，其实什么都没发出去。
-  setHint('hintUploading')
+  hints.set('hintUploading')
   dbg('开始提交，文件数:', pendingFiles.length)
 
   try {
@@ -540,7 +486,7 @@ async function submit(): Promise<void> {
     // 不能只停动画 —— 文案仍是「上传中…」时用户会一直等下去，
     // 而本次采集的文件只在内存里，刷新页面就全丢了。
     submitFailed.value = true
-    setHint('hintUploadFailed')
+    hints.set('hintUploadFailed')
     sfx.warn()
     dbg('提交最终失败：', uploadError.value)
   } finally {
@@ -571,7 +517,7 @@ async function retry(): Promise<void> {
       return
     }
   }
-  setHintNow('hintCameraOn', { pose: t(POSE_KEY[pose.value]) })
+  hints.setNow('hintCameraOn', { pose: t(POSE_KEY[pose.value]) })
   // 重开录制段：retry 之前录制器可能已因异常收尾被置空（此后一直没人在录），
   // 而重新取流的路径会让旧段与新流不再同源（switchCam 早已补了同样的补偿，这里此前漏了）。
   // startPoseRecording 对「同姿态且录制器仍在」是幂等的，健康时重复调用不会空转。
@@ -613,7 +559,7 @@ function loop(): void {
   // 用户看不到失败也不知道可以重试；录制段创建失败同理。
   const inFailHold = Date.now() - failAt.value < FAIL_HINT_HOLD_MS
   if (!recording.value && !submitting.value && !camLost.value && !inFailHold && !segmentFailed.value && !submitFailed.value)
-    setHint(verdict.hintKey)
+    hints.set(verdict.hintKey)
   if (!camLost.value && tickHold(verdict.pass)) void shoot()
 }
 
@@ -652,7 +598,7 @@ onMounted(async () => {
   try {
     await initFace()
   } catch {
-    setHint('modelFailed')
+    hints.set('modelFailed')
     return
   }
   // 卸载守卫：模型可能下载数秒，这期间用户离开页面则必须停在这里 ——

@@ -213,7 +213,9 @@ const DOCUMENTED_CONSTANTS = [
 function checkRunmdConstants() {
   console.log('\n=== RUN.md 与源码常量 ===')
   const doc = read('RUN.md')
-  const files = ['src/lib/quality.ts', 'src/lib/capture.ts', 'src/components/CaptureView.vue', 'src/lib/pb.ts']
+  // R13-F11：提示表决的 HINT_BUF/HINT_NEED 随实现移到了 src/lib/hints.ts，来源清单必须同步 ——
+  // 否则「常量仍存在于源码」这项会因找不到而报红（断言读真实来源，不是把清单当摆设）。
+  const files = ['src/lib/quality.ts', 'src/lib/capture.ts', 'src/components/CaptureView.vue', 'src/lib/pb.ts', 'src/lib/hints.ts']
   const defined = new Set()
   const absent = []
   for (const f of files) {
