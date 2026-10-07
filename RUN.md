@@ -1272,7 +1272,18 @@ rm -rf dist && npm run build && ls dist/static/js/index.*.js
 
 脚本：运行根的 `check-image-freshness.mjs` 已把上面两步做成一次比对。
 
-**已验证（2026-10-07 更正并修复）**：源码重建产物与源码指纹一致（`c743010d27`）。
+**教训（R14-X5 实测）**：**运行中的容器不等于源码重建产物**。当时宿主机是 arm64，含最新修复的 `webees-facedb-web:latest` 实测为 amd64/linux 无法运行，容器仍在跑 2026-10-06 19:55 的 arm64 备份镜像，当时 3000 端口实供 `index.7211a9f260.js`（不含 `linkTooLong` 闸门、无 `\p{Cc}` 过滤）——**前端源码已修、线上仍是旧行为**。故指纹比对必须取**容器实供产物**。
+
+**已修复并复核（2026-10-07 07:52 重建，11:00 复核）**：`docker compose build web`（宿主 arm64，未覆盖 platform）重建镜像 `webees-facedb-web:latest`（arch=arm64/linux，id `d18adec39ded`），`docker compose up -d web` 重建容器后实测：
+
+| 项 | 修复前 | 修复后（复核读数） |
+|---|---|---|
+| 实供 bundle | `/static/js/index.7211a9f260.js` | `/static/js/index.d522b5dd29.js`（34621 字节） |
+| `linkTooLong` 闸门 | 无 | 有（grep 命中 1） |
+| `\p{Cc}` 控制符过滤 | 无（仍是旧的 `\u0000-\u001f` 字面量） | 有（grep 命中 1；旧形态命中 0） |
+| 容器健康 | healthy | healthy |
+
+复核方法：直接取容器实供的 bundle 并 grep（`curl -s http://127.0.0.1:3000/static/js/<bundle>.js`），不看源码重建产物。回滚标签 `webees-facedb-web:rollback-r13` 指向修复前那份镜像。
 
 **教训（R14-X5 实测）**：**运行中的容器不等于源码重建产物**。当时宿主机是 arm64，含最新修复的 `webees-facedb-web:latest` 实测为 amd64/linux 无法运行，容器仍在跑 2026-10-06 19:55 的 arm64 备份镜像，3000 端口实供 `index.7211a9f260.js`（不含 `linkTooLong` 闸门、无 `\p{Cc}` 过滤）——**前端源码已修、线上仍是旧行为**。故指纹比对必须取**容器实供产物**，取源码重建产物会得出与线上面貌不符的结论。
 
@@ -1435,9 +1446,24 @@ SPA 回退（`SERVER_FALLBACK_PAGE`）**只对 GET 请求生效** —— 这是 
 
 （此行为已裁定为接受，见 `decisions/R03-05-head-vs-get.md`。）
 
-## 暴露面：不发布宿主机端口
+## 暴露面：生产部署不发布宿主机端口
 
-生产部署不发布任何宿主机端口。compose 里没有 `ports`，只保留：
+**适用范围**：本节描述**生产（nanopc-t6-lts）**部署。本仓库的 `docker-compose.yml` 是**本地开发用**，
+它**显式发布** `8090:8090`（PocketBase）与 `3000:3000`（前端），实测：
+
+```
+$ docker port facedb-pocketbase
+8090/tcp -> 0.0.0.0:8090
+8090/tcp -> [::]:8090
+$ docker port facedb-web
+3000/tcp -> 0.0.0.0:3000
+3000/tcp -> [::]:3000
+```
+
+`HostIp` 为空即绑定全部接口 —— 本地开发便利与生产暴露面是两件事，**不要照抄到生产**。
+
+生产部署不发布任何宿主机端口，只保留（该 compose 与 caddy 配置在 nanopc 上，**不在本仓库**；
+本仓库 compose 内 grep 不到 `caddy` / `edge-net`）：
 
 ```
 Cloudflare 隧道 → caddy:80 → facedb-web:3000 / facedb-api:8090（edge-net 内按容器名解析）
@@ -1452,7 +1478,7 @@ Cloudflare 隧道 → caddy:80 → facedb-web:3000 / facedb-api:8090（edge-net 
 ## 部署（nanopc-t6-lts）
 
 已部署到 `nanopc-t6-lts:/data/apps/facedb/`，服务名 `web`（前台）+ `api`（后台）。
-完整记录见运行根的 `DEPLOY-nanopc.md`。
+完整记录见**审计运行根**的 `DEPLOY-nanopc.md`（该文件不入库，仓库内不存在同名文件）。
 
 ### ⚠️ 迁移链的两个陷阱（只在「从零部署」时暴露）
 
