@@ -808,14 +808,21 @@ if (vw <= 0 || f.faceWidthPx < vw * MIN_FACE_RATIO) return no('hintTooFar')
 | 层 | 位置 | 拦什么 | 覆盖范围 |
 |---|---|---|---|
 | ① 内联拦截 | `index.html` 里的内联脚本 | 加载期的 fetch / XHR / sendBeacon | 主线程（早于任何模块执行） |
-| ② **CSP** | `index.html` 的 `meta` | **一切外发，含 Worker** | **全来源**（Worker 有独立全局，只有 CSP 拦得住） |
+| ② **CSP** | `index.html` 的 `meta` | 主线程外发，以及 `blob:` 脚本创建的 Worker 内的外发 | 主线程 + `blob:` Worker；**不含同源脚本 Worker**（见下） |
 | ③ JS 补丁 | `src/lib/block-telemetry.ts` | 运行期的 fetch / XHR / sendBeacon | 主线程 |
 
-**关键是 ②**：MediaPipe 的 wasm loader 在 Worker 里发请求，①②③ 中只有 CSP 能拦住它
-（第 46 轮实测：JS 补丁时代真发出去了，加 CSP 后才报
-`Connecting to 'https://odml.pa.googleapis.com/v1/log' violates ... "connect-src"`）。
+**② 的边界（第 47 轮实测，此前这一格写错了）**：meta CSP 拦得住主线程，也拦得住
+`blob:` 脚本创建的 Worker（worker 继承创建者的策略）；但**同源脚本 Worker 完全不受它约束** ——
+worker 作用域的策略来自 worker 脚本自己的响应头，而本仓库与容器都没有 HTTP 头形式的 CSP，
+于是 `new Worker('/w.js')` 里的 fetch 连非 8090 端口都放行（实测 `fetch-ok(200)` 且外部计数服务器
+收到请求；`blob:` 对照被拦、去 CSP 的阴性对照全部放行）。将来若要让 Worker 承载外发，只有两条路：
+用 `blob:` 脚本，或给 worker 脚本加 CSP 响应头。
 
-**教训**：注释里的因果断言也要当作待验证的声明。这条注释流传了好几轮、
+**顺带纠正一句**：本工程**没有任何 Worker 创建**（`src/`、`index.html`、容器内 bundle 三处
+`new Worker` 均 0 处命中），所以「MediaPipe 的 wasm loader 在 Worker 里发请求」不成立；
+第 46 轮那条违规报文来自主线程，不能用来支撑「只有 CSP 拦得住 Worker」这个机制结论。
+
+**教训**：注释里的因果断言也要当作待验证的声明 —— 连「只有 X 拦得住 Y」这种机制层面的断言也一样，它比因果注释更难被察觉，因为听起来像常识。这条注释流传了好几轮、
 描述得很确定，实测才发现是把「CSP 的功劳」记在了 import 顺序头上。
 错误的因果注释比没有注释更糟 —— 后人会围绕它做无效的取舍。
 
