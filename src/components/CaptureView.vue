@@ -13,6 +13,7 @@ import {
   poseRecordingElapsed,
   startPoseRecording,
   stopPoseRecording,
+  teardownRecorder,
 } from '../lib/capture'
 import { uploadSession, UPLOAD_BUDGET_MS, type CaptureMeta, type CaptureResult, type PendingFile } from '../lib/pb'
 import { primeAudio, resumeAudio, sfx } from '../lib/audio'
@@ -128,6 +129,12 @@ const ovalStyle = computed(() => {
 
 let stream: MediaStream | null = null
 let raf = 0
+// 卸载标志（R13-F8）：onMounted 的异步链与 submit 的重试循环都要在每步之后查它，
+// 否则「模型还在下载时用户离开页面」会继续开摄像头、开录制、起逐帧循环，之后再无人回收。
+let disposed = false
+// 轨道 'ended' 监听器登记表：注册与解绑必须成对（此前只 add 不 remove，
+// 每条被丢弃的轨道都留一个闭包，闭包捕获整个组件实例）。
+const trackEndHandlers: { track: MediaStreamTrack; fn: () => void }[] = []
 let lastInfer = 0
 let lastVideoTime = -1
 // 保持帧数判定（带滞后 + 上锁）：
@@ -245,6 +252,10 @@ function cameraError(e: unknown): void {
 }
 
 function stopStream(): void {
+  // 先摘监听器再停流：解绑只认函数引用，停完之后 track 仍可解绑，
+  // 但顺序反了会让「同一批 track 被停两次」这类路径依赖实现细节。
+  for (const { track, fn } of trackEndHandlers) track.removeEventListener('ended', fn)
+  trackEndHandlers.length = 0
   stream?.getTracks().forEach(t => t.stop())
   stream = null
 }
@@ -297,13 +308,15 @@ async function startCamera(deviceId?: string): Promise<void> {
   // 采集中途设备断开时 video 会停在最后一帧，逐帧判定只会报「未检测到人脸」，
   // 用户会误以为是自己姿势的问题 —— 这里直接给出确切原因。
   for (const track of next.getVideoTracks()) {
-    track.addEventListener('ended', () => {
+    const onEnded = () => {
       // 只在「这条流仍是当前流」时提示：切设备会主动停掉旧轨道，那种情况不该报断开。
       if (stream !== next) return
       dbg('摄像头轨道 ended，判定设备断开')
       camLost.value = true
       setHint('cameraLost')
-    })
+    }
+    track.addEventListener('ended', onEnded)
+    trackEndHandlers.push({ track, fn: onEnded })
   }
   const el = videoEl.value
   if (el) {
@@ -489,6 +502,8 @@ async function submit(): Promise<void> {
     // 期间没有任何进度反馈，用户只能干等。
     const deadline = Date.now() + UPLOAD_BUDGET_MS
     for (let attempt = 1; attempt <= SUBMIT_TRIES; attempt++) {
+      // 组件已卸载：后台继续重试既没有意义，也会在已卸载组件上发事件
+      if (disposed) return
       // 预算已耗尽：不再发起新一轮，直接进入失败态（否则总耗时突破预算，失败态永远到不了）
       if (Date.now() >= deadline) {
         if (!uploadError.value) uploadError.value = t('uploadFailed')
@@ -499,7 +514,8 @@ async function submit(): Promise<void> {
         dbg('提交成功（第 ' + attempt + ' 次尝试）')
         sfx.done()
         cleanup()
-        emit('done', [...results])
+        // 已卸载时不再对外发事件（emit 到已卸载组件会命中 Vue 的开发期告警）
+        if (!disposed) emit('done', [...results])
         return
       } catch (e) {
         uploadError.value = e instanceof Error ? e.message : String(e)
@@ -632,12 +648,16 @@ onMounted(async () => {
     setHint('modelFailed')
     return
   }
+  // 卸载守卫：模型可能下载数秒，这期间用户离开页面则必须停在这里 ——
+  // 继续下去会再开一次摄像头（指示灯亮着）并起一个无人回收的逐帧循环。
+  if (disposed) return
   try {
     await startCamera()
   } catch (e) {
     cameraError(e)
     return
   }
+  if (disposed) return
   // 摄像头就绪即为第 1 个采集点开录（后续各段由 advance() 启动）。
   // 注意：必须在 onMounted 里调用一次，不能放在 loop() 里 —— 那会变成每帧调用，
   // 既是无谓开销，也会在录制器异常置空后反复重开段。
@@ -646,11 +666,15 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  // 先置标志再清理：清理过程中若有 await 落地，异步链看到的就是「已卸载」
+  disposed = true
   document.removeEventListener('visibilitychange', onVisibility)
   // 与 onMounted 的注册逐事件配对解绑（否则每轮重新挂载都在 window 上多留 4 个闭包）。
   // 不传 options：解绑只看 capture 标志，注册时的 passive 不参与匹配，默认值即一致。
   for (const e of UNLOCK_EVENTS) window.removeEventListener(e, unlockAudio)
   cleanup()
+  // cleanup() 里的 stopPoseRecording() 在「收尾在飞」时是空操作，必须再无条件拆一次
+  teardownRecorder()
 })
 </script>
 

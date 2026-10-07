@@ -132,6 +132,12 @@ const buildBlob = (src: Blob[]): { blob: Blob; mime: string } | null => {
  */
 let epoch = 0
 
+// 自动续录闸门（R13-F8）：8 秒硬上限到点后会「收段并立刻续录下一段」，
+// 这条自我续命的链条必须能被外部一次性关掉 —— 否则组件卸载后，
+// 已经停掉的流上仍会不断重建 MediaRecorder，并每次都再挂一个 8 秒定时器。
+// 显式开始录制（startPoseRecording）会重新打开它，因此组件重新挂载后行为不变。
+let autoRearm = true
+
 /**
  * 把已攒下的 chunk 收成一个段并写进 lastSegment。
  * 被 finalize 的 onstop 回调与 begin 里挂的「自发停止」回调共用。
@@ -328,9 +334,14 @@ function begin(stream: MediaStream, pose: string | null): boolean {
   timer = setTimeout(() => {
     // 硬上限到点：先收掉这段，再立刻续录下一段。
     // 这样「用户迟迟不达标」不会导致无限录制，也不会出现空档。
+    // 已被拆卸（cleanup/卸载）：不再收段、不再续录（R13-F8）
+    if (!autoRearm) return
     console.debug('[seg] 到 ' + POSE_MAX_MS / 1000 + ' 秒上限，收段并续录')
     const keepPose = currentPose
-    void finalize().then(() => begin(stream, keepPose)) // begin 内部会重置 segmentStart
+    void finalize().then(() => {
+      // 收尾期间可能已被拆卸：续录前再判一次，堵住「收尾在飞时空转」这条路径
+      if (autoRearm) begin(stream, keepPose) // begin 内部会重置 segmentStart
+    })
   }, POSE_MAX_MS)
 
   return true
@@ -341,6 +352,8 @@ function begin(stream: MediaStream, pose: string | null): boolean {
  * 无论上一段处于什么状态，都先强制收掉 —— 避免段与段叠加导致时长失控。
  */
 export function startPoseRecording(stream: MediaStream, pose: string): boolean {
+  // 显式开始录制 = 重新打开自动续录闸门（拆卸会关掉它，重新挂载后要恢复）
+  autoRearm = true
   // 幂等：同一个采集点重复调用时直接返回，避免「开段→收段→再开段」空转
   // （空转产生的段都是空的：刚创建、还没攒到第一个 chunk）
   //
@@ -385,6 +398,37 @@ export async function stopPoseRecording(): Promise<{ blob: Blob; mime: string } 
   const out = lastSegment
   lastSegment = null
   return out
+}
+
+/**
+ * 全量拆卸录制链（R13-F8）。组件卸载/清理时调用：关掉自动续录闸门、清掉 8 秒硬上限
+ * 定时器、停下在录的录制器并清空全部句柄。
+ *
+ * 为什么不能只调 stopPoseRecording()：它内部走 finalize()，而 finalize() 在
+ * 「已有收尾在飞」时直接返回既有 promise —— 既不停止录制器、也不清它的定时器，
+ * 于是「切采集点/重开录制后再卸载」会留下孤儿定时器与自我续命的录制器。
+ * 实测（R13-F8 判据）：修复前 submitInFlightUnmount 卸载后残留 rec_live=3 / timer=6，
+ * zombieAfterUnmount 残留 rec_live=6 / timer=19。
+ */
+export function teardownRecorder(): void {
+  autoRearm = false
+  if (timer) {
+    clearTimeout(timer)
+    timer = undefined
+  }
+  const r = rec
+  rec = null
+  recStream = null
+  currentPose = null
+  if (r && r.state !== 'inactive') {
+    try {
+      r.stop()
+    } catch (e) {
+      // 已停止 / 实现不支持 stop：都不影响「句柄已清空」这一事实
+      console.debug('[seg] 拆卸时停止录制器失败（可忽略）', e)
+    }
+  }
+  chunks = []
 }
 
 /** 当前是否有采集点正在录制（诊断用） */
