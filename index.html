@@ -220,11 +220,19 @@
         }
         window.__facedbBlockInline = {
           uninstall: function () {
-            // 只还原仍然是我们装的那一层
-            if (window.fetch === patchedFetch) window.fetch = of
-            if (XMLHttpRequest.prototype.open === patchedOpen) XMLHttpRequest.prototype.open = oo
-            if (XMLHttpRequest.prototype.send === patchedSend) XMLHttpRequest.prototype.send = os
-            if (patchedBeacon && navigator.sendBeacon === patchedBeacon) navigator.sendBeacon = ob
+            // 只还原仍然是我们装的那一层。
+            // 【撤层顺序】必须后装先撤（LIFO）：顺序不对时守卫全部落空，函数会静默返回，
+            // 调用方以为撤了、补丁却仍生效 —— 所以这里显式告警，不静默。
+            var restored = 0
+            if (window.fetch === patchedFetch) { window.fetch = of; restored++ }
+            if (XMLHttpRequest.prototype.open === patchedOpen) { XMLHttpRequest.prototype.open = oo; restored++ }
+            if (XMLHttpRequest.prototype.send === patchedSend) { XMLHttpRequest.prototype.send = os; restored++ }
+            if (patchedBeacon && navigator.sendBeacon === patchedBeacon) { navigator.sendBeacon = ob; restored++ }
+            var expected = patchedBeacon ? 4 : 3
+            if (restored < expected) {
+              console.warn('[telemetry] 撤层时本层不在顶层：' + expected + ' 个补丁点只还原了 ' + restored +
+                ' 个。撤层必须后装先撤（先撤模块层再撤内联层），否则本层补丁会残留。')
+            }
           },
         }
       })()

@@ -112,11 +112,33 @@ if (patchedBeacon) navigator.sendBeacon = patchedBeacon
 
 return {
   uninstall() {
-    // 只还原「仍然是我们装的那一层」——别人后来改过就不要动它
-    if (window.fetch === patchedFetch) window.fetch = prevFetch
-    if (XMLHttpRequest.prototype.open === patchedOpen) XMLHttpRequest.prototype.open = origOpen
-    if (XMLHttpRequest.prototype.send === patchedSend) XMLHttpRequest.prototype.send = origSend
-    if (patchedBeacon && navigator.sendBeacon === patchedBeacon) navigator.sendBeacon = prevBeacon!
+    // 只还原「仍然是我们装的那一层」——别人后来改过就不要动它。
+    // 【撤层顺序】必须后装先撤（LIFO）。顺序不对时本层已不在顶层，下面的守卫会**全部落空**，
+    // 结果是「调用方以为撤了、补丁却仍生效」。所以这里不静默：还原数少于应还原数就告警。
+    let restored = 0
+    if (window.fetch === patchedFetch) {
+      window.fetch = prevFetch
+      restored++
+    }
+    if (XMLHttpRequest.prototype.open === patchedOpen) {
+      XMLHttpRequest.prototype.open = origOpen
+      restored++
+    }
+    if (XMLHttpRequest.prototype.send === patchedSend) {
+      XMLHttpRequest.prototype.send = origSend
+      restored++
+    }
+    if (patchedBeacon && navigator.sendBeacon === patchedBeacon) {
+      navigator.sendBeacon = prevBeacon!
+      restored++
+    }
+    const expected = patchedBeacon ? 4 : 3
+    if (restored < expected) {
+      console.warn(
+        `[telemetry] 撤层时本层不在顶层：${expected} 个补丁点只还原了 ${restored} 个。` +
+          '撤层必须后装先撤（先撤模块层再撤内联层），否则本层补丁会残留。'
+      )
+    }
   },
 }
 }
