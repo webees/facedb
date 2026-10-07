@@ -410,13 +410,19 @@ async function shoot(): Promise<void> {
     }
     // 本采集点的视频段与照片一起入队（文件名带 pose，便于后台分辨）
     if (poseVideo) {
+      // 文件名先取成变量：results 与 pendingFiles 必须用同一个名字。
+      const vidName = `${step}_video_${stamp()}.${extFor(poseVideo.mime)}`
       pendingFiles.push({
         pose: step,
         blob: poseVideo.blob,
-        filename: `${step}_video_${stamp()}.${extFor(poseVideo.mime)}`,
+        filename: vidName,
         kind: 'video',
         meta,
       })
+      // results 是「本次采集产出的结果清单」，视频段同样是结果的一部分。
+      // 早先只在连拍分支写 results（照片），于是 emit payload 恒为 10 条而真实上传 16 个文件
+      // （缺的 6 个正是各采集点的 *_video_*.webm），与 CaptureResult[] 的声明自相矛盾。
+      results.push({ pose: step, filename: vidName })
     }
 
     if (isLastStep) {
