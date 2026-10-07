@@ -431,7 +431,7 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 > **体积口径（必须连口径一起写）**：上表用的是 `docker images` 报的 `Size`（arm64、OrbStack、2026-10-07 实测）。
 > 本仓库历史上出现过三个互不相等的数字 —— RUN.md 的 80MB、`Dockerfile` 头注的 ~68MB、R19 复核的 82.3MB —— 它们**不是同一个口径**：
 > `docker images` 的 `Size`、`docker image inspect .Size`（本镜像 17.7MiB = 18583983 字节）、镜像内 `du -sb /public`（27.4MB）、
-> 以及「基座 + 产物」相加，四者各不相同；连**架构**也会改数：本机 `joseluisq/static-web-server:2-alpine` 标签报 58.6MB，而 arm64 基座实测仅 28.9MB。
+> 以及「基座 + 产物」相加，四者各不相同；连**架构**也要确认：本机 `joseluisq/static-web-server:2-alpine` 就是 arm64/linux（`docker image inspect -f '{{.Architecture}}/{{.Os}}'`），`docker images` 报 58.6MB，`docker image inspect -f '{{.Size}}'` 报 8,190,662 字节。
 > **结论：任何体积数字必须连口径、架构与测量命令一起写**，否则无法比较 —— 这正是 R19 报「三处数字不一致」的根因。
 > 当前读数：`docker images` = 66.6MB，其中产物（镜像内 `/public`）= 27.4MB（`du -sb` = 27409329 字节）。
 >
