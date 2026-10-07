@@ -77,7 +77,10 @@ const stats = reactive({ blur: 0, brightness: 0, roi: '0x0' })
 const camRes = ref('')
 
 const pose = computed(() => POSES[idx.value])
-const retryable = computed(() => fails.value >= MAX_FAILS)
+// 断流后也必须给出入口（R15-F3）：fails 只在 shoot() 的 catch 里自增，而 camLost 时
+// loop() 直接跳过 shoot()，于是 fails 永远到不了 MAX_FAILS，「重新识别」按钮永不出现。
+// 而提示让用户「刷新页面」——刷新会丢掉内存里本次全部已采集文件。
+const retryable = computed(() => fails.value >= MAX_FAILS || camLost.value)
 const hint = computed(() => t(hints.key.value, hints.params.value))
 // 需要转头时，在椭圆外侧给出方向箭头（复用提示状态，不额外判断几何）
 const turnDir = computed<'left' | 'right' | null>(() =>
@@ -528,6 +531,17 @@ function loop(): void {
   raf = requestAnimationFrame(loop)
   const el = videoEl.value
   const ov = overlayEl.value
+  // 程序性停止（track.stop()）按规范不派发 ended 事件（实测 endedEventsFired=0），只能主动查 readyState。
+  // 不查的话画面冻结在最后一帧，逐帧判定只会报「未检测到人脸」，用户以为是自己姿势的问题；
+  // 而且 fails 不增长 —— 连重试入口都等不到（R15-F2 实测 C2-1 红）。
+  if (stream && !camLost.value) {
+    const tracks = stream.getVideoTracks()
+    if (tracks.length > 0 && tracks.every((tr) => tr.readyState === 'ended')) {
+      dbg('视频轨道 readyState=ended（程序性停止），判定设备断开')
+      camLost.value = true
+      hints.set('cameraLost')
+    }
+  }
   if (!el || !ov || el.videoWidth === 0) return
   // 视频尺寸就绪后同步给响应式变量（相机启动瞬间 videoWidth 可能还是 0）
   if (videoSize.w !== el.videoWidth) videoSize.w = el.videoWidth
@@ -657,7 +671,11 @@ onBeforeUnmount(() => {
       class="mx-auto flex items-center justify-center rounded-xl bg-gray-900 ring-1 ring-gray-300"
       :style="boxStyle"
     >
-      <p class="text-lg font-medium text-gray-300">{{ t('startingCamera') }}</p>
+      <!-- 相机未就绪时提示同样必须可见（R15-F1）：下面的画面容器是 v-show="videoSize.w"，
+           此刻 display:none —— 权限被拒 / 找不到设备 / 模型加载失败这类文案若只挂在那个容器里，
+           用户只会看到「正在启动摄像头…」，永远看不到真正的原因。
+           这里直接显示当前提示（初始为「正在加载人脸模型…」）。 -->
+      <p class="hint-outline text-lg font-bold text-white">{{ hint }}</p>
     </div>
 
     <!-- 摄像头画面。容器比例固定为 BOX_AR（4:3），不跟随视频真实比例 ——
