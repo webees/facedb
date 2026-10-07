@@ -289,7 +289,7 @@ add({ id: 'S17', covers: ['.editorconfig', '.gitattributes', 'scripts/check-repo
 } })
 
 // ── S18 仓库脚本语法与引用 ────────────────────────────────────────────
-add({ id: 'S18', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/check-repo-standards.mjs', 'scripts/publish-leak-scan.mjs', 'scripts/typecheck-guard.mjs', 'scripts/verify-repo.mjs', 'scripts/verify-standards-selftest.mjs', 'scripts/check-third-party-notices.mjs', 'scripts/check-third-party-notices-mutants.mjs'], name: '仓库脚本语法正确且都被 npm script 引用（不是死文件）', run() {
+add({ id: 'S18', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/check-repo-standards.mjs', 'scripts/publish-leak-scan.mjs', 'scripts/typecheck-guard.mjs', 'scripts/verify-repo.mjs', 'scripts/verify-standards-selftest.mjs', 'scripts/check-third-party-notices.mjs', 'scripts/check-third-party-notices-mutants.mjs', 'scripts/lib/checker.mjs', 'scripts/check-dist-size-budget.mjs', 'scripts/check-dist-size-budget-mutants.mjs'], name: '仓库脚本语法正确且都被 npm script 引用（不是死文件）', run() {
   const pkg = read('package.json')
   const files = readdirSync(R('scripts')).filter((f) => f.endsWith('.mjs'))
   // 两个判据脚本必须挂上 npm script：否则「写了没人跑」等于没写。
@@ -468,6 +468,51 @@ add({ id: 'S25', covers: ['THIRD-PARTY-NOTICES.md'], name: '第三方声明文�
   }
   if (!has('docs/THIRD-PARTY.md') || !read('docs/THIRD-PARTY.md').includes('THIRD-PARTY-NOTICES.md')) miss.push('docs/THIRD-PARTY.md 没有引用该文件（文档与处置脱钩）')
   return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '文件标记齐备 · 构建复制 · npm script 与 CI 接线 · 文档引用' }
+} })
+
+// ── S26 产物体积与构成判据的接线（R21/W21-A） ─────────────────────────
+// 为什么单独立一条：`dist/` 是 web 容器的静态根，体积与构成回归原先没有任何断言看得见。
+// 判据本身（gzip 传输面 / 原始总字节 / 文件名清单 / 逐文件 sha256）由
+// `scripts/check-dist-size-budget.mjs` 深查；这里守的是**接线** —— 文件在、能自定位
+// （不硬编码绝对路径）、阈值常量齐、npm script 与 CI 真的跑它。否则「写了判据但没人跑」
+// 在仓库层面看不出来（S24 只能要求「有归属」，不能要求「归属是真的」）。
+add({ id: 'S26', covers: ['scripts/lib/checker.mjs', 'scripts/check-dist-size-budget.mjs', 'scripts/check-dist-size-budget-mutants.mjs'], name: '产物体积与构成判据已接线（文件 / 自定位 / 阈值常量 / npm script / CI 步骤 / 阈值来源）', run() {
+  const GUARD = 'scripts/check-dist-size-budget.mjs'
+  const MUT = 'scripts/check-dist-size-budget-mutants.mjs'
+  const LIB = 'scripts/lib/checker.mjs'
+  const miss = []
+  for (const f of [GUARD, MUT, LIB]) if (!has(f)) miss.push(`${f} 不存在`)
+  const g = has(GUARD) ? read(GUARD) : ''
+  if (g) {
+    // 自定位：根目录来自 SIZE_ROOT 或脚本自身位置；产物目录允许 --dist 覆盖
+    if (!/process\.env\.SIZE_ROOT/.test(g) || !/import\.meta\.dirname/.test(g)) miss.push('判据没有 SIZE_ROOT / import.meta.dirname 自定位通道')
+    if (!/--dist/.test(g)) miss.push('判据没有 --dist 覆盖通道')
+    // 硬编码绝对路径是本轮一条 P1 的同型缺陷：判据自身不得出现 /Users/…
+    if (/\/Users\//.test(g)) miss.push('判据里出现硬编码 /Users/ 绝对路径')
+    // 5 个阈值常量（基线/上限 各两档 + 产物文件数）
+    for (const k of ['WEB_GZIP_BASELINE_BYTES', 'WEB_GZIP_CAP_BYTES', 'RAW_TOTAL_BASELINE_BYTES', 'RAW_TOTAL_CAP_BYTES', 'EXPECTED_FILE_COUNT']) {
+      if (!new RegExp(`const ${k}\\s*=`).test(g)) miss.push(`判据缺阈值常量 ${k}`)
+    }
+    // 阈值来源：docs/ 与 RUN.md 不在本轮的写集里，故由判据自带的注释承担（实测基线 + 运行根证据）
+    const docFiles = has('docs') ? readdirSync(R('docs')).filter((f) => /\.md$/.test(f)).map((f) => `docs/${f}`) : []
+    const cited = docFiles.filter((f) => read(f).includes(GUARD))
+    const sourceInComment = /W21-A/.test(g) && /95700/.test(g) && /27429645/.test(g)
+    if (cited.length === 0 && !sourceInComment) miss.push('既没有文档引用该判据，判据自带注释也没写明阈值来源（实测基线）')
+    // 环境前提与零样本纪律：非默认构建环境、缺产物，都不得判通过
+    if (!/PUBLIC_PB_URL/.test(g)) miss.push('判据没有 PUBLIC_PB_URL 环境前提断言（该变量会改产物内容与文件名）')
+    if (!/from '\.\/lib\/checker\.mjs'/.test(g)) miss.push('判据没有复用 scripts/lib/checker.mjs（未判定/关键跳过不得判通过的纪律）')
+  }
+  const pkg = has('package.json') ? read('package.json') : ''
+  for (const s of ['verify:size', 'verify:size-selftest']) if (!pkg.includes(`"${s}"`)) miss.push(`package.json 缺 npm script：${s}`)
+  // 不得塞进 verify:all：该判据需要 dist，全新克隆无构建即失败（与 verify:notices 的既有取舍一致）
+  if (/"verify:all":[^\n]*verify:size/.test(pkg)) miss.push('verify:size 被塞进 verify:all（全新克隆无构建时会直接失败）')
+  const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
+  // 必须按**整行**匹配：'npm run verify:size' 是 'npm run verify:size-selftest' 的前缀，
+  // 用 includes 会让「摘掉真判据、只留下自检」也判绿（S25/M16c 已踩过同型坑）。
+  for (const s of ['verify:size', 'verify:size-selftest']) {
+    if (!new RegExp(`^\\s*run:\\s*npm run ${s}\\s*$`, 'm').test(ci)) miss.push(`CI 没有以独立步骤跑：npm run ${s}`)
+  }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '3 个新文件 · 自定位（SIZE_ROOT / --dist）· 5 个阈值常量 · npm script 与 CI 步骤接线 · 阈值来源写明 · 未塞进 verify:all' }
 } })
 
 for (const c of CHECKS) {
