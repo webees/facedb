@@ -463,6 +463,32 @@ docker image inspect -f '{{.Size}}' <镜像>   # 字节
 
 选 `static-web-server`：原生支持 SPA 回退、gzip、缓存分层，且以非 root（uid 1000）运行。
 
+### 基座镜像按 digest 固定（R19 遗留项，2026-10-07）
+
+`Dockerfile` 与 `pb-bin/Dockerfile` 的 `FROM` 都写成 `<镜像>:<标签>@sha256:<index digest>`：
+
+| 基座 | index digest |
+|---|---|
+| `node:22-slim` | `sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392` |
+| `joseluisq/static-web-server:2-alpine` | `sha256:c6704bc8f1fe05378d91c3288495ce2e0131cf31cf8956f117cb1c7d83c49c31` |
+| `ghcr.io/muchobien/pocketbase:0.28.1` | `sha256:c11d164acd6266e31d2b5e88160b7bb3902c472c1ec90e0f403f56e802f23935` |
+
+为什么：标签可被上游改指，同一个 Dockerfile 会构建出不同的镜像；digest 固定后同样的 Dockerfile
+在同一平台上产出同样的镜像。**digest 取的是 manifest list（index）**，所以多架构仍然可用
+（BuildKit 按 `TARGETPLATFORM` 选子清单）。
+
+查法（升级基座时重跑）：
+
+```bash
+docker buildx imagetools inspect <镜像:标签> | awk '/^Digest:/{print $2}'
+```
+
+更新通道：`.github/dependabot.yml` 已配置 docker 生态（每周一检查），基座升级会开 PR ——
+**钉死 digest 的前提是有更新通道**，否则只是让基座烂掉。
+
+验证方式：`docker compose build web` 与 `docker compose build --progress=plain pocketbase` 均 exit 0
+（buildkit 对同一 digest 会命中缓存，说明解析出的镜像与固定前完全一致）。
+
 ### 配置（全部走环境变量）
 
 ```dockerfile

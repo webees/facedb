@@ -14,7 +14,12 @@
 # 两个口径下 static-web-server 都明显更小，且原生支持 SPA 回退。
 
 # ─────────────────────────── 构建阶段 ───────────────────────────
-FROM node:22-slim AS build
+# 基座镜像按 index digest 固定（R19 遗留项，2026-10-07）：
+#   查法：docker buildx imagetools inspect <镜像:标签> | awk '/^Digest:/{print $2}'
+#   为什么按 digest 而不是标签：标签可被上游改指，同一个 Dockerfile 会构建出不同的镜像。
+#   保留多架构：digest 是 manifest list（index）的，BuildKit 仍按 TARGETPLATFORM 选子清单。
+#   更新通道：.github/dependabot.yml 已配置 docker 生态（每周一），基座升级会开 PR。
+FROM node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS build
 WORKDIR /app
 
 # 依赖层单独缓存：package 文件不变就不重装
@@ -30,7 +35,7 @@ COPY . .
 RUN npm run build
 
 # ─────────────────────────── 运行阶段 ───────────────────────────
-FROM joseluisq/static-web-server:2-alpine
+FROM joseluisq/static-web-server:2-alpine@sha256:c6704bc8f1fe05378d91c3288495ce2e0131cf31cf8956f117cb1c7d83c49c31
 
 # 站点配置：全部用环境变量（该镜像原生支持 SERVER_* 前缀）
 ENV SERVER_ROOT=/public

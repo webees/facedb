@@ -17,7 +17,12 @@
 # 双架构分派：Dockerfile 的 COPY 不能按 ARG 条件选源文件，若把两份都 COPY 进最终镜像再删，
 # 被删的那份仍留在下层 layer 里（白占 ~40MB）。故用中间 stage 先按 TARGETARCH 选出一份，
 # 最终 stage 只 `COPY --from=prepare` 这一份 —— 未选中的架构不进最终镜像。
-FROM ghcr.io/muchobien/pocketbase:0.28.1 AS prepare
+# 基座镜像按 index digest 固定（R19 遗留项，2026-10-07）：
+#   查法：docker buildx imagetools inspect <镜像:标签> | awk '/^Digest:/{print $2}'
+#   为什么按 digest 而不是标签：标签可被上游改指，同一个 Dockerfile 会构建出不同的镜像。
+#   保留多架构：digest 是 manifest list（index）的，BuildKit 仍按 TARGETPLATFORM 选子清单。
+#   更新通道：.github/dependabot.yml 已配置 docker 生态（每周一），基座升级会开 PR。
+FROM ghcr.io/muchobien/pocketbase:0.28.1@sha256:c11d164acd6266e31d2b5e88160b7bb3902c472c1ec90e0f403f56e802f23935 AS prepare
 
 ARG TARGETARCH
 COPY pocketbase-zh-linux-arm64 /tmp/pb/arm64
@@ -30,7 +35,7 @@ RUN set -eu; \
       *) echo "REFUSED: unsupported TARGETARCH=${TARGETARCH}"; exit 1 ;; \
     esac
 
-FROM ghcr.io/muchobien/pocketbase:0.28.1
+FROM ghcr.io/muchobien/pocketbase:0.28.1@sha256:c11d164acd6266e31d2b5e88160b7bb3902c472c1ec90e0f403f56e802f23935
 
 ARG TARGETARCH
 ARG PB_ALLOWED_ARCH="arm64 amd64"
