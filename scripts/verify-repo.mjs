@@ -179,12 +179,26 @@ function checkPbbin() {
   if (present.length === 0) {
     notExecuted('二进制本体的 SHA-256 比对', '二进制按设计不入库（请在本机构建时用 pb-bin 的构建流程校验）')
   } else {
+    // 口径：二进制按设计不入库。若本机另行重建过，本地文件与清单不符 —— 那是本地构建产物与
+    // 登记不符，不是「仓库内容自洽性」的问题（CI 里根本没有这些文件，此项必然未执行）。
+    // 因此入库者按失败判，未入库者只提示并打印实得指纹，供人工比对。
+    const isTracked = (f) =>
+      spawnSync('git', ['ls-files', '--error-unmatch', '--', `pb-bin/${f}`], { cwd: ROOT, stdio: 'ignore' }).status === 0
     let bad = 0
+    let untrackedMismatch = 0
     for (const p of present) {
       const got = sha256(readFileSync(join(ROOT, 'pb-bin', p.file)))
-      if (got !== p.sha) { bad++; console.log(`   ❌ ${p.file} 期望 ${p.sha.slice(0, 16)} 实得 ${got.slice(0, 16)}`) }
+      if (got === p.sha) continue
+      if (isTracked(p.file)) {
+        bad++
+        console.log(`   ❌ ${p.file} 期望 ${p.sha.slice(0, 16)} 实得 ${got.slice(0, 16)}（该文件已入库）`)
+      } else {
+        untrackedMismatch++
+        console.log(`   ⚠️  ${p.file} 登记 ${p.sha.slice(0, 16)} 本地实得 ${got.slice(0, 16)}（未入库：本地另行构建过，只提示）`)
+      }
     }
-    check('在场二进制的 SHA-256 与清单一致', bad === 0, `比对 ${present.length} 个，失败 ${bad}`)
+    check('在场二进制的 SHA-256 与清单一致（已入库者必须一致）', bad === 0,
+      `比对 ${present.length} 个，已入库不符 ${bad}，未入库不符 ${untrackedMismatch}`)
   }
 }
 
