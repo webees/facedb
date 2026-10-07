@@ -34,7 +34,9 @@ try { unlinkSync(join(WT, 'node_modules')) } catch {}
 symlinkSync(join(ROOT, 'node_modules'), join(WT, 'node_modules'))
 
 // 副本取的是 HEAD 内容：本轮尚未提交的文件要从工作区拷进去，否则测的不是当前版本。
-const WORKTREE_STATE = spawnSync('git', ['-C', ROOT, 'status', '--porcelain'], { encoding: 'utf8' }).stdout
+// 必须带 -uall：默认的 git status 会把「整目录未跟踪」折叠成 `?? scripts/lib/` 一行，
+// 下面的拷贝循环读到目录就会 EISDIR 抛错（R21/W21-A 实测：新增 scripts/lib/ 后本脚本直接崩在拷贝阶段）。
+const WORKTREE_STATE = spawnSync('git', ['-C', ROOT, 'status', '--porcelain', '-uall'], { encoding: 'utf8' }).stdout
   .split('\n').filter(Boolean).map((l) => l.slice(3).trim())
 for (const rel of WORKTREE_STATE) {
   const src = join(ROOT, rel)
@@ -121,6 +123,12 @@ const M = [
     apply: () => mutate('package.json', (t) => t.replace(/\s*"verify:notices": "node scripts\/check-third-party-notices\.mjs",/, '')) },
   { id: 'M16c', target: '.github/workflows/ci.yml', expect: 'S25', desc: 'CI 不再跑第三方许可判据',
     apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/\s*- name: 第三方许可随分发物提供[\s\S]*?run: npm run verify:notices\n/, '\n')) },
+  // R21/W21-A：S26 守的是「产物体积与构成判据的接线」。两条接线段各来一个变异体 ——
+  // 判据文件在、但没人跑（script 被摘 / CI 步骤被删）= 等于没写。
+  { id: 'M17', target: 'package.json', expect: 'S26', desc: '体积判据的 npm script 被摘掉（写了没人跑）',
+    apply: () => mutate('package.json', (t) => t.replace(/\s*"verify:size": "node scripts\/check-dist-size-budget\.mjs",/, '')) },
+  { id: 'M18', target: '.github/workflows/ci.yml', expect: 'S26', desc: 'CI 里那一步体积判据被删（构建之后没人量产物）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/\s*- name: 产物体积与构成判据[^\n]*\n\s*run: npm run verify:size\n/, '\n')) },
 ]
 
 let caught = 0

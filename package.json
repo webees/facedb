@@ -30,6 +30,8 @@
     "verify:hygiene": "node scripts/check-repo-config-hygiene.mjs",
     "verify:notices": "node scripts/check-third-party-notices.mjs",
     "verify:notices-selftest": "node scripts/check-third-party-notices-mutants.mjs",
+    "verify:size": "node scripts/check-dist-size-budget.mjs",
+    "verify:size-selftest": "node scripts/check-dist-size-budget-mutants.mjs",
     "verify:standards-selftest": "node scripts/verify-standards-selftest.mjs",
     "verify:all": "npm run verify && npm run verify:types && npm run verify:publish && npm run verify:standards && npm run verify:hygiene"
   },

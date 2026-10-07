@@ -50,6 +50,11 @@ jobs:
       - name: 生产构建
         run: npm run build
 
+      # 必须在构建之后：该判据要量 dist 的传输面 / 原始总字节 / 逐文件 sha256
+      # （缺 dist 时它按零样本纪律判「未判定」并 exit 2，不判通过）
+      - name: 产物体积与构成判据（gzip 传输面 / 原始总字节 / 文件名清单 / sha256 锁定）
+        run: npm run verify:size
+
       # 必须在构建之后：该判据要验 dist 里的副本（缺 dist 判「未判定」并 exit 2，不判通过）
       - name: 第三方许可随分发物提供（声明文件 / Apache 全文 / 闭包与 lock 一致 / dist 副本）
         run: npm run verify:notices
@@ -78,3 +83,11 @@ jobs:
 
       - name: 第三方许可判据的变异自检（9 个变异体 + 缺 dist 必须判未判定）
         run: npm run verify:notices-selftest
+
+      # 体积自检要一份**真实产物**做样本（它在临时目录里真复制一份再施加变异）。
+      # 本 job 原本不建产物，缺 dist 时自检会按零样本纪律判「未判定」并 exit 2 —— 故先构建。
+      - name: 生产构建（体积自检的样本）
+        run: npm run build
+
+      - name: 产物体积判据的变异自检（6 个变异体：删 wasm / 同大小换内容 / web 注入 / SHA256SUMS 漂移 / 缺 dist / 对照）
+        run: npm run verify:size-selftest
