@@ -15,7 +15,8 @@ const ROOT = process.env.VERIFY_REPO_ROOT
   : join(import.meta.dirname, '..')
 const results = []
 let executed = 0
-let skipped = 0
+let skippedByDesign = 0 // 环境所限（例如二进制按设计不入库）：只提示，不计入失败
+let undetermined = 0 // 样本为 0：覆盖面不完整，不得判通过
 
 function check(name, ok, detail = '') {
   executed++
@@ -24,10 +25,24 @@ function check(name, ok, detail = '') {
   console.log(`${mark} ${name}${detail ? '  —— ' + detail : ''}`)
 }
 
-function notExecuted(name, why) {
-  skipped++
-  results.push({ name, ok: null, detail: why })
-  console.log(`⚠️  未执行：${name}  —— ${why}`)
+function notExecuted(name, why, byDesign = false) {
+  // 未执行分两类，语义不同：
+  //   · 样本为 0（目录里没有可检对象、清单为空…）→ 覆盖面不完整 → 整体 exit 2，绝不判通过
+  //   · 环境所限（二进制按设计不入库、node_modules 未安装…）→ 只提示，不影响退出码
+  if (byDesign) skippedByDesign++
+  else undetermined++
+  results.push({ name, ok: null, detail: why, byDesign })
+  console.log(`⚠️  未执行（${byDesign ? '环境所限，不计入失败' : '样本为 0，覆盖面不完整'}）：${name}  —— ${why}`)
+}
+
+// 每个检查组单独隔离：任何一项抛异常（来源文件缺失、解析失败…）都记成一条失败项，
+// 而不是让进程崩掉 —— 崩掉会吞掉汇总行，且崩溃点之后的检查组会静默不执行。
+function section(name, fn) {
+  try {
+    fn()
+  } catch (e) {
+    check(`${name} 执行未抛异常`, false, `抛出 ${e.constructor.name}: ${e.message}`)
+  }
 }
 
 const read = (rel) => readFileSync(join(ROOT, rel), 'utf8')
@@ -177,7 +192,7 @@ function checkPbbin() {
   // 二进制本体不入库，检出时通常不存在 —— 明确记为未执行，而不是静默通过
   const present = sums.filter((s) => existsSync(join(ROOT, 'pb-bin', s.file)))
   if (present.length === 0) {
-    notExecuted('二进制本体的 SHA-256 比对', '二进制按设计不入库（请在本机构建时用 pb-bin 的构建流程校验）')
+    notExecuted('二进制本体的 SHA-256 比对', '二进制按设计不入库（请在本机构建时用 pb-bin 的构建流程校验）', true)
   } else {
     // 口径：二进制按设计不入库。若本机另行重建过，本地文件与清单不符 —— 那是本地构建产物与
     // 登记不符，不是「仓库内容自洽性」的问题（CI 里根本没有这些文件，此项必然未执行）。
@@ -271,6 +286,9 @@ function runSelfCheck() {
     put('src/lib/capture.ts', 'export const POSE_MAX_MS = 1\n')
     put('src/lib/pb.ts', 'export const UPLOAD_BUDGET_MS = 1\n')
     put('src/components/CaptureView.vue', 'const HINT_BUF = 1\n')
+    // R13-F11：HINT_BUF / HINT_NEED 已移到 src/lib/hints.ts —— fixture 必须跟着走，
+    // 否则「常量来源文件都存在」这项在阴性对照里就恒红，自检失去意义。
+    put('src/lib/hints.ts', 'export const HINT_BUF = 1\nexport const HINT_NEED = 1\n')
     put('RUN.md', '# 手册\n' + DOCUMENTED_CONSTANTS.map((n) => `- ${n}`).join('\n') + '\n')
     const bsha = 'b'.repeat(64)
     put('pb-bin/SHA256SUMS', `${bsha}  pocketbase-zh-linux-arm64\n`)
@@ -282,7 +300,8 @@ function runSelfCheck() {
       encoding: 'utf8', env: { ...process.env, VERIFY_REPO_ROOT: tmp },
     })
     const failed = (r.stdout.match(/^❌ (.+)$/gm) || []).map((l) => l.replace(/^❌ /, '').split('  ——')[0])
-    return { code: r.status, failed, out: r.stdout }
+    const undet = Number((r.stdout.match(/未执行（样本为 0，覆盖面不完整）/) || []).length)
+    return { code: r.status, failed, undet, out: r.stdout }
   }
 
   const cases = [
@@ -292,6 +311,11 @@ function runSelfCheck() {
     { name: 'M3 迁移引入 cascadeDelete=true', expectFail: ['没有迁移把 cascadeDelete 置为 true'], mutate: () => put('pb_migrations/1799900000_bad.js', 'migrate((app) => {\n  const o = { "cascadeDelete": true }\n}, (app) => {\n  const p = 1\n})\n') },
     { name: 'M4 英文侧键名与中文不一致', expectFail: ['zh / en 键集合一致且无重复键'], mutate: () => put('src/lib/i18n.ts', "const M = {\n  zh: {\n    a: '甲',\n  },\n  en: {\n    b: 'A',\n  },\n}\n") },
     { name: 'M5 RUN.md 漏掉一个关键常量', expectFail: ['关键常量在 RUN.md 中均有记述'], mutate: () => put('RUN.md', '# 手册\n' + DOCUMENTED_CONSTANTS.slice(1).map((n) => `- ${n}`).join('\n') + '\n') },
+    // 零样本与崩溃面（R14-C 报的 P1/P2）—— 这些场景过去一律 exit 0
+    { name: 'ZS1 迁移目录为空 → 样本为 0 判未判定', expectCode: 2, expectFail: [], mutate: () => rmSync(join(tmp, 'pb_migrations/1759600000_created.js'), { force: true }) },
+    { name: 'ZS2 pb-bin/SHA256SUMS 为空 → 样本为 0 判未判定', expectCode: 2, expectFail: [], mutate: () => put('pb-bin/SHA256SUMS', '# 空清单\n') },
+    { name: 'ZS3 源码常量来源文件缺失 → 记失败项而非崩溃', expectCode: 1, expectFail: ['常量来源文件齐备'], mutate: () => rmSync(join(tmp, 'src/lib/hints.ts'), { force: true }) },
+    { name: 'ZS4 public/SHA256SUMS 缺失 → 记失败项而非崩溃', expectCode: 1, expectFail: ['public/SHA256SUMS 存在'], mutate: () => rmSync(join(tmp, 'public/SHA256SUMS'), { force: true }) },
     { name: 'M6 二进制定位指纹与清单不一致', expectFail: ['SHA256SUMS 与 Dockerfile 期望常量双向一致'], mutate: () => put('pb-bin/Dockerfile', `case "\${TARGETARCH}" in\n  arm64) want_sha256=${'c'.repeat(64)} ;;\nesac\n`) },
   ]
 
@@ -301,10 +325,10 @@ function runSelfCheck() {
     pristine()
     c.mutate()
     const { code, failed, out } = run()
-    const asExpected = c.expectFail.length === 0
-      ? code === 0 && failed.length === 0
-      : code === 1 && c.expectFail.every((f) => failed.includes(f))
-    console.log(`${asExpected ? '✅' : '❌'} ${c.name}  —— exit=${code} 失败项=${failed.length}${failed.length ? '：' + failed.join(' | ') : ''}`)
+    // 三态：expectCode 缺省时按「无 expectFail 即 exit 0、有 expectFail 即 exit 1」推断
+    const wantCode = c.expectCode ?? (c.expectFail.length === 0 ? 0 : 1)
+    const asExpected = code === wantCode && c.expectFail.every((f) => failed.includes(f))
+    console.log(`${asExpected ? '✅' : '❌'} ${c.name}  —— exit=${code}（期望 ${wantCode}）失败项=${failed.length}${failed.length ? '：' + failed.join(' | ') : ''}`)
     if (!asExpected) {
       bad++
       console.log('   ── 子进程输出 ──')
@@ -319,15 +343,16 @@ function runSelfCheck() {
 if (process.argv.includes('--self-check')) {
   runSelfCheck()
 } else {
-  checkPublicIntegrity()
-  checkMigrations()
-  checkI18n()
-  checkPbbin()
-  checkRunmdConstants()
+  section('public/ 资源指纹', checkPublicIntegrity)
+  section('pb_migrations', checkMigrations)
+  section('i18n', checkI18n)
+  section('pb-bin 指纹', checkPbbin)
+  section('RUN.md 常量', checkRunmdConstants)
 
   const failed = results.filter((r) => r.ok === false)
   console.log(`\n=== 汇总 ===`)
-  console.log(`执行 ${executed} 项，通过 ${executed - failed.length}，失败 ${failed.length}；未执行 ${skipped} 项`)
+  console.log(`执行 ${executed} 项，通过 ${executed - failed.length}，失败 ${failed.length}；`
+    + `未执行 ${undetermined + skippedByDesign} 项（样本为 0 的 ${undetermined} 项、环境所限的 ${skippedByDesign} 项）`)
   if (failed.length) {
     console.log('失败项：')
     for (const f of failed) console.log(`  ❌ ${f.name}  —— ${f.detail}`)
@@ -336,5 +361,11 @@ if (process.argv.includes('--self-check')) {
     console.log('❌ 没有任何检查被真正执行 —— 本次不构成结论')
     process.exit(2)
   }
-  process.exit(failed.length ? 1 : 0)
+  if (failed.length) process.exit(1)
+  // 样本为 0 时整节断言会消失，此时「没失败」不代表「没问题」——必须判未判定。
+  if (undetermined > 0) {
+    console.log(`❌ 有 ${undetermined} 项因样本为 0 未执行 —— 覆盖面不完整，本次不构成通过`)
+    process.exit(2)
+  }
+  process.exit(0)
 }

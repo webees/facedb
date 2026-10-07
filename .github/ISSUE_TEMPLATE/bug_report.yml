@@ -37,7 +37,7 @@ body:
     id: version
     attributes:
       label: 版本 / 提交
-      description: `git rev-parse --short HEAD`，或镜像标签。
+      description: "`git rev-parse --short HEAD`，或镜像标签。"
     validations:
       required: true
   - type: dropdown

@@ -8,8 +8,8 @@
 | 文件 | `pb-bin/pocketbase-zh-linux-arm64` | `pb-bin/pocketbase-zh-linux-amd64` |
 | 平台 | Linux / arm64（aarch64，静态链接 ELF，`e_machine`=183） | Linux / amd64（x86-64，静态链接 ELF，`e_machine`=62） |
 | 大小 | 41,709,597 字节 | 43,624,965 字节 |
-| sha256 | `85a10d0baf5d42d631735304baaaefd79e8a118658daf64981ecda30ebea8ef0` | `3786b4f5cbc35379129a35123dd5d2303744036d7fd9c0974d0d089ce3eb0490` |
-| md5 | `115ca8dd9bcbdd667ecc617175c803ed` | `ac39fb7771e03eb49a986f99a1789313` |
+| sha256 | `ad90eff9ce7fe6c925821637934fb812495f1817367db91376e29481a4fafac2` | `5a4a6bf172b4af4aafe4099866c13892cc56c0ac0ed6548bb91384eb8b516f80` |
+| md5 | `caf52450b62c9f801487331a035dd56a` | `917b89275bffc43e6816e7f800fe9d5b` |
 | 适用机 | 源机 nanopc-t6-lts（RK3588，aarch64） | 目标机（x86_64 构建机） |
 | 自报版本 | `pocketbase version (untracked)`（源码编译产物没有版本号） | 同左 |
 | 运行时基座 | `ghcr.io/muchobien/pocketbase:0.28.1`（多架构，随 `--platform` 取对应架构） | 同左 |
@@ -67,6 +67,20 @@ done
 `SHA256SUMS` 曾同时含两条 `pocketbase-zh` 记录，第二条 `188d7e7a4fca5c9ba0ebfc22b64f40ae3f97840761cc4cbfe200bad9377a4361`
 是**上一版 arm64 二进制的历史指纹**（其 md5 为 `41d7bbf2a066a695f9a2b96676118a11`），文件本体早已被
 `85a10d0b…` 那份覆盖，仓库内无任何文件与之相符。证据：
+
+2026-10-07 重锚（R14-PBBIN-FP）：两份二进制被重建过一次（尺寸不变、内容变），
+而清单/Dockerfile/README 三方常量当时未同步 —— 结果是 `docker compose build pocketbase` 必然
+`REFUSED: sha256 … not in pb-bin/SHA256SUMS allowlist`（R19 席实测 exit=1）。
+现按**实际部署中的**二进制重锚，被替换掉的旧指纹登记在此备查：
+
+| 架构 | 旧 sha256 | 旧 md5 | 状态 |
+| --- | --- | --- | --- |
+| arm64 | `85a10d0baf5d42d631735304baaaefd79e8a118658daf64981ecda30ebea8ef0` | `115ca8dd9bcbdd667ecc617175c803ed` | 已被替换（仓库内无相符文件） |
+| amd64 | `3786b4f5cbc35379129a35123dd5d2303744036d7fd9c0974d0d089ce3eb0490` | `ac39fb7771e03eb49a986f99a1789313` | 已被替换（仓库内无相符文件） |
+
+重锚依据：生产镜像 `webees-facedb-pocketbase:0.28.1-zh` 创建于 2026-10-07T03:47:11（＝二进制写入时刻），
+容器内 `/usr/local/bin/pocketbase` 的 sha256 与新常量一致；两份二进制均为汉化版
+（`集合` 各 122 处、`API 运行正常` 各 1 处），运行实例 `/api/health` 返回 `{"message":"API 运行正常。"}`。
 `run-20261006-160618/evidence/R02-CT-13-b3b5-mutants-after.log:41`（旧值实测）、
 `run-20261006-160618/evidence/W7-docs.log:111,136`（已记为 P3 残留 E05-3）。
 
