@@ -50,6 +50,10 @@ jobs:
       - name: 生产构建
         run: npm run build
 
+      # 必须在构建之后：该判据要验 dist 里的副本（缺 dist 判「未判定」并 exit 2，不判通过）
+      - name: 第三方许可随分发物提供（声明文件 / Apache 全文 / 闭包与 lock 一致 / dist 副本）
+        run: npm run verify:notices
+
       - name: Docker Compose 配置校验
         run: docker compose config -q
 
@@ -71,3 +75,6 @@ jobs:
 
       - name: 判据自身的变异自检（15 个变异体必须全部被抓到，且未变异的副本全绿）
         run: npm run verify:standards-selftest
+
+      - name: 第三方许可判据的变异自检（9 个变异体 + 缺 dist 必须判未判定）
+        run: npm run verify:notices-selftest

@@ -44,6 +44,10 @@ export default defineConfig({
 
   output: {
     distPath: { root: 'dist' },
+    // 分发物必须自带第三方许可声明（见 THIRD-PARTY-NOTICES.md 第 2.2 节）。
+    // 用 Rsbuild 内建的 output.copy（rspack CopyPlugin 的封装）而不是自写插件：
+    // 自写插件要 import('node:fs')，而本仓库没装 @types/node，typecheck 会红。
+    copy: [{ from: 'THIRD-PARTY-NOTICES.md', to: 'THIRD-PARTY-NOTICES.md' }],
   },
 
   // PostCSS 由 Rsbuild 自动读取项目根的 postcss.config.mjs，无需在此配置。

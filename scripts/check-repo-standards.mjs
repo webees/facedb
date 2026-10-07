@@ -289,7 +289,7 @@ add({ id: 'S17', covers: ['.editorconfig', '.gitattributes', 'scripts/check-repo
 } })
 
 // ── S18 仓库脚本语法与引用 ────────────────────────────────────────────
-add({ id: 'S18', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/check-repo-standards.mjs', 'scripts/publish-leak-scan.mjs', 'scripts/typecheck-guard.mjs', 'scripts/verify-repo.mjs', 'scripts/verify-standards-selftest.mjs'], name: '仓库脚本语法正确且都被 npm script 引用（不是死文件）', run() {
+add({ id: 'S18', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/check-repo-standards.mjs', 'scripts/publish-leak-scan.mjs', 'scripts/typecheck-guard.mjs', 'scripts/verify-repo.mjs', 'scripts/verify-standards-selftest.mjs', 'scripts/check-third-party-notices.mjs', 'scripts/check-third-party-notices-mutants.mjs'], name: '仓库脚本语法正确且都被 npm script 引用（不是死文件）', run() {
   const pkg = read('package.json')
   const files = readdirSync(R('scripts')).filter((f) => f.endsWith('.mjs'))
   // 两个判据脚本必须挂上 npm script：否则「写了没人跑」等于没写。
@@ -439,6 +439,35 @@ add({ id: 'S24', covers: [], name: '仓库根与 .github 下的每个受管文�
     if (/^\.github\/workflows\/.+\.ya?ml$/.test(f) && !wfOwner.has(f)) missing.push(`${f}（未被 S15 逐个检查，只是被别的断言覆盖）`)
   }
   return { ok: missing.length === 0, detail: missing.length ? '没有任何断言覆盖：' + missing.join('、') : `${watched.length} 个受管文件全部有归属` }
+} })
+
+// ── S25 第三方声明文件与分发链接线（R20-F7） ──────────────────────────
+// 为什么单独立一条：文件本身（Apache 全文 / 闭包与 lock 一致 / dist 副本）由
+// `scripts/check-third-party-notices.mjs` 深查；这里守的是**接线**——它必须真的被构建复制、
+// 必须真的挂上 npm script 与 CI。否则「写了文件但没人分发、没人跑判据」在仓库层面看不出来
+// （S24 只能要求「有归属」，不能要求「归属是真的」）。
+add({ id: 'S25', covers: ['THIRD-PARTY-NOTICES.md'], name: '第三方声明文件被构建复制、且判据与 CI 已接线', run() {
+  const miss = []
+  if (!has('THIRD-PARTY-NOTICES.md')) miss.push('THIRD-PARTY-NOTICES.md 不存在')
+  else {
+    const t = read('THIRD-PARTY-NOTICES.md')
+    for (const m of ['Apache License', 'END OF TERMS AND CONDITIONS', 'APPENDIX: How to apply the Apache License to your work', 'Permission is hereby granted, free of charge']) {
+      if (!t.includes(m)) miss.push(`声明文件缺标记：${m}`)
+    }
+  }
+  const rs = has('rsbuild.config.ts') ? read('rsbuild.config.ts') : ''
+  if (!/copy:\s*\[[\s\S]*?from:\s*'THIRD-PARTY-NOTICES\.md'[\s\S]*?to:\s*'THIRD-PARTY-NOTICES\.md'/.test(rs)) miss.push('rsbuild.config.ts 的 output.copy 没有复制该文件（构建产物里不会有它）')
+  const pkg = has('package.json') ? read('package.json') : ''
+  for (const s of ['verify:notices', 'verify:notices-selftest']) if (!pkg.includes(`"${s}"`)) miss.push(`package.json 缺 npm script：${s}`)
+  const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
+  // 必须按**整行**匹配：'npm run verify:notices' 是 'npm run verify:notices-selftest' 的前缀，
+  // 用 includes 会让「摘掉真判据、只留下自检」也判绿（M16c 变异体实测踩到，已改成行级正则）。
+  for (const s of ['verify:notices', 'verify:notices-selftest']) {
+    const line = new RegExp(`^\\s*run:\\s*npm run ${s.replace(':', ':')}\\s*$`, 'm')
+    if (!line.test(ci)) miss.push(`CI 没有以独立步骤跑：npm run ${s}`)
+  }
+  if (!has('docs/THIRD-PARTY.md') || !read('docs/THIRD-PARTY.md').includes('THIRD-PARTY-NOTICES.md')) miss.push('docs/THIRD-PARTY.md 没有引用该文件（文档与处置脱钩）')
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '文件标记齐备 · 构建复制 · npm script 与 CI 接线 · 文档引用' }
 } })
 
 for (const c of CHECKS) {
