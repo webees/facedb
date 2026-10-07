@@ -11,8 +11,8 @@
 #   文件自身 ELF e_machine 必须与 TARGETARCH 相符 —— 五重正向断言，缺一即失败。
 #
 # 分架构常量（与 pb-bin/SHA256SUMS、pb-bin/README.md 三方一致）：
-#   arm64  size=41709597 md5=115ca8dd9bcbdd667ecc617175c803ed sha256=85a10d0baf5d42d631735304baaaefd79e8a118658daf64981ecda30ebea8ef0
-#   amd64  size=43624965 md5=ac39fb7771e03eb49a986f99a1789313 sha256=3786b4f5cbc35379129a35123dd5d2303744036d7fd9c0974d0d089ce3eb0490
+#   arm64  size=41709597 md5=caf52450b62c9f801487331a035dd56a sha256=ad90eff9ce7fe6c925821637934fb812495f1817367db91376e29481a4fafac2
+#   amd64  size=43624965 md5=917b89275bffc43e6816e7f800fe9d5b sha256=5a4a6bf172b4af4aafe4099866c13892cc56c0ac0ed6548bb91384eb8b516f80
 #
 # 双架构分派：Dockerfile 的 COPY 不能按 ARG 条件选源文件，若把两份都 COPY 进最终镜像再删，
 # 被删的那份仍留在下层 layer 里（白占 ~40MB）。故用中间 stage 先按 TARGETARCH 选出一份，
@@ -45,8 +45,8 @@ RUN set -eu; \
     f=/usr/local/bin/pocketbase; \
     chmod 0755 "$f"; \
     case "${TARGETARCH}" in \
-      arm64) want_machine=183; want_size=41709597; want_md5=115ca8dd9bcbdd667ecc617175c803ed; want_sha256=85a10d0baf5d42d631735304baaaefd79e8a118658daf64981ecda30ebea8ef0 ;; \
-      amd64) want_machine=62;  want_size=43624965; want_md5=ac39fb7771e03eb49a986f99a1789313; want_sha256=3786b4f5cbc35379129a35123dd5d2303744036d7fd9c0974d0d089ce3eb0490 ;; \
+      arm64) want_machine=183; want_size=41709597; want_md5=caf52450b62c9f801487331a035dd56a; want_sha256=ad90eff9ce7fe6c925821637934fb812495f1817367db91376e29481a4fafac2 ;; \
+      amd64) want_machine=62;  want_size=43624965; want_md5=917b89275bffc43e6816e7f800fe9d5b; want_sha256=5a4a6bf172b4af4aafe4099866c13892cc56c0ac0ed6548bb91384eb8b516f80 ;; \
       *) echo "REFUSED: unknown arch ${TARGETARCH}"; exit 1 ;; \
     esac; \
     case " ${PB_ALLOWED_ARCH} " in *" ${TARGETARCH} "*) ;; *) echo "REFUSED: TARGETARCH=${TARGETARCH} not in allowed [${PB_ALLOWED_ARCH}]"; exit 1;; esac; \
