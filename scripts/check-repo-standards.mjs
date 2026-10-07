@@ -582,6 +582,47 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
   return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（禁扩展名白名单回退）· 未判定 exit 2 · 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 13+2+2+1 场景 · npm/CI 接线 · 文档口径一致' }
 } })
 
+// ── S28 仓库判据的变异自检接线与判别力（R22） ──────────────────────────
+// 为什么单独立一条：`scripts/verify-repo.mjs` 是仓库结构面与 CSP 面的判据，它的判别力来自
+// `--self-check` 的 20 个变异体（M1–M15 + 零样本 4 条 + 越界 2 条）。R22 实测：这个自检
+// **从未进 CI**（package.json 有 `verify:selfcheck`，但 CI 里一次都没跑）—— 于是「判据被无声
+// 削弱」的路径正坐在 CI 绿灯的背面。这与 R22REV 报的「只验 img-src 这个词存在」是同一层级的
+// 两个问题：一个是断言太弱，一个是守断言的东西没接线。这里守三件事：
+//  ① 接线是真（npm script 指向真文件、CI 有独立步骤、自检失败必须非零退出）；
+//  ② 取值断言与前提锁的关键实现不许被摘（摘掉就退回「词存在即通过」与「只扫 src/」）；
+//  ③ M12–M15 四个变异体不许消失（判别力的载体）。
+add({ id: 'S28', covers: ['scripts/verify-repo.mjs', 'package.json', '.github/workflows/ci.yml'], name: '仓库判据的变异自检已接线且判别力不许回退（img-src 取值 / 前提锁扩面 / 注释遮蔽 / M12–M15）', run() {
+  const V = 'scripts/verify-repo.mjs'
+  const miss = []
+  if (!has(V)) miss.push(`${V} 不存在`)
+  const v = has(V) ? read(V) : ''
+  const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
+  let pkg = {}
+  try { pkg = has('package.json') ? JSON.parse(read('package.json')) : {} } catch { miss.push('package.json 不是合法 JSON') }
+  const script = (pkg.scripts || {})['verify:selfcheck'] || ''
+  if (!script) miss.push('package.json 缺少 verify:selfcheck script')
+  else {
+    if (!script.includes('verify-repo.mjs')) miss.push(`verify:selfcheck 指向的不是仓库判据：${script}`)
+    if (!script.includes('--self-check')) miss.push(`verify:selfcheck 丢了 --self-check（等于只跑一遍判据，判别力为 0）：${script}`)
+  }
+  // CI 步骤用**行级正则**匹配，不用 includes：includes 会被注释或别的脚本里的同名字符串满足
+  // （S25/M16c 与 S27/M21 都踩过同型坑）。
+  if (!/^\s*run:\s*npm run verify:selfcheck\s*$/m.test(ci)) miss.push('CI 没有以独立步骤跑 npm run verify:selfcheck（判据的判别力在 CI 里无人守）')
+  if (v) {
+    // 必须锚在**声明行**上：只测 /imgLoose/ 会被「声明被摘、引用还在」的变异体骗过（M25 实测：
+    // 摘掉 `const imgLoose = …` 后文件里仍有 `imgLoose.length === 0`，断言照旧为真 → 变异体漏检）。
+    if (!/const imgLoose = /.test(v)) miss.push('缺少 img-src 取值断言（imgLoose 声明）—— 收紧可被无声改回全开')
+    if (!/img-src 取值落回收紧集合/.test(v)) miss.push('img-src 取值断言的标题被改名或摘掉')
+    if (!v.includes("['src', 'public', 'docs', 'index.html']")) miss.push('前提锁没有扩到 src/public/docs/index.html')
+    if (!v.includes('/<img[\\s/>]/i')) miss.push('前提锁丢了大小写不敏感的 <img 匹配')
+    if (!v.includes('/<!--[\\s\\S]*?-->/g')) miss.push('缺少注释遮蔽 —— 说明文字里的 <img> 会被自己的检查判成标签')
+    if (!/样式里没有跨源 url\(\) 图片引用/.test(v)) miss.push('缺少样式跨源图片断言的标题')
+    for (const m of ['M12', 'M13', 'M14', 'M15']) if (!v.includes(`name: '${m} `)) miss.push(`变异体 ${m} 被摘掉`)
+    if (!/process\.exit\(bad \? 1 : 0\)/.test(v)) miss.push('自检失败没有非零退出（自检本身变成恒真）')
+  }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '3 个文件 · npm script 指向真文件且带 --self-check · CI 独立步骤 · 取值断言 + 前提锁扩面 + 注释遮蔽 · M12–M15 · 自检非零退出' }
+} })
+
 for (const c of CHECKS) {
   let r
   try { r = c.run() } catch (e) { r = { ok: false, detail: '断言抛错：' + e.message } }

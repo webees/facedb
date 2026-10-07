@@ -141,6 +141,10 @@ const M = [
     apply: () => mutate('package.json', (t) => t.replace(/\s*"verify:publish-selftest": "node scripts\/publish-leak-scan-selftest\.mjs",/, '')) },
   { id: 'M23', target: '.github/workflows/ci.yml', expect: 'S27', desc: 'CI 里那一步发布卫生闸门被删（PUBLIC 仓库推送前没人扫）',
     apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/\s*- name: 发布卫生闸门[^\n]*\n\s*run: npm run verify:publish\n/, '\n')) },
+  { id: 'M24', target: '.github/workflows/ci.yml', expect: 'S28', desc: 'CI 里那一步仓库判据自检被删（判据的判别力在 CI 里没人守）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/\s*- name: 仓库判据的变异自检[^\n]*\n\s*run: npm run verify:selfcheck\n/, '\n')) },
+  { id: 'M25', target: 'scripts/verify-repo.mjs', expect: 'S28', desc: 'img-src 取值断言被摘（退回「img-src 这个词存在即通过」）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace(/const imgLoose = [^\n]*\n/, '')) },
 ]
 
 let caught = 0
