@@ -3,7 +3,6 @@ const M = {
   zh: {
     loadingModel: '正在加载人脸模型…',
     modelFailed: '人脸模型加载失败，请刷新页面重试',
-    startingCamera: '正在启动摄像头…',
 
     poseFrontal: '请正对镜头',
     poseLeft30: '请向左转头',
@@ -97,7 +96,6 @@ const M = {
   en: {
     loadingModel: 'Loading face model…',
     modelFailed: 'Failed to load face model, please refresh the page',
-    startingCamera: 'Starting camera…',
 
     poseFrontal: 'Please face the camera',
     poseLeft30: 'Please turn your head left',
