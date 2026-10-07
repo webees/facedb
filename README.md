@@ -12,8 +12,9 @@
   亮度、眨眼（活体步），未达标时给出**带方向的**中文/英文提示。
 - **防抖表决**：普通提示需在最近 5 帧中达成 3 帧共识才上屏，避免文案闪烁；姿态切换等
   离散事件立即生效。
-- **自动拍摄**：每步自动连拍 10 张 JPEG（质量 0.92）+ 1 段 WebM 视频，打包为一条
-  PocketBase 记录，按链接里的**采集编号**（`session_id`）分组。
+- **自动拍摄**：5 个照片采集点各连拍 2 张 JPEG（合计 10 张，质量 0.92），六个采集点
+  各录 1 段 WebM（合计 6 段），一并打包为一条 PocketBase 记录，按链接里的
+  **采集编号**（`session_id`）分组。
 - **批量上传**：一次请求上传整批文件，共 90 秒预算、最多 3 次尝试，失败可原地重试
   （照片与视频不会因为一次网络抖动而全部丢弃）。
 - **无遥测**：三层拦截（CSP、`index.html` 内联拦截、`block-telemetry` 运行期补丁）阻断
@@ -47,7 +48,8 @@ docker compose up -d --build  # 采集端 → http://localhost:3000/<采集编�
 src/                 前端源码
   components/        CaptureView.vue（采集流程主体）
   lib/               capture.ts 录制/拍照、face.ts 推理、quality.ts 质检判定、
-                     pb.ts 上传、i18n.ts 文案、audio.ts 提示音、block-telemetry.ts 遥测拦截
+                     pb.ts 上传、i18n.ts 文案、hints.ts 提示状态机、audio.ts 提示音、
+                     block-telemetry.ts 遥测拦截
 pb_migrations/       PocketBase 迁移（集合、字段、约束、权限的唯一来源）
 public/              随前端发布的静态资源（MediaPipe wasm、人脸模型、SHA256SUMS 清单）
 pb-bin/              PocketBase 本地化二进制与构建说明（二进制本体不入库，只入库指纹清单）

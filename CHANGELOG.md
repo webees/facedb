@@ -25,13 +25,19 @@
 
 ### 新增
 
-- 六个体位采集点（正面 / 左转 30° / 右转 30° / 抬头 / 低头 / 活体），每步自动连拍
-  10 张 JPEG 与 1 段 WebM，按链接中的采集编号（`session_id`）分组上传。
+- 六个体位采集点（正面 / 左转 30° / 右转 30° / 抬头 / 低头 / 活体）。5 个照片采集点
+  各连拍 2 张 JPEG（合计 10 张），六个采集点各录 1 段 WebM（合计 6 段），按链接中的
+  采集编号（`session_id`）分组上传。
 - 实时质检与带方向的双语文案提示：人脸数量、人脸占比、姿态、清晰度、亮度、眨眼，
   普通提示按最近 5 帧 3 票表决后上屏。
 - 批量上传（单请求多文件）与上传后自动重试；上传期间隐藏工具栏并按可见性暂停。
 - 资源完整性清单 `public/SHA256SUMS`，覆盖 wasm 与本地模型。
 - `npm run verify` 仓库自检与 GitHub Actions CI（自检 + 类型检查 + 生产构建）。
+
+### 变更
+
+- `pb_migrations` 的挂载由可写改为只读；`rsbuild.config.ts` 的告警屏蔽收窄到
+  `@mediapipe` 的 `Critical dependency`；`.dockerignore` 排除 `RUN.md` 与 `.git`。
 
 ### 修复
 
@@ -65,14 +71,11 @@
 - 构建期对 PocketBase 本地化二进制做五重正向断言（大小 / SHA-256 / MD5 / 目标架构
   白名单 / ELF `e_machine`），并按架构分别登记指纹。
 - `pb_migrations` 以只读方式挂载进容器，避免运行时快照回写污染工程目录。
-- 发布卫生闸门：扫描将推送的全部内容（含未跟踪未忽略文件）中的凭据、私网/公网地址、
-  本地路径与媒体文件，样本为零时判「未执行」而非通过。
+- 发布卫生闸门 `npm run verify:publish`（`scripts/publish-leak-scan.mjs`，CI 已接入）：
+  扫描将被推送的内容与未跟踪未忽略的文件，命中凭据、私网/公网地址、本地路径或
+  媒体文件即阻断；样本为零时判「未执行」而非通过。
 - `.env` 从版本库移除并加入 `.gitignore`。
 
-### 变更
-
-- `pb_migrations` 的挂载由可写改为只读；`rsbuild.config.ts` 的告警屏蔽收窄到
-  `@mediapipe` 的 `Critical dependency`；`.dockerignore` 排除 `RUN.md` 与 `.git`。
 
 [未发布]: https://github.com/webees/facedb/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/webees/facedb/releases/tag/v0.1.0
