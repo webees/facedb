@@ -32,7 +32,10 @@ jobs:
       - name: 仓库自检（资源指纹 / 迁移不变量 / 文案键对称 / 二进制指纹）
         run: npm run verify
 
-      - name: 类型检查
+      - name: 类型检查（样本数 + 阳性对照，防零样本假通过）
+        run: npm run verify:types
+
+      - name: 类型检查（原始命令，便于对照报错输出）
         run: npm run typecheck
 
       - name: 生产构建

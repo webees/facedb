@@ -5,6 +5,20 @@
 
 ## [未发布]
 
+### 新增
+
+- `npm run verify:types` 类型检查零样本防线：先断言 tsconfig 命中的可检查文件数达标，
+  再跑 `vue-tsc --noEmit`，最后在临时副本里注入一个类型错误要求它报红 —— 三者缺一即判
+  「未执行」并返回非零，堵住「没有任何可检查内容也 exit 0」的假通过。CI 已接入该步骤。
+- 提示状态机外移到 `src/lib/hints.ts`（`createHints` 工厂 + `URGENT_HINTS` / `HINT_BUF` /
+  `HINT_NEED`），组件只保留接线，`CaptureView.vue` 由 814 行降到 760 行。
+
+### 修复
+
+- **卸载期资源未回收**（内存 / 摄像头指示灯）：`startPoseRecording` 增加活录制器登记表与
+  代次守卫，并发收尾时停掉游离实例；`startCamera` 与 `onMounted` 在卸载竞态时就地停轨；
+  `closeFace` 用代次作废在飞的模型初始化；上传失败路径补清后台宽限定时器。
+
 ## [0.1.0] - 2026-10-07
 
 首个公开版本：六步人脸采集端 + PocketBase 后端，含一轮完整安全与正确性审计的修复。
