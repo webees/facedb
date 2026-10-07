@@ -184,8 +184,11 @@ async function post(build: () => FormData, what: string, deadline: number): Prom
       }
       const body = await res.text().catch(() => '')
       const msg = `${what}: ${res.status} ${body.slice(0, 150)}`
-      // 4xx 是请求本身的问题，重试只会白白等待
-      if (res.status < 500) throw new PermanentError(msg)
+      // 4xx 是请求本身的问题，重试只会白白等待 —— 但 429（限流）与 408（请求超时）例外：
+      // 它们的语义是「同一个请求稍后可以成功」，属暂时性错误，必须走退避重试。
+      // 实测 PocketBase 的 429 **不带 Retry-After**，无法按响应头退避，只能走固定退避（1s/2s）；
+      // 而一旦把 429 当永久错误，用户已拍好的整批文件（实测 16 个）会一起失败。
+      if (res.status < 500 && res.status !== 429 && res.status !== 408) throw new PermanentError(msg)
       lastErr = new Error(msg)
     } catch (e) {
       if (e instanceof PermanentError) throw e
@@ -242,8 +245,11 @@ export async function uploadSession(
 ): Promise<void> {
   if (files.length === 0) throw new Error(t('emptyRecording'))
 
-  // deviceInfo（UA 约 120 字符）与视频尺寸在本次识别内完全相同，
-  // 逐文件重复写入会让 11 个文件白多传约 1.5 KB，这里抽到顶层只存一份。
+  // deviceInfo（UA 约 120 字符）在每个文件上重复，逐文件写会让整批白多传约 1.5 KB，
+  // 故抽到顶层只存一份（取首文件的值）。
+  // 注意：不能据此认为「同一次识别里每个文件的设备与尺寸必然相同」——
+  // 采集过程中可以切换摄像头（switchCam），换机后分辨率确实会变，
+  // 而 perFile 里已把这三个字段解构丢弃，各文件的差异不落库。这是体积换信息的取舍，不是等价。
   const head = files[0].meta
   const meta = {
     sessionId,
