@@ -431,7 +431,7 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 > **体积口径（必须连口径一起写）**：上表用的是 `docker images` 报的 `Size`（arm64、OrbStack、2026-10-07 实测）。
 > 本仓库历史上出现过三个互不相等的数字 —— RUN.md 的 80MB、`Dockerfile` 头注的 ~68MB、R19 复核的 82.3MB —— 它们**不是同一个口径**：
 > `docker images` 的 `Size`、`docker image inspect .Size`（本镜像 17.7MiB = 18583983 字节）、镜像内 `du -sb /public`（27.4MB）、
-> 以及「基座 + 产物」相加，四者各不相同；连**架构**也要确认：本机 `joseluisq/static-web-server:2-alpine` 就是 arm64/linux（`docker image inspect -f '{{.Architecture}}/{{.Os}}'`），`docker images` 报 58.6MB，`docker image inspect -f '{{.Size}}'` 报 8,190,662 字节。
+> 以及「基座 + 产物」相加，四者各不相同。连**架构**也要确认：本机 `joseluisq/static-web-server:2-alpine` 就是 arm64/linux（`docker image inspect -f '{{.Architecture}}/{{.Os}}'`），`docker images` 报 58.6MB，`docker image inspect -f '{{.Size}}'` 报 8,190,662 字节。
 > **结论：任何体积数字必须连口径、架构与测量命令一起写**，否则无法比较 —— 这正是 R19 报「三处数字不一致」的根因。
 > 当前读数（2026-10-07，镜像 `webees-facedb-web:latest`）：`docker images` = 66.6MB，其中产物（镜像内 `/public`）= 27.4MB。
 > 产物有两种口径，同一份产物差 546 字节：`find /public -type f -exec cat {} + | wc -c` = **27,408,705**（文件字节和）、
@@ -1349,19 +1349,6 @@ rm -rf dist && npm run build && ls dist/static/js/index.*.js
 | 容器健康 | healthy | healthy |
 
 复核方法：直接取容器实供的 bundle 并 grep（`curl -s http://127.0.0.1:3000/static/js/<bundle>.js`），不看源码重建产物。回滚标签 `webees-facedb-web:rollback-r13` 指向修复前那份镜像。
-
-**教训（R14-X5 实测）**：**运行中的容器不等于源码重建产物**。当时宿主机是 arm64，含最新修复的 `webees-facedb-web:latest` 实测为 amd64/linux 无法运行，容器仍在跑 2026-10-06 19:55 的 arm64 备份镜像，3000 端口实供 `index.7211a9f260.js`（不含 `linkTooLong` 闸门、无 `\p{Cc}` 过滤）——**前端源码已修、线上仍是旧行为**。故指纹比对必须取**容器实供产物**，取源码重建产物会得出与线上面貌不符的结论。
-
-**已修复（2026-10-07 07:52）**：`docker compose build web`（宿主 arm64，未覆盖 platform）重建镜像 `webees-facedb-web:latest`（arch=arm64/linux，id `d18adec39ded`），`docker compose up -d web` 重建容器后：
-
-| 项 | 修复前 | 修复后 |
-|---|---|---|
-| 实供 bundle | `/static/js/index.7211a9f260.js` | `/static/js/index.d522b5dd29.js`（34621 字节） |
-| `linkTooLong` 闸门 | 无 | 有（grep 命中 1） |
-| `\p{Cc}` 控制符过滤 | 无（仍是旧的 `\u0000-\u001f` 字面量） | 有（grep 命中 1；旧形态命中 0） |
-| 容器健康 | healthy | healthy |
-
-复核方法：直接对容器实供的 bundle 取回并 grep（`curl -s http://127.0.0.1:3000/static/js/<bundle>.js`），不看源码重建产物。回滚标签 `webees-facedb-web:rollback-r13` 指向修复前那份镜像。
 
 **注**：纯注释改动不影响产物 hash（注释在构建时被剥离），
 所以 hash 相同不代表源码逐字节相同，但能保证**运行时行为**一致 —— 这正是要防的。
