@@ -103,6 +103,15 @@ let inflightCtl: AbortController | null = null
 let hideHooked = false
 let graceTimer: ReturnType<typeof setTimeout> | undefined
 
+// HMR / 测试里同一个模块会被重新求值：模块态 hideHooked 随之归零，而 document 上那一代注册的
+// 监听器还在 —— 每重新求值一次就多一个回调，切一次后台被处理多次。所以把「当前生效的回调」
+// 寄存在 window 上：装新的之前先摘掉旧的，document 上恒为 1 个（而不是「装载次数个」）。
+// 无 window（Node 测试环境）时这个槽位不存在，退化成原来的行为。
+const HOOK_SLOT =
+  typeof window !== 'undefined'
+    ? (window as unknown as { __facedbHideHook?: { handler: () => void } })
+    : undefined
+
 function clearGrace(): void {
   if (graceTimer === undefined) return
   clearTimeout(graceTimer)
@@ -131,14 +140,21 @@ function hookHideAbort(): void {
   // 无 document（Node 测试环境）时直接跳过。
   if (hideHooked || typeof document === 'undefined') return
   hideHooked = true
-  document.addEventListener('visibilitychange', () => {
+  const handler = (): void => {
     if (!document.hidden) {
       // 回到前台：宽限期内的请求本来还能传完，取消这次中止
       clearGrace()
       return
     }
     armHideGrace()
-  })
+  }
+  if (HOOK_SLOT) {
+    // 摘掉上一代（若本模块被重复求值过）。只动我们自己注册的那个回调，不动别人挂在
+    // document 上的监听器 —— 摘旧的前提是「旧回调确实还挂着」，用存在性判断而非无条件调。
+    if (HOOK_SLOT.__facedbHideHook) document.removeEventListener('visibilitychange', HOOK_SLOT.__facedbHideHook.handler)
+    HOOK_SLOT.__facedbHideHook = { handler }
+  }
+  document.addEventListener('visibilitychange', handler)
 }
 
 /**
