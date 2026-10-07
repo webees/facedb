@@ -1,0 +1,24 @@
+# 统一行尾：仓库内文本一律 LF，检出时不做平台转换。
+* text=auto eol=lf
+
+# 二进制资源：禁用行尾转换与差异文本化。
+*.wasm binary
+*.task binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.mp4 binary
+*.webm binary
+*.woff binary
+*.woff2 binary
+
+# 语言统计：这些是构建输入或生成物，不算手写代码。
+public/wasm/* linguist-vendored
+public/face_landmarker.task linguist-vendored
+package-lock.json linguist-generated
+
+# 文档与清单的差异可读性。
+CHANGELOG.md merge=union
