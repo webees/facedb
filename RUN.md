@@ -33,8 +33,8 @@
 http://localhost:3000/202610050513
 ```
 
-- 网址路径即**采集编号**，原样存为记录的 `session_id`
-- 编号可以是任意非空字符串（时间戳、任务号、工号都行），不做格式校验
+- 网址路径即**采集编号**，经前端剥控制符（`\p{Cc}`）与 trim 后存为记录的 `session_id`（不是原样：前后空白与控制符会被去掉；超长或含非法字符会在**上传阶段**被后端拒绝）
+- 编号可以是任意非空字符串（时间戳、任务号、工号都行），但**有格式与长度约束**：前端只剥控制符并 trim；后端 `captures.session_id` 另有 pattern（禁首尾空白与分隔符、禁控制符）与 **200 个码点**上限（实测 201 码点 = 400 `validation_max_text_constraint`）
 - 不带编号打开（`http://localhost:3000/`）显示「链接中缺少采集编号」
 - 采集完成后页面提供「再采一次」（同一编号重采）
 - 链接格式例子里的 `202610050513` 按 `YYYYMMDDHHmm` 理解，由你们自己生成下发即可
@@ -251,7 +251,7 @@ blendshape 值飙升 → 用户越转头越被判「请睁开眼睛」→ **侧�
 | 推理频率 `INFER_MS` | 80ms（12.5fps） | **40ms（25fps）** | MediaPipe 单帧约 10~30ms，不会成为瓶颈 |
 | 连续达标帧数 `STABLE_FRAMES` | 8 帧 → 640ms | **5 帧 → 200ms** | 达标时长 ≈ `INFER_MS × STABLE_FRAMES` |
 | **上传** | `await` 完成后才切步（+0.5~1s） | **拍到即切步，后台上传** | **主要瓶颈**：原逻辑让用户白等一次上传 |
-| 提示表决 | 6 帧需 4 帧共识 | 5 帧需 3 帧 | 文案反馈更快 |
+| 提示表决 | 6 帧需 4 帧共识 | **5 帧需 3 帧**（`HINT_BUF` / `HINT_NEED`） | 文案反馈更快 |
 
 实测时间线（`?debug=1` 的 `[capture] hint:` 日志）：`开始达标 → 拍摄 → 下一步` 由约 1.4~2.1 秒降到 **0.249 秒**。
 上传改为异步后，`uploadCapture` 内部的 4 次重试仍在后台执行，失败不回退步骤（避免打断采集），
@@ -1165,7 +1165,7 @@ hint: failed → failedMax
 |---|---|---|
 | `cameraDenied` / `cameraNotFound` / `cameraBusy` / `cameraFailed` | ✅ 安全 | 摄像头未起，`loop()` 因 `videoWidth === 0` 提前 return |
 | `modelFailed` | ✅ 安全 | 在 `onMounted` 里紧跟 `return`，`loop()` 根本没启动（实测：提示保持 5 秒不变） |
-| `failedMax` | ✅ 安全 | `retryable = fails >= MAX_FAILS`，而 `loop()` 里有 `if (retryable.value) return`，挡在 `setHint` 之前 |
+| `failedMax` | ✅ 安全 | 连续失败上限 `MAX_FAILS = 5`；`retryable = fails >= MAX_FAILS`，而 `loop()` 里有 `if (retryable.value) return`，挡在 `setHint` 之前 |
 | `hintUploading` | ✅ 安全 | `submitting` 期间 `loop()` 的覆盖条件是 false |
 | `cameraLost` | ⚠️ **曾有风险** | 摄像头曾正常、画面静止 → `loop()` 在跑 → 被盖掉。已加 `camLost` 标志阻挡 |
 | `hintNoFace` / `hintMultiFace` / `hintTooFar` | — | 本身就是逐帧判定的输出，不算被覆盖 |
@@ -1271,7 +1271,7 @@ rm -rf dist && npm run build && ls dist/static/js/index.*.js
 
 脚本：运行根的 `check-image-freshness.mjs` 已把上面两步做成一次比对。
 
-**已验证**：当前镜像与源码指纹一致（`c743010d27`）。
+**已验证（2026-10-07 更正）**：源码重建产物与源码指纹一致（`c743010d27`），但**运行中的容器不等于源码重建产物** —— R14-X5 实测：宿主机是 arm64，含最新修复的 `webees-facedb-web:latest` 实测为 amd64/linux 无法运行，3000 端口实供 `index.7211a9f260.js`（不含 `linkTooLong` 闸门、无 `\p{Cc}` 过滤）。指纹比对必须取**容器实供产物**，取源码重建产物会得出与线上面貌不符的结论。
 
 **注**：纯注释改动不影响产物 hash（注释在构建时被剥离），
 所以 hash 相同不代表源码逐字节相同，但能保证**运行时行为**一致 —— 这正是要防的。
@@ -1286,7 +1286,7 @@ PocketBase 的字段约束在 API 上的显示与**实际生效值**不完全一
 | `session_id` | `required: true` | 必填 | 缺省或空串都会 400 |
 | `photos` | `maxSelect: 24` / `maxSize: 20MB` | 一致 | 25 张会 400 |
 | `video` | `maxSelect: 8` / `maxSize: 100MB` | 一致 | 101MB 报 `validation_file_size_limit` |
-| `meta` | `maxSize: 0` | json 字段 | — |
+| `meta` | `maxSize: 1048576`（1 MB） | json 字段 | API 里显示的 `maxSize: 0` 是 json 字段的表层默认值；实测硬限 **1 MB**（1048576B = 200 / 1048577B = 400 `validation_json_size_limit`） |
 
 **`note` 的 5000 上限在后台手工编辑时会撞到**（采集端不写 note，故不影响采集），
 超限报错：`最多允许 5000 个字符`。按**字符**计数而非字节 —— 实测 5000 个汉字（15000 字节）通过，
@@ -1519,7 +1519,7 @@ mkdir -p /tmp/migcheck && docker run --rm \
 | `note` | **text** | **备注**，可在后台直接编辑（支持多行与中文；迁移里 `max: 0` = 未设置，**PB 对 text 的默认上限是 5000 字符**，按字符而非字节计）；采集端不写，留给操作员标注 |
 | `created` | **autodate** | 记录创建时间，**服务端自动写入**（`onCreate=true, onUpdate=false`） |
 | `updated` | **autodate** | 最后更新时间，创建与更新时都写（`onCreate=true, onUpdate=true`） |
-| `session_id` | text（必填） | 一次识别的编号（链接里的时间戳，各步共用） |
+| `session_id` | text（必填，**≤200 个码点**） | 一次识别的编号（时间戳 / 任务号 / 工号均可，各步共用）；后端 pattern 禁首尾空白与分隔符、禁控制符（含 C1 如 U+0085），超 200 码点报 `validation_max_text_constraint`，非法字符报 `validation_invalid_format` |
 | `photos` | file（maxSelect **24**，单文件 ≤20MB，jpeg/png） | 5 个拍照点 × 连拍 2 张 = **10 张**，按文件名区分姿态 |
 | `video` | file（maxSelect **8**，单文件 ≤100MB，mp4/webm） | 分段录制：每个采集点一段，共 **6 段** |
 | `meta` | json | 各步指标的数组：`[{pose, file, yaw, pitch, roll, ...}]` |
