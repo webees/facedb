@@ -1753,3 +1753,47 @@ docker compose build pocketbase && docker compose up -d --force-recreate pocketb
 1. 重新引入反代层（改词条即时生效，但要维护一个额外容器）；
 2. 在 PocketBase 的 `ui/src/` 里给这几处渲染加一层映射表，编译进二进制
    （架构更干净，但每次改映射都要重新编译 PB）。
+
+---
+
+## 开源协作规范（R13 起）
+
+工程已公开于 <https://github.com/webees/facedb>（PUBLIC），按下列规范维护。
+
+### 仓库标准件
+
+| 文件 | 作用 |
+|---|---|
+| `README.md` | 项目概览、技术栈、快速开始、数据与隐私说明 |
+| `LICENSE` | MIT |
+| `CHANGELOG.md` | 变更记录（Keep a Changelog / SemVer） |
+| `CONTRIBUTING.md` | 分支、提交信息、评审与合并规范 |
+| `SECURITY.md` | 漏洞报告渠道与部署加固清单 |
+| `CODE_OF_CONDUCT.md` | 贡献者行为准则（Contributor Covenant 2.1） |
+| `.editorconfig` / `.gitattributes` | 编码、行尾与二进制处理约定 |
+| `.github/` | CI 工作流、PR 模板、Issue 模板、CODEOWNERS、Dependabot |
+
+### 自检与 CI
+
+```bash
+npm run verify            # 仓库自检：资源指纹 / 迁移不变量 / 文案键对称 / 二进制指纹 / 关键常量
+npm run verify:selfcheck  # 变异自检：证明上面每一项断言真的有判别力（1 个阴性对照 + 6 个变异）
+npm run typecheck         # vue-tsc --noEmit
+npm run build             # 生产构建
+```
+
+`scripts/verify-repo.mjs` 是**可被 CI 复现的那部分**审计断言：它只依赖 Node 内置模块，
+读取真实来源（清单、迁移文件、源码）而**不在脚本里复刻实现**；样本为零一律不判通过；
+二进制本体不入库时该项明确记为「未执行」而不是静默通过。
+
+**:warning: 与工作房运行根的关系**：更强的审计判据（文档契约、判定器四关、边界电池等）
+依赖工作房运行根下的脚本与一次性 PocketBase 实例，不在本仓库内；每次修复的完整证据索引
+仍在运行根的 `evidence/` 与轮报里，本仓库只保留可公开复现的部分。
+
+### 提交与合并
+
+- 每个修复在主题分支上提交（`audit/r<N>-<slug>`、`fix/`、`docs/`、`chore/`），
+  再以 `git merge --no-ff`（或 PR 的 Merge commit）并入 `main`，**产生合并提交**。
+- 禁止直接向 `main` 推送；禁止对已推送历史做 rebase / amend / force push。
+- 历史情况说明：R13 之前的 5 个提交（`581599c`…`902327d`）是合并规范确立前落下的线性提交，
+  不回改已公开的历史；R13-F8 起一律走合并提交（首次示例：合并提交 `479d066`）。

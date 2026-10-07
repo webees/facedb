@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞（私密）
+    url: https://github.com/webees/facedb/security/advisories/new
+    about: 请不要用公开 Issue 报告安全问题，改用私密 advisory。
+  - name: 运行手册与实测记录
+    url: https://github.com/webees/facedb/blob/main/RUN.md
+    about: 部署、阈值、边界与已知取舍都记录在这里，先查再问。

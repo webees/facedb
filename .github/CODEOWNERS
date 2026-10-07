@@ -1,0 +1,11 @@
+# 默认评审人：仓库所有者。
+# 采集流程与质检判定、后端约束、构建链的改动都需要评审。
+* @webees
+
+# 关键路径（与上面的默认规则等价，显式列出便于将来细分）
+/src/ @webees
+/pb_migrations/ @webees
+/pb-bin/ @webees
+/Dockerfile @webees
+/docker-compose.yml @webees
+/.github/ @webees

@@ -3,10 +3,12 @@
 # 为什么需要：这些文件都不是本仓库生成的 ——
 #   · face_landmarker.task  从 Google 官方下载的人脸关键点模型
 #   · wasm/*                @mediapipe/tasks-vision 随包分发的运行时（本目录是 vendored 副本）
-# 工程当前【不是 git 仓库】，被替换不会有任何痕迹；本清单让替换可被发现。
+# 工程已是 git 仓库，但这两个来源都不是本仓库生成的，被替换不会有任何痕迹；
+# 本清单让替换可被发现。
 #
-# 校验：node <运行根>/lib/check-public-integrity.mjs
-#       （同时会核对 wasm 与 node_modules/@mediapipe/tasks-vision/wasm 是否逐字节一致）
+# 校验：npm run verify（仓库内自检，按本清单做「登记项逐个比对 + 目录资源反向断言」）
+#       node <运行根>/lib/check-public-integrity.mjs（工作房侧判据，另核对
+#       wasm 与 node_modules/@mediapipe/tasks-vision/wasm 是否逐字节一致）
 #
 # sha256                                                            size       path
 64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff     3758596  face_landmarker.task

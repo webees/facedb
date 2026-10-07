@@ -1,13 +1,29 @@
 {
   "name": "facedb",
+  "description": "浏览器端人脸采集与姿态质检工具，配套自建 PocketBase 存档",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
+  "author": "webees",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/webees/facedb.git"
+  },
+  "homepage": "https://github.com/webees/facedb#readme",
+  "bugs": {
+    "url": "https://github.com/webees/facedb/issues"
+  },
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "rsbuild dev",
     "build": "rsbuild build",
     "preview": "rsbuild preview",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "verify": "node scripts/verify-repo.mjs",
+    "verify:selfcheck": "node scripts/verify-repo.mjs --self-check"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",
