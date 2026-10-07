@@ -113,6 +113,14 @@ const M = [
           '',
         ].join('\n'),
       ) },
+  // R20-F7：S25 守的是「第三方声明文件与分发链接线」。三种接线段各来一个变异体 ——
+  // 光验「文件在」是不够的：文件在但构建不复制 = 分发物里没有它；判据没接进 CI = 没人跑。
+  { id: 'M16', target: 'rsbuild.config.ts', expect: 'S25', desc: '构建不再把第三方声明复制进 dist（分发物里没有许可原文）',
+    apply: () => mutate('rsbuild.config.ts', (t) => t.replace(/\s*copy: \[\{ from: 'THIRD-PARTY-NOTICES\.md'[^\]]*\],?/, '')) },
+  { id: 'M16b', target: 'package.json', expect: 'S25', desc: 'npm script 里的第三方许可判据被摘掉（写了没人跑）',
+    apply: () => mutate('package.json', (t) => t.replace(/\s*"verify:notices": "node scripts\/check-third-party-notices\.mjs",/, '')) },
+  { id: 'M16c', target: '.github/workflows/ci.yml', expect: 'S25', desc: 'CI 不再跑第三方许可判据',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/\s*- name: 第三方许可随分发物提供[\s\S]*?run: npm run verify:notices\n/, '\n')) },
 ]
 
 let caught = 0
