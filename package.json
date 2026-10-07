@@ -23,7 +23,8 @@
     "preview": "rsbuild preview",
     "typecheck": "vue-tsc --noEmit",
     "verify": "node scripts/verify-repo.mjs",
-    "verify:selfcheck": "node scripts/verify-repo.mjs --self-check"
+    "verify:selfcheck": "node scripts/verify-repo.mjs --self-check",
+    "verify:types": "node scripts/typecheck-guard.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",
