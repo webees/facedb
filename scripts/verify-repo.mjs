@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { join, relative, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 
 const ROOT = process.env.VERIFY_REPO_ROOT
   ? resolve(process.env.VERIFY_REPO_ROOT)
@@ -83,19 +83,50 @@ function checkPublicIntegrity() {
     .map((l) => l.match(/^([0-9a-f]{64})\s+(\d+)\s+(\S.*)$/))
     .filter(Boolean)
     .map((m) => ({ sha: m[1], size: Number(m[2]), rel: m[3].trim() }))
-  check('清单条目可解析（sha256 / size / path 三列）', entries.length > 0 && entries.length === lines.length,
-    `解析 ${entries.length} / 文本行 ${lines.length}`)
+  // 零样本护栏（R22-04①）：清单在、但一条条目都没有 = 没有可校验对象。
+  // 按本脚本自己的判定语义（见 notExecuted 注释：「清单为空」属于样本为 0 的情形）判未判定，
+  // 而不是把「没有条目可比对」当成「全部一致」。旧实现走的是 check(entries.length > 0 && …)，
+  // 于是零样本被记成 ❌ 失败（exit 1）—— 与「样本为 0 判未判定 exit 2」的规范不一致。
+  if (entries.length === 0) {
+    notExecuted('清单条目可解析（sha256 / size / path 三列）', `清单存在但没有任何条目（文本行 ${lines.length} 行）—— 没有可校验对象`)
+  } else {
+    check('清单条目可解析（sha256 / size / path 三列）', entries.length === lines.length,
+      `解析 ${entries.length} / 文本行 ${lines.length}`)
+  }
 
+  // 清单路径护栏（R22-04②）：登记的路径必须落在 public/ 之内。
+  // 为什么必须有这一条：下面的反向断言只问「public/ 目录里有什么」，它**永远看不见越界条目**。
+  // 于是「public/ 被清空 + 清单改登记 ../src/… 且指纹仍然算得对」这一组合能让三条断言全 ✅、
+  // 整脚本 exit 0（R23-W23-A 在判据自己的 --self-check 夹具仓库里实测复现，读数见 A8）。
+  // 可达条件如实写明：**只**清空 public/ 而清单不动时，前向断言会因文件不存在判红（exit 1，不假绿）；
+  // 假绿只在**配合越界登记**时可达 —— 所以零样本护栏与路径护栏两条都要在，缺一条就留一条假绿路径。
+  const PUBLIC_DIR = join(ROOT, 'public')
+  const escapesPublic = (rel) => {
+    if (isAbsolute(rel)) return true
+    if (rel.split(/[\\/]/).includes('..')) return true // 含 `..` 一律判红（哪怕解析后仍落在 public/ 内）
+    const inside = relative(PUBLIC_DIR, resolve(PUBLIC_DIR, rel))
+    return inside === '' || inside.startsWith('..') || isAbsolute(inside)
+  }
+  const escaping = entries.filter((e) => escapesPublic(e.rel))
+  check('清单登记的路径都在 public/ 之内（不得越界）', escaping.length === 0,
+    escaping.length
+      ? `${escaping.length} 条越界：${escaping.map((e) => e.rel).join(', ')}`
+      : `登记 ${entries.length} 条，全部在 public/ 之内`)
+
+  const inScope = entries.filter((e) => !escaping.includes(e))
   let bad = 0
-  for (const e of entries) {
-    const abs = join(ROOT, 'public', e.rel)
+  for (const e of inScope) {
+    const abs = join(PUBLIC_DIR, e.rel)
     if (!existsSync(abs)) { bad++; console.log(`   ❌ 登记的文件不存在：${e.rel}`); continue }
     const buf = readFileSync(abs)
     if (sha256(buf) !== e.sha) { bad++; console.log(`   ❌ 指纹不符：${e.rel} 期望 ${e.sha.slice(0, 16)} 实得 ${sha256(buf).slice(0, 16)}`) }
     if (buf.length !== e.size) { bad++; console.log(`   ❌ 尺寸不符：${e.rel} 期望 ${e.size} 实得 ${buf.length}`) }
   }
-  check('登记文件的 SHA-256 与尺寸全部一致', entries.length > 0 && bad === 0,
-    `比对 ${entries.length} 个，失败 ${bad}`)
+  if (inScope.length === 0) {
+    notExecuted('登记文件的 SHA-256 与尺寸全部一致', `清单里没有一条指向 public/ 之内的条目（共 ${entries.length} 条，越界 ${escaping.length} 条）`)
+  } else {
+    check('登记文件的 SHA-256 与尺寸全部一致', bad === 0, `比对 ${inScope.length} 个，失败 ${bad}`)
+  }
 
   // 反向断言：目录下的资源必须在清单里（否则删掉一条登记即等于不再校验）
   const walk = (dir) => readdirSync(dir).flatMap((n) => {
@@ -103,11 +134,17 @@ function checkPublicIntegrity() {
     if (n === 'SHA256SUMS') return []
     return statSync(p).isDirectory() ? walk(p) : [p]
   })
-  const onDisk = walk(join(ROOT, 'public')).map((p) => relative(join(ROOT, 'public'), p))
-  const listed = new Set(entries.map((e) => e.rel))
-  const unlisted = onDisk.filter((p) => !listed.has(p))
-  check('目录下资源全部已登记（反向断言）', unlisted.length === 0,
-    `目录 ${onDisk.length} 个，未登记 ${unlisted.length}${unlisted.length ? '：' + unlisted.join(', ') : ''}`)
+  const onDisk = walk(PUBLIC_DIR).map((p) => relative(PUBLIC_DIR, p))
+  if (onDisk.length === 0) {
+    // 零样本护栏（R22-04①）：public/ 下一个资源都没有时，「全部已登记」是空真命题。
+    // 旧实现在这里打印 `✅ … 目录 0 个，未登记 0`（W23-A 实测读数）—— 零样本被判通过。
+    notExecuted('目录下资源全部已登记（反向断言）', 'public/ 下没有任何资源文件 —— 反向断言没有样本，不得判 ✅')
+  } else {
+    const listed = new Set(entries.map((e) => e.rel))
+    const unlisted = onDisk.filter((p) => !listed.has(p))
+    check('目录下资源全部已登记（反向断言）', unlisted.length === 0,
+      `目录 ${onDisk.length} 个，未登记 ${unlisted.length}${unlisted.length ? '：' + unlisted.join(', ') : ''}`)
+  }
 }
 
 // ── 2. pb_migrations 可解析性与约束不变量 ────────────────────────────────────
@@ -465,6 +502,22 @@ function runSelfCheck() {
       mutate: () => put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090; img-src \'self\' data: blob: *:8090" />\n<img src="https://cdn.example.com/x.png" />\n') },
     { name: 'M15 样式里注入跨源 background-image url()', expectFail: ['前提：样式里没有跨源 url() 图片引用（img-src 同样管它）'],
       mutate: () => put('src/style.css', '.a { background-image: url("https://cdn.example.com/a.png"); }\n') },
+    // R22-04 的两条假绿路径（W23-A 实测：A8 组合下旧实现整脚本 exit 0）—— 锁住不再回退。
+    { name: 'M16 public/ 清空 + 清单越界登记 ../src/lib/hints.ts（R22-04 假绿场景）', expectCode: 1,
+      expectFail: ['清单登记的路径都在 public/ 之内（不得越界）'],
+      mutate: () => {
+        const body = 'export const HINT_BUF = 1\nexport const HINT_NEED = 1\n'
+        rmSync(join(tmp, 'public/asset.bin'), { force: true })
+        put('public/SHA256SUMS', `# 说明\n${sha256(Buffer.from(body))}     ${Buffer.byteLength(body)}  ../src/lib/hints.ts\n`)
+      } },
+    { name: 'M17 public/ 清空 + 空清单 → 零样本判未判定', expectCode: 2, expectFail: [],
+      mutate: () => {
+        rmSync(join(tmp, 'public/asset.bin'), { force: true })
+        put('public/SHA256SUMS', '# 说明\n')
+      } },
+    { name: 'M18 清单登记 public/ 之外的绝对路径', expectCode: 1,
+      expectFail: ['清单登记的路径都在 public/ 之内（不得越界）'],
+      mutate: () => put('public/SHA256SUMS', `# 说明\n${assetSha}     ${asset.length}  asset.bin\n${assetSha}     ${asset.length}  /etc/hosts\n`) },
     // 零样本与崩溃面（R14-C 报的 P1/P2）—— 这些场景过去一律 exit 0
     { name: 'ZS1 迁移目录为空 → 样本为 0 判未判定', expectCode: 2, expectFail: [], mutate: () => rmSync(join(tmp, 'pb_migrations/1759600000_created.js'), { force: true }) },
     { name: 'ZS2 pb-bin/SHA256SUMS 为空 → 样本为 0 判未判定', expectCode: 2, expectFail: [], mutate: () => put('pb-bin/SHA256SUMS', '# 空清单\n') },
@@ -473,6 +526,10 @@ function runSelfCheck() {
     { name: 'M6 二进制定位指纹与清单不一致', expectFail: ['SHA256SUMS 与 Dockerfile 期望常量双向一致'], mutate: () => put('pb-bin/Dockerfile', `case "\${TARGETARCH}" in\n  arm64) want_sha256=${'c'.repeat(64)} ;;\nesac\n`) },
     // 结构类断言：删掉一个 section(...) 调用 —— 以前 executed 只会变小，没人发现。
     { name: 'M7 检查组整体漏调（删掉 section 调用）', scriptMutate: (s) => s.replace("  section('i18n', checkI18n)\n", ''), expectCode: 2, expectFail: ['所有检查组都被调用'] },
+    // 新护栏自身不许被静默摘掉：删掉路径护栏那条 check 后，条数类断言必须报红（R22-04② 的守卫）。
+    { name: 'M19 清单路径护栏被摘掉（条数类断言必须报红）',
+      scriptMutate: (s) => s.replace(/  check\('清单登记的路径都在 public\/ 之内（不得越界）',[\s\S]*?之内`\)\n/, ''),
+      expectCode: 1, expectFail: ['每个检查组都跑了足够多的断言', '断言总数不低于硬编码下限'] },
   ]
 
   console.log('=== 变异自检（验证每一项断言有判别力）===')
@@ -503,15 +560,21 @@ const EXPECTED_SECTIONS = ['public/ 资源指纹', 'pb_migrations', 'i18n', 'pb-
 // 每个检查组至少要**尝试**这么多条断言（硬编码字面量：故意不写成「取当前值」或从数组推导）。
 // 掏空某个组的函数体 → 该组尝试条数掉到 0 → 下面立刻报红。
 const SECTION_MIN_CHECKS = {
-  'public/ 资源指纹': 3,
+  // R22-04：3 → 4 —— 新增「清单登记的路径都在 public/ 之内（不得越界）」。
+  // 这一条必须计入下限，否则「摘掉路径护栏」不会被任何计数类断言发现（零样本护栏本身
+  // 会让整组尝试条数不变：摘掉越界断言后 解析/前向/反向 仍是 3 条）。
+  'public/ 资源指纹': 4,
   'pb_migrations': 6,
   'i18n': 1,
   'pb-bin 指纹': 3,
   'RUN.md 常量': 3,
   'CSP 覆盖范围': 7,
 }
-// 全局下限：新增/删除检查必须显式改这个字面量（改它是一次可被 review 的改动）
-const MIN_TOTAL_CHECKS = 23
+// 全局下限：新增/删除检查必须显式改这个字面量（改它是一次可被 review 的改动）。
+// R22-04：23 → 25（新增清单路径护栏 1 条）。取 25 而不是 24：`attempted` 把「未执行」也计
+// 在内，所以自检夹具与真实仓库的快照值同为 25（真实仓库多一条「在场二进制比对」，
+// 夹具少的那条以「环境所限未执行」补位）—— 24 会让「摘掉路径护栏」正好躲过这条断言（M19 实测）。
+const MIN_TOTAL_CHECKS = 25
 
 if (process.argv.includes('--self-check')) {
   runSelfCheck()
