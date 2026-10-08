@@ -102,13 +102,69 @@ function isNetworkError(e: unknown): boolean {
   )
 }
 
-// 关于重试与重复记录（已知取舍，非疏漏）：
-// 5xx 会重试 3 次。若服务端其实已写入、只是响应在途中丢失，重试会再写一条，
-// 于是同一次识别可能产生两条记录。之所以不为此加幂等机制：
-//   · captures 没有可用于幂等的唯一约束（PocketBase 的 text 字段不建唯一索引）；
-//   · 「提交前查重」需要多一次查询，且查重自身也可能失败，反而更脆；
-//   · 两条完整记录 远好于 一条都没有 —— 本项目要保证的是人脸信息不丢。
-// 文件名带毫秒时间戳，因此重复记录之间也不会互相覆盖。
+// 关于重试与重复记录（R27 起有幂等键，取舍已变，旧口径见 git 历史）：
+// 5xx / 响应丢失会重试（内层 3 次 × 外层多轮）。首次写入成功但响应丢失时，重试会再写一遍 ——
+// 这正是 R27 的 W27A-01/W27A-05 与 W27C-06 实测到的形态：同一批最多 9 条记录（16 文件批
+// 线性外推 144 个文件）。现在 uploadSession 会随表单提交 `submit_id`（由冻结批次内容确定性
+// 派生），服务端有唯一索引，重复批次被 400 挡下，客户端按响应**形态**把它认成
+// 「这一批已经写进去了」（见 isDuplicateBatch 与 post 的 allowAlreadyWritten）。
+// 残留面：**不同批**但内容逐字节相同的两次采集仍会各写一条 —— 那是正确语义（用户真的采了两次）。
+// 之所以不用「提交前先查重」：多一次查询，且查重自身也可能失败，反而更脆。
+
+/**
+ * 判断 400 响应是不是「同一批的重复提交」（R27 实测口径）。
+ *
+ * PocketBase 0.40 **不给**唯一索引冲突任何错误码：现场实测第二次提交的回包是
+ * `{"data":{},"message":"创建记录失败.","status":400}` —— data 是空对象、没有顶层 code。
+ * 而字段级校验错误（文件数超限 / 文本超长 / JSON 超限）都带 `data.<字段>.code`
+ * （如 `validation_too_many_files`、`validation_max_text_constraint`）。故只能按形态识别：
+ * 400 + 有 data 且为空 + 无顶层 code。
+ *
+ * 退化行为（万一将来 PB 改了文案或形态）：这条分支不再命中 ⇒ 回到 R27 之前的体验
+ * （界面报「上传失败」、给出重试入口），而**服务端仍然挡住重复写入** —— 最坏是假失败，
+ * 不会写重复记录，也不会把别的字段校验错误误判成成功。
+ */
+function isDuplicateBatch(body: string): boolean {
+  try {
+    const j = JSON.parse(body) as { data?: Record<string, unknown>; code?: unknown } | null
+    if (!j || typeof j !== 'object') return false
+    if (j.code) return false
+    if (!j.data || typeof j.data !== 'object') return false
+    return Object.keys(j.data).length === 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 提交级幂等键（R27）：由**冻结批次的内容**确定性派生。
+ *
+ * 为什么不随机生成一次：重试发生在上传层的外层（runUploadBatch 每一轮都重新调用
+ * uploadSession），随机值每轮都会变 ⇒ 去重直接失效。派生则天然满足「同一批的每次重试
+ * 得到同一个键、不同批几乎不可能相同」。
+ *
+ * 描述串里放的都是**冻结后不再变**的字段：sessionId、每个文件的 kind / pose / filename /
+ * 字节数 / MIME、以及采集时刻（毫秒）与质量分。不放 blob 内容（那要读全部字节 + 异步哈希，
+ * 而毫秒级 capturedAt 已足以把两次真实采集分开）。
+ *
+ * 哈希用 FNV-1a 64 位（BigInt）：同步、零依赖。这里要的是「同批同值、异批几无碰撞」，
+ * 不是密码学强度 —— 键只用于唯一索引，碰撞的后果是「两批里后一批被服务端拒掉」。
+ */
+function submitIdOf(sessionId: string, batch: PendingFile[]): string {
+  const desc = batch
+    .map((f) =>
+      [sessionId, f.kind, f.pose, f.filename, f.blob.size, f.blob.type, f.meta.capturedAt, f.meta.qualityScore].join(
+        '\u0001',
+      ),
+    )
+    .join('\u0002')
+  let h = 0xcbf29ce484222325n
+  for (let i = 0; i < desc.length; i++) {
+    h ^= BigInt(desc.charCodeAt(i))
+    h = (h * 0x100000001b3n) & 0xffffffffffffffffn
+  }
+  return 'sub-' + h.toString(16).padStart(16, '0')
+}
 
 // 在途请求的控制器 + 一条独立于定时器的中断路径。
 //
@@ -209,7 +265,15 @@ function hookHideAbort(): void {
  * @param deadline 整批提交的截止时刻（Date.now() 口径）。由调用方传入，
  *                 使内层重试与外层多轮重试共享同一份预算；缺省时按单轮预算计。
  */
-async function post(build: () => FormData, what: string, deadline: number): Promise<void> {
+async function post(
+  build: () => FormData,
+  what: string,
+  deadline: number,
+  // R27：本批带幂等键时，把「唯一索引冲突」当成功。语义上它是「这一批已经写进去了」，
+  // 与「写入失败」相反 —— 若按 4xx 永久错误抛出去，界面会显示上传失败并给出重试入口，
+  // 用户再点一次仍然失败（唯一索引会一直挡），而库里其实已经有完整记录了。
+  allowAlreadyWritten = false,
+): Promise<void> {
   // 入口就记下本次实际拿到的预算：错误消息必须按实际预算说话，
   // 不能引用模块常量 —— 调用方给的 deadline 可能只剩余很少时间（如第二版预算的尾巴）。
   const budgetMs = Math.max(0, deadline - Date.now())
@@ -246,6 +310,12 @@ async function post(build: () => FormData, what: string, deadline: number): Prom
         return
       }
       const body = await res.text().catch(() => '')
+      if (allowAlreadyWritten && res.status === 400 && isDuplicateBatch(body)) {
+        // 唯一索引挡住的是**同一批**的重复提交（submit_id 由冻结批次内容派生）⇒ 这一批
+        // 已经在库里了。不重试、不报错：重试也只会再撞一次同一个索引。
+        clearGrace(entry)
+        return
+      }
       const msg = `${what}: ${res.status} ${body.slice(0, 150)}`
       // 4xx 是请求本身的问题，重试只会白白等待 —— 但 429（限流）与 408（请求超时）例外：
       // 它们的语义是「同一个请求稍后可以成功」，属暂时性错误，必须走退避重试。
@@ -358,13 +428,17 @@ export async function uploadSession(
     throw new Error(`提交批次与元信息不一致（${batch.length} 个文件 / ${meta.perFile.length} 条 perFile）`)
   }
 
+  // R27：幂等键由上面这份冻结的 batch 派生（不是每轮随机）⇒ 同一批的每次重试同值。
+  const submitId = submitIdOf(sessionId, batch)
+
   await post(() => {
     const form = new FormData()
     form.append('session_id', sessionId)
+    form.append('submit_id', submitId)
     for (const f of batch) {
       form.append(f.kind === 'video' ? 'video' : 'photos', f.blob, f.filename)
     }
     form.append('meta', JSON.stringify(meta))
     return form
-  }, t('uploadFailed'), deadline)
+  }, t('uploadFailed'), deadline, true)
 }
