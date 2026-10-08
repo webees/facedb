@@ -298,6 +298,15 @@ const M = [
     apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace(/      if \(\/Invalid package config\/i\.test\(err\)\) \{ envBad\+\+; envMsg = err\.split\('\\n'\)\[0\]; continue \}\n/, '')) },
   { id: 'M58', target: 'scripts/verify-repo.mjs', expect: 'S35', desc: 'M29 摘掉 expectAbsent 反向断言（多出来的假红不再被看见）',
     apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace(/, expectAbsent: \['全部迁移可被 node 解析'\]/, '')) },
+  // R25 收口发现（P2）：阴性对照的基线锚在 HEAD ⇒ 修复提交一落地对照就崩塌（R14 / R21 / R25 三次同型）。
+  { id: 'M59', target: 'scripts/check-repo-config-hygiene-selftest.mjs', expect: 'S33', desc: '阴性对照的基线退回 HEAD（修复提交一落地，对照立刻变红）',
+    apply: () => mutate('scripts/check-repo-config-hygiene-selftest.mjs', (t) => t.replace(
+      /const HYG_BASE_REF = process\.env\.HYG_BASE_REF \|\| '[0-9a-f]{7,40}'/,
+      "const HYG_BASE_REF = 'HEAD'")) },
+  { id: 'M60', target: 'scripts/check-repo-config-hygiene-selftest.mjs', expect: 'S33', desc: '退出码退回两态（跳过项被当成通过）',
+    apply: () => mutate('scripts/check-repo-config-hygiene-selftest.mjs', (t) => t.replace(
+      /process\.exit\(fail > 0 \? 1 : skipped > 0 \? 2 : 0\)/,
+      'process.exit(fail === 0 ? 0 : 1)')) },
 ]
 
 let caught = 0

@@ -6,7 +6,7 @@
 //    另有健壮性：读不到的配置文件（缺失 / 是目录 / 权限 000）会裸栈崩。
 //
 // 本电池的做法与工程既有纪律一致：**每个场景建独立临时 git 仓库**（真 git init + git add），
-//    把判据指向它（`HYG_ROOT`），断言退出码 + 关键行文本；并带一条**阴性对照**（把 HEAD 版判据喂进
+//    把判据指向它（`HYG_ROOT`），断言退出码 + 关键行文本；并带一条**阴性对照**（把修复前基线版判据喂进
 //    同一批空样本 fixture，必须 exit 0 —— 证明「修复前确实假通过」而不是「场景本身不成立」）。
 //
 // 用法：node scripts/check-repo-config-hygiene-selftest.mjs
@@ -143,31 +143,43 @@ for (const s of SCENARIOS) {
   check(s, run(dir))
 }
 
-// 阴性对照：同一批空样本 fixture 喂给 HEAD 版判据，必须 exit 0（证明修复前是假通过）
-const headSrc = spawnSync('git', ['-C', PROJ, 'show', 'HEAD:scripts/check-repo-config-hygiene.mjs'], { encoding: 'utf8' })
+// 阴性对照：同一批空样本 fixture 喂给**修复前**那版判据，必须 exit 0（证明修复前是假通过）
+//
+// 【基线钉死，不许用 HEAD】R14 已经吃过一次同型亏：对照锚在 HEAD，修复提交一落地 HEAD 就变好，
+// 对照立刻变红，看起来像「修复无效」。R25 收口时又踩一次（`e580091` 提交后本电池的 n1 两条全红）。
+// 故基线钉在 R25 分支起点（= 修复前的主线 `a5514c3`），可用 `HYG_BASE_REF` 覆盖。
+const HYG_BASE_REF = process.env.HYG_BASE_REF || 'a5514c3'
+const headSrc = spawnSync('git', ['-C', PROJ, 'show', `${HYG_BASE_REF}:scripts/check-repo-config-hygiene.mjs`], { encoding: 'utf8' })
 if (headSrc.status !== 0 || !headSrc.stdout) {
-  console.log('  ⏭ 阴性对照（取不到 HEAD 版判据 —— 本次不构成结论）')
+  console.log(`  ⏭ 阴性对照（取不到基线 ${HYG_BASE_REF} 版判据 —— 本次不构成结论）`)
+  skipped++
+} else if (/trackedOk|function unk\(/.test(headSrc.stdout)) {
+  // 装置前提：基线里不许已经有本轮修复（典型成因＝HYG_BASE_REF 被指向含修复的提交）。
+  // 否则 n1 的两条断言必然红，而这**不是**被测对象的问题 —— 显式判未判定，别把装置错算成缺陷。
+  console.log(`  ⏭ 阴性对照（基线 ${HYG_BASE_REF} 里已经含有本轮修复：零样本三态守卫 —— 对照锚错，本次不构成结论）`)
   skipped++
 } else {
   const headFile = path.join(mkdtempSync(path.join(tmpdir(), 'facedb-hyg-head-')), 'check-repo-config-hygiene.mjs')
   writeFileSync(headFile, headSrc.stdout)
   dirs.push(path.dirname(headFile))
-  // A1 空样本：HEAD 版仍打印空真命题的 ✅ 行（这才是缺陷本体）；整体退出码同时被 A4 连带成 1
+  // A1 空样本：基线版仍打印空真命题的 ✅ 行（这才是缺陷本体）；整体退出码同时被 A4 连带成 1
   // —— W25-E 报的「A1 情形整体通过 5 失败 0 exit 0」在本工程实测不成立，故这里分开断言两件事。
   const dA1 = makeRepo({ '.gitattributes': '# 注释\n' })
   dirs.push(dA1)
   const rA1 = run(dA1, headFile)
   rec(/✅ .gitattributes 每条规则都命中/.test(rA1.out) && rA1.code === 1,
-    `n1 阴性对照（HEAD 版判据 + A1 空样本 ⇒ 仍打印空真命题的 ✅ 行）｜实得 exit=${rA1.code}、含空真命题行=${/✅ .gitattributes 每条规则都命中/.test(rA1.out)}`)
-  // A3 空样本：HEAD 版整体 exit 0（真正的假通过）
+    `n1 阴性对照（基线 ${HYG_BASE_REF} 版判据 + A1 空样本 ⇒ 仍打印空真命题的 ✅ 行）｜实得 exit=${rA1.code}、含空真命题行=${/✅ .gitattributes 每条规则都命中/.test(rA1.out)}`)
+  // A3 空样本：基线版整体 exit 0（真正的假通过）
   const dA3 = makeRepo({ 'public/SHA256SUMS': '' })
   dirs.push(dA3)
   const rA3 = run(dA3, headFile)
   rec(rA3.code === 0 && /通过 \d+，失败 0/.test(rA3.out) && /0 项全部一致/.test(rA3.out),
-    `n1 阴性对照（HEAD 版判据 + A3 空样本 ⇒ 修复前假通过 exit 0）｜实得 exit=${rA3.code}、含「0 项全部一致」=${/0 项全部一致/.test(rA3.out)}`)
+    `n1 阴性对照（基线 ${HYG_BASE_REF} 版判据 + A3 空样本 ⇒ 修复前假通过 exit 0）｜实得 exit=${rA3.code}、含「0 项全部一致」=${/0 项全部一致/.test(rA3.out)}`)
 }
 
 cleanup(dirs)
 console.log('')
-console.log(`${SCENARIOS.length - skipped} 个场景 + 阴性对照 —— 通过 ${pass}，失败 ${fail}`)
-process.exit(fail === 0 ? 0 : 1)
+console.log(`${SCENARIOS.length - skipped} 个场景 + 阴性对照 —— 通过 ${pass}，失败 ${fail}`
+  + (skipped ? `（${skipped} 个场景被跳过 —— 本次不构成通过）` : ''))
+// 零样本/跳过不得判通过：有跳过项即 exit 2（未判定），与全仓纪律一致
+process.exit(fail > 0 ? 1 : skipped > 0 ? 2 : 0)

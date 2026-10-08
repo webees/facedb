@@ -941,9 +941,14 @@ add({ id: 'S33', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/chec
   else {
     if (!/mkdtempSync\(path\.join\(tmpdir\(\), 'facedb-hyg-selftest-'\)\)/.test(st)) miss.push('电池必须为每个场景建独立临时仓库')
     if (!/HYG_SCAN/.test(st)) miss.push('电池缺 HYG_SCAN 覆盖通道（成对读数用）')
-    if (!/HEAD:scripts\/check-repo-config-hygiene\.mjs/.test(st)) miss.push('电池缺阴性对照（HEAD 版判据喂空样本必须仍假通过）')
+    // 【R25 收口发现，P2】阴性对照的基线**不许锚在 HEAD**：修复提交一落地，HEAD 就变成「已经修好的
+    // 树」，n1 两条立刻全红，看起来像修复无效。R14 / R21 / R25 已三次踩同型坑 ⇒ 钉死固定提交并
+    // 在基线里检出修复形态时显式判未判定。
+    if (/'show', 'HEAD:scripts\/check-repo-config-hygiene\.mjs'/.test(st)) miss.push('阴性对照的基线不许锚在 HEAD（它会随修复提交移动）')
+    if (!/process\.env\.HYG_BASE_REF \|\| '[0-9a-f]{7,40}'/.test(st)) miss.push('阴性对照的基线必须钉在固定的历史提交（HYG_BASE_REF 默认值为提交哈希）')
+    if (!/已经含有本轮修复/.test(st)) miss.push('缺「基线里已含修复 ⇒ 判未判定」的装置前提（否则锚错会被误报成修复无效）')
     if (!/noStack/.test(st)) miss.push('电池缺「不许裸栈」断言')
-    if (!/process\.exit\(fail === 0 \? 0 : 1\)/.test(st)) miss.push('电池退出码必须是 fail === 0 ? 0 : 1')
+    if (!/process\.exit\(fail > 0 \? 1 : skipped > 0 \? 2 : 0\)/.test(st)) miss.push('电池退出码必须是三态：失败 1 / 有跳过项 2（未判定） / 0')
   }
   const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
   if (ci === '') miss.push('缺 .github/workflows/ci.yml')
