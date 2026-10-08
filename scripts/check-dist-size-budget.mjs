@@ -93,10 +93,10 @@ const DIST = distFlag >= 0 ? path.resolve(argv[distFlag + 1]) : path.join(ROOT, 
 // —— 5 个阈值常量（来源见文件头；改这里必须同步改文件头的推导式）——
 // 【R23 第二次重锚】基线由实测值抬到 96311 / 27430594（增量逐条列在文件头），
 // 上限仍按同一推导式派生（web gzip +0.5%、原始总字节 +2%），不是把容差放宽。
-const WEB_GZIP_BASELINE_BYTES = 96543
-const WEB_GZIP_CAP_BYTES = 97025
-const RAW_TOTAL_BASELINE_BYTES = 27431220
-const RAW_TOTAL_CAP_BYTES = 27979845
+const WEB_GZIP_BASELINE_BYTES = 96708
+const WEB_GZIP_CAP_BYTES = 97191
+const RAW_TOTAL_BASELINE_BYTES = 27431489
+const RAW_TOTAL_CAP_BYTES = 27980119
 const EXPECTED_FILE_COUNT = 13
 
 // —— 源码指纹：产物必须是**当前源码**构建出来的 ——
@@ -108,7 +108,7 @@ const EXPECTED_FILE_COUNT = 13
 // **未判定（exit 2）**，提示先 `rm -rf dist && npm run build` 再重锚。
 // 覆盖输入：`index.html`、`package.json`、`src/**`（递归、按路径排序）。不含 node_modules
 // （软链/真实目录各有 N0 前提）与 `dist/`（那是被检查对象）。
-const SOURCE_FINGERPRINT = '385a8cdbafdc4d90ad0b54c152f237e54244ca8f59ac34b8c0093f6f65307033'
+const SOURCE_FINGERPRINT = '3459d96e42b0d1676202044524980c57411551a0632a3a8622b2c7c9cddbe56a'
 
 // 阈值自洽（防手抄错，尤其是 27978237.9 这类取整）：常量必须等于由基线派生的取整结果。
 const DERIVED = {
@@ -134,8 +134,8 @@ const LOCKED_SHA256 = {
 }
 // —— 4 个内容哈希 chunk：文件名里的 hash 由内容算出，故「同名不同内容」= 陈旧/投毒产物 ——
 const HASHED_CHUNKS = {
-  'static/js/index.ebc8a68402.js': '2740b35c328acfca4acab2d656157d6992a1dfc8ab85fbc5375f8abdb004bbd1',
-  'static/js/lib-vue.8351304052.js': '9185e33ee21bdde949c18f7771c0b9fa0acf413712d83f1412cb4dd9a012ca0f',
+  'static/js/index.628fddcbdf.js': '0c7dc185f2438f451d5af7d6ae4d82c96d278bd8982872f2a084a8a705bf89da',
+  'static/js/lib-vue.9b47b76d95.js': '9090ba0f5784b7ddbb2729b441207399005370ea907af109d423629dd4111793',
   'static/js/m.79c0ab86b6.js': '2956850bd7ffc083eb290d72745395e20dfa588d75d8d9271368e5ed590346b5',
   'static/css/index.d05fa997d9.css': '45171915300c369b502f0658ef5ef5bdf36f6c6ae667cf94343cb4a28dd034a8',
 }
@@ -143,7 +143,7 @@ const EXPECTED_NAMES = [
   ...Object.keys(LOCKED_SHA256),
   ...Object.keys(HASHED_CHUNKS),
   'index.html',
-  'static/js/lib-vue.8351304052.js.LICENSE.txt',
+  'static/js/lib-vue.9b47b76d95.js.LICENSE.txt',
 ].sort()
 
 const c = makeChecker('W21-A 产物体积与构成判据')
@@ -305,10 +305,23 @@ c.check('N1 产物目录存在且非空', true, `${DIST} · ${files.length} 个�
   }
 }
 
+// ── 采样快照（R24 / W24-E-05）：一次运行只采样一次，之后所有断言都读快照 ──
+//
+// 为什么必须有：断言里各自 `statSync`/`sha256(p)` 直读磁盘时，**一次运行内**的读数可能来自不同时刻。
+// 若期间有别的进程（或本轮自己的构建）在改 `dist/`，就会出现「N4 读的是旧字节数、N5 读的是新哈希」
+// 这种自相矛盾组合，而每条断言单看都「合理」。判据要么一次采样到底，要么明说本次不构成结论。
+const SNAP = new Map()
+for (const f of files) {
+  const p = path.join(DIST, f)
+  SNAP.set(f, { size: statSync(p).size, digest: sha256(p) })
+}
+const snapSize = (f) => SNAP.get(f)?.size
+const snapDigest = (f) => SNAP.get(f)?.digest
+
 // ── N4 原始总字节（含 wasm / 模型，防大文件整体变胖）──
 {
   let raw = 0
-  for (const f of files) raw += statSync(path.join(DIST, f)).size
+  for (const f of files) raw += snapSize(f)
   c.check(
     `N4 产物原始总字节 ≤ ${RAW_TOTAL_CAP_BYTES} B（基线 ${RAW_TOTAL_BASELINE_BYTES} + 2%）`,
     raw <= RAW_TOTAL_CAP_BYTES,
@@ -320,18 +333,16 @@ c.check('N1 产物目录存在且非空', true, `${DIST} · ${files.length} 个�
 let id = 4
 for (const [f, want] of Object.entries(LOCKED_SHA256)) {
   id++
-  const p = path.join(DIST, f)
-  if (!existsSync(p)) { c.check(`N${id} sha256 锁定 ${f}`, false, '文件不存在'); continue }
-  const got = sha256(p)
+  if (!SNAP.has(f)) { c.check(`N${id} sha256 锁定 ${f}`, false, '文件不存在'); continue }
+  const got = snapDigest(f)
   c.check(`N${id} sha256 锁定 ${f}`, got === want, got === want ? '一致' : `期望 ${want.slice(0, 16)}… 实测 ${got.slice(0, 16)}…`)
 }
 
 // ── N12–N15 内容哈希 chunk 的「文件名 ↔ 内容」对应关系 ──
 for (const [f, want] of Object.entries(HASHED_CHUNKS)) {
   id++
-  const p = path.join(DIST, f)
-  if (!existsSync(p)) { c.check(`N${id} chunk 文件名↔内容 ${f}`, false, '文件不存在'); continue }
-  const got = sha256(p)
+  if (!SNAP.has(f)) { c.check(`N${id} chunk 文件名↔内容 ${f}`, false, '文件不存在'); continue }
+  const got = snapDigest(f)
   c.check(
     `N${id} chunk 文件名↔内容 ${f}`,
     got === want,
@@ -349,6 +360,33 @@ for (const [f, want] of Object.entries(HASHED_CHUNKS)) {
     const a = readFileSync(dSums)
     const b = readFileSync(pSums)
     c.check('N16 dist/SHA256SUMS 与 public/SHA256SUMS 逐字节相同', a.equals(b), a.equals(b) ? `${a.length} 字节相同` : `dist ${a.length} B ≠ public ${b.length} B`)
+  }
+}
+
+// ── 采样自洽（R24 / W24-E-05）：末尾复读一遍，与快照不符即判未判定 ──
+//
+// 这是本判据「读数可信」的前提：上面的 N2/N3/N4/N5–N15 全部来自一次采样，
+// 若这次采样期间产物被改动，整份结论都不成立（不是某一条失败），故判未判定（exit 2），
+// 绝不把「采样期间被改过的树」的读数当成通过或失败。
+{
+  const now = listFiles(DIST)
+  const changed = []
+  for (const f of now) {
+    const p = path.join(DIST, f)
+    const prev = SNAP.get(f)
+    if (!prev) changed.push(`${f}（采样后新增）`)
+    else if (statSync(p).size !== prev.size || sha256(p) !== prev.digest) changed.push(`${f}（内容已变）`)
+  }
+  for (const f of SNAP.keys()) if (!now.includes(f)) changed.push(`${f}（采样后消失）`)
+  // 一致的路径必须走 check（记通过），不能走 un —— `un(name, undefined)` 仍会记一项未判定
+  // （实测：本判据因此从 16/16 变成「通过 16、未判定 1 ⇒ 按纪律不判通过」）。
+  if (changed.length === 0) {
+    c.check('N0 环境前提：一次采样自洽（快照期间产物未被改动）', true, `${SNAP.size} 个文件与快照一致`)
+  } else {
+    c.un(
+      'N0 环境前提：一次采样自洽（快照期间产物未被改动）',
+      `采样期间产物被改动：${changed.slice(0, 5).join('、')}${changed.length > 5 ? ` 等 ${changed.length} 个` : ''}`,
+    )
   }
 }
 

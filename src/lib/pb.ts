@@ -123,9 +123,22 @@ function isNetworkError(e: unknown): boolean {
 // 服务端可能留下半写记录，下一次尝试整批重传。所以先给 HIDE_GRACE_MS 宽限：
 // 只有「后台持续超过宽限且请求仍未结束」才中止。
 const HIDE_GRACE_MS = 5000
-let inflightCtl: AbortController | null = null
+
+/**
+ * 一次在途请求的上下文（R24 / R24B-03）：控制器 + **它自己的**宽限定时器。
+ *
+ * 为什么必须按请求分开：早先这两样都是模块级单例（`inflightCtl` / `graceTimer`），
+ * 于是并发两次提交时，先结束的那次 post 的 finally 会把**另一个仍在飞的请求**的宽限定时器
+ * 清掉（实测 `concurrent` 场景：6.5s 后 A 的 `aborted=false`、`graceAbortLogs=[]`；
+ * 阳性对照 hidetimer 5s 后 `aborted=true`）—— 后台宽限对那次请求就永久失效了。
+ * 分开之后：谁武装的谁清、谁到期谁 abort，互不牵连。
+ */
+interface Inflight {
+  ctl: AbortController
+  timer?: ReturnType<typeof setTimeout>
+}
+const inflight = new Set<Inflight>()
 let hideHooked = false
-let graceTimer: ReturnType<typeof setTimeout> | undefined
 
 // HMR / 测试里同一个模块会被重新求值：模块态 hideHooked 随之归零，而 document 上那一代注册的
 // 监听器还在 —— 每重新求值一次就多一个回调，切一次后台被处理多次。所以把「当前生效的回调」
@@ -136,27 +149,35 @@ const HOOK_SLOT =
     ? (window as unknown as { __facedbHideHook?: { handler: () => void } })
     : undefined
 
-function clearGrace(): void {
-  if (graceTimer === undefined) return
-  clearTimeout(graceTimer)
-  graceTimer = undefined
+function clearGrace(e: Inflight): void {
+  if (e.timer === undefined) return
+  clearTimeout(e.timer)
+  e.timer = undefined
+}
+
+/** 回到前台时用：宽限期内的请求本来还能传完，把所有宽限定时器一起取消。 */
+function clearAllGrace(): void {
+  for (const e of inflight) clearGrace(e)
 }
 
 /**
- * 已转入后台且有在途请求时武装宽限定时器（幂等：重复调用不会堆出第二个定时器）。
+ * 已转入后台且有在途请求时武装宽限定时器（幂等：同一请求重复调用不会堆出第二个定时器）。
  * 此刻已在后台时新发起的尝试也要走这里，否则「在后台里开始的那次请求」不受宽限保护。
+ * 不传 `target` 表示「给当前所有在途请求各武装一个」（切后台时走这条）。
  */
-function armHideGrace(): void {
+function armHideGrace(target?: Inflight): void {
   if (typeof document === 'undefined' || !document.hidden) return
-  if (graceTimer !== undefined || !inflightCtl) return
-  graceTimer = setTimeout(() => {
-    graceTimer = undefined // 到期即自清：三个出口（到期 / 回前台 / 请求成功）都不留悬挂定时器
-    if (typeof document === 'undefined' || !document.hidden) return // 人已回来
-    const ctl = inflightCtl
-    if (!ctl) return // 请求已结束：没有可中止的对象
-    console.debug('[upload] 转入后台超过 ' + HIDE_GRACE_MS + 'ms 仍未完成，中止在途请求（可重试）')
-    ctl.abort()
-  }, HIDE_GRACE_MS)
+  const targets = target ? [target] : [...inflight]
+  for (const e of targets) {
+    if (e.timer !== undefined) continue
+    e.timer = setTimeout(() => {
+      e.timer = undefined // 到期即自清：三个出口（到期 / 回前台 / 请求成功）都不留悬挂定时器
+      if (typeof document === 'undefined' || !document.hidden) return // 人已回来
+      if (!inflight.has(e)) return // 这个请求已结束：没有可中止的对象
+      console.debug('[upload] 转入后台超过 ' + HIDE_GRACE_MS + 'ms 仍未完成，中止在途请求（可重试）')
+      e.ctl.abort()
+    }, HIDE_GRACE_MS)
+  }
 }
 
 function hookHideAbort(): void {
@@ -166,8 +187,8 @@ function hookHideAbort(): void {
   hideHooked = true
   const handler = (): void => {
     if (!document.hidden) {
-      // 回到前台：宽限期内的请求本来还能传完，取消这次中止
-      clearGrace()
+      // 回到前台：宽限期内的请求本来还能传完，取消这次中止（所有在途请求一起取消）
+      clearAllGrace()
       return
     }
     armHideGrace()
@@ -199,9 +220,11 @@ async function post(build: () => FormData, what: string, deadline: number): Prom
     if (left <= 0) break
     hookHideAbort()
     const ctl = new AbortController()
-    // 记在模块级：页面转后台时由 visibilitychange 回调用它打断在途请求
-    inflightCtl = ctl
-    armHideGrace() // 若此刻已在后台，武装宽限（幂等）
+    // 记在**本次请求自己的**上下文里（R24 / R24B-03）：页面转后台时由 visibilitychange 回调
+    // 逐个打断在途请求。原先记在模块级单例上，并发请求会互相清掉对方的宽限定时器。
+    const entry: Inflight = { ctl }
+    inflight.add(entry)
+    armHideGrace(entry) // 若此刻已在后台，武装宽限（幂等）
     // 单次超时不超过剩余预算，否则最后一次尝试会把总耗时拖到预算之外
     const slice = Math.min(UPLOAD_TIMEOUT_MS, left)
     const timer = setTimeout(() => ctl.abort(), slice)
@@ -219,7 +242,7 @@ async function post(build: () => FormData, what: string, deadline: number): Prom
         if (!ct.includes('json')) {
           throw new PermanentError(`${what}: 响应不是 JSON（content-type=${ct || '空'}），不能确认写入成功`)
         }
-        clearGrace() // 请求已成功结束：后台宽限没有意义，别留一个到点就想 abort 的定时器
+        clearGrace(entry) // 请求已成功结束：后台宽限没有意义，别留一个到点就想 abort 的定时器
         return
       }
       const body = await res.text().catch(() => '')
@@ -244,7 +267,7 @@ async function post(build: () => FormData, what: string, deadline: number): Prom
       // 两者都只作废这一次尝试、都走重试 —— 都不是永久错误。
       // ②的文案不写「页面转入后台」：abort 发生时页面确实在后台，但用户往往是回到前台才看见
       // 这条消息，写「转入后台」会让人以为失败是自己切出去造成的，也看不出「可以直接重试」。
-      // 已完成的请求不受影响：请求结束时 inflightCtl 已被清空，abort 不会落到它身上；
+      // 已完成的请求不受影响：请求结束时它已从 inflight 里摘掉，abort 不会落到它身上；
       // 即便落到，AbortController.abort() 对已 settle 的 fetch 也没有任何副作用。
       // 网络层失败同样换成本地化文案（只换文案，不换分类：它仍按普通错误走退避重试）。
       // 文案在这里单独求值、用字符串拼接而不是写进模板字面量的插值里：
@@ -263,13 +286,11 @@ async function post(build: () => FormData, what: string, deadline: number): Prom
             : e
     } finally {
       clearTimeout(timer)
-      // 只清自己那一个：若下一次尝试已经接手，不能把它也清掉
-      if (inflightCtl === ctl) {
-        inflightCtl = null
-        // 后台宽限定时器也一并清（R13-F10）：早先只有「成功」与「回到前台」两条路径调
-        // clearGrace()，而失败 / 永久错误 / 预算耗尽都会留下一个 5 秒定时器（实测 1 个）。
-        clearGrace()
-      }
+      // 只摘自己那一个（R24 / R24B-03）：并发时别的请求还在飞，绝不能连带清掉它的上下文。
+      inflight.delete(entry)
+      // 后台宽限定时器也一并清（R13-F10）：早先只有「成功」与「回到前台」两条路径调
+      // clearGrace()，而失败 / 永久错误 / 预算耗尽都会留下一个 5 秒定时器（实测 1 个）。
+      clearGrace(entry)
     }
     if (attempt < 2) {
       const backoff = 1000 * 2 ** attempt
@@ -303,18 +324,24 @@ export async function uploadSession(
 ): Promise<void> {
   if (files.length === 0) throw new Error(t('emptyRecording'))
 
+  // R24 / R24B-02：冻结这一批（调用方也可能已冻结，这里再冻一次是**纵深**而不是重复：
+  // uploadSession 是导出的公共入口，谁都可以直接调它）。不冻结时，post() 的每次重试都会
+  // 重新执行下面的 build()，而 build() 闭包引用的是传入的活数组 —— 提交在飞期间新入队的
+  // 文件会被塞进重试那一次的 body，却不在下面这份只算一次的 meta.perFile 里。
+  const batch = files.slice()
+
   // deviceInfo（UA 约 120 字符）在每个文件上重复，逐文件写会让整批白多传约 1.5 KB，
   // 故抽到顶层只存一份（取首文件的值）。
   // 注意：不能据此认为「同一次识别里每个文件的设备与尺寸必然相同」——
   // 采集过程中可以切换摄像头（switchCam），换机后分辨率确实会变，
   // 而 perFile 里已把这三个字段解构丢弃，各文件的差异不落库。这是体积换信息的取舍，不是等价。
-  const head = files[0].meta
+  const head = batch[0].meta
   const meta = {
     sessionId,
     deviceInfo: head.deviceInfo,
     videoWidth: head.videoWidth,
     videoHeight: head.videoHeight,
-    perFile: files.map((f) => {
+    perFile: batch.map((f) => {
       const { deviceInfo: _d, videoWidth: _w, videoHeight: _h, ...rest } = f.meta
       return { pose: f.pose, file: f.filename, ...rest }
     }),
@@ -323,7 +350,7 @@ export async function uploadSession(
   await post(() => {
     const form = new FormData()
     form.append('session_id', sessionId)
-    for (const f of files) {
+    for (const f of batch) {
       form.append(f.kind === 'video' ? 'video' : 'photos', f.blob, f.filename)
     }
     form.append('meta', JSON.stringify(meta))

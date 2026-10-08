@@ -20,11 +20,65 @@ const WT = process.env.SELFTEST_ROOT || join(tmpdir(), 'facedb-standards-selftes
 
 const say = (s) => console.log(s)
 
-function cleanup() {
-  spawnSync('git', ['-C', ROOT, 'worktree', 'remove', '--force', WT], { encoding: 'utf8' })
-  rmSync(WT, { recursive: true, force: true })
+// 清理必须**可观测**、并且**被打断后能自愈**（R24-01 实测的三条事实）：
+//   ① `git worktree remove` 的退出码以前被忽略 ⇒ 失败时静默留下注册条目（`git worktree list` 里多一条）；
+//   ② 进程被 SIGINT/SIGTERM 打断时以前不清理 ⇒ 副本目录 + 注册条目双双留在主仓库里
+//      （实测：kill -TERM 退出码 143、kill -INT 退出码 130，两种情形目录残留 1、注册残留 1）；
+//   ③ 只靠 JS 信号处理器**不可靠**：本脚本大量时间阻塞在 spawnSync 里，Node 会把信号推迟到事件循环空转时才跑，
+//      而脚本末尾的 process.exit() 会直接终止进程 ⇒ 处理器可能永远不执行（实测：注册处理器后 kill -TERM，
+//      进程反而跑完全程、退出码 0、清理靠正常路径完成）。因此真正的兜底是**下次运行开局清扫历史残留**。
+// 残留会让后续的 `git worktree list`／路径探测读到幽灵条目，也让 CI 机器累积临时副本。
+let residue = false
+
+// 本脚本在 tmpdir 下按 `facedb-standards-selftest-<pid>` 建副本；pid 不存活即视为历史残留。
+const WT_PREFIX = 'facedb-standards-selftest-'
+const pidAlive = (pid) => {
+  if (!Number.isFinite(pid) || pid <= 0) return false
+  try { process.kill(pid, 0); return true } catch { return false }
 }
+function sweepStale() {
+  const listed = spawnSync('git', ['-C', ROOT, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' }).stdout || ''
+  const paths = listed.split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice('worktree '.length).trim())
+  const swept = []
+  for (const p of paths) {
+    const base = p.split('/').pop() || ''
+    if (!base.startsWith(WT_PREFIX)) continue
+    if (p === WT) continue
+    const pid = Number(base.slice(WT_PREFIX.length))
+    if (pidAlive(pid)) continue // 可能是另一个正在跑的实例，别动
+    spawnSync('git', ['-C', ROOT, 'worktree', 'remove', '--force', p], { encoding: 'utf8' })
+    try { rmSync(p, { recursive: true, force: true }) } catch {}
+    swept.push(base)
+  }
+  if (swept.length) say(`🧹 清扫历史残留副本 ${swept.length} 条：${swept.join('、')}`)
+  return swept.length
+}
+
+function cleanup() {
+  const rm = spawnSync('git', ['-C', ROOT, 'worktree', 'remove', '--force', WT], { encoding: 'utf8' })
+  try { rmSync(WT, { recursive: true, force: true }) } catch {}
+  if (rm.status !== 0) spawnSync('git', ['-C', ROOT, 'worktree', 'prune'], { encoding: 'utf8' })
+  const stillDir = existsSync(WT)
+  const stillReg = (spawnSync('git', ['-C', ROOT, 'worktree', 'list'], { encoding: 'utf8' }).stdout || '').includes(WT)
+  if (stillDir || stillReg) {
+    residue = true
+    console.error(`⚠️ 副本清理未完成：目录残留=${stillDir} 注册残留=${stillReg}（${WT}）`)
+    console.error('   git worktree remove 输出：' + ((rm.stderr || '') + (rm.stdout || '')).trim().slice(0, 200))
+  }
+  return !(stillDir || stillReg)
+}
+sweepStale()
 cleanup()
+// 被 Ctrl-C / kill 打断时尽力清理。注意：**这不是兜底**（脚本大量时间阻塞在 spawnSync 里，
+// Node 会把信号推迟到事件循环空转，而末尾的 process.exit 不等人 ⇒ 处理器可能永不执行，R24-01 实测）。
+// 真正的兜底是下次运行开局的 sweepStale()。
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    cleanup()
+    process.exit(sig === 'SIGINT' ? 130 : 143)
+  })
+}
+
 const add = spawnSync('git', ['-C', ROOT, 'worktree', 'add', '--detach', WT, 'HEAD'], { encoding: 'utf8' })
 if (add.status !== 0) {
   console.error('❌ 无法创建 worktree 副本：' + (add.stderr || '').trim())
@@ -176,6 +230,29 @@ const M = [
     apply: () => mutate('scripts/check-dist-size-budget.mjs', (t) => t.replace(/const SOURCE_FINGERPRINT = '(?:[a-f0-9]{64}|PLACEHOLDER_SOURCE_FINGERPRINT)'/, 'const SOURCE_FINGERPRINT_OFF = 1')) },
   { id: 'M36', target: 'scripts/check-dist-size-budget-mutants.mjs', expect: 'S26', desc: '摘掉源码同源前提的阴性对照变异体 m8a（只留 m8b 无法排除「复制本身触发」）',
     apply: () => mutate('scripts/check-dist-size-budget-mutants.mjs', (t) => t.replace("id: 'm8a-src-copied-control'", "id: 'm8x-removed-control'")) },
+  // R24-01：自检自己的副本清理（S31）
+  { id: 'M37', target: 'scripts/verify-standards-selftest.mjs', expect: 'S31', desc: '拿掉开局清扫历史残留（被中断后留下的副本再也没人清）',
+    apply: () => mutate('scripts/verify-standards-selftest.mjs', (t) => t.replace('sweepStale()\ncleanup()', 'cleanup()')) },
+  { id: 'M38', target: 'scripts/verify-standards-selftest.mjs', expect: 'S31', desc: '清理结果不再进判定（残留也能报通过）',
+    // 必须**行锚定**替换：裸字符串替换会先命中本变异体自己的定义行（S31 旧版正是因此被自匹配骗过）。
+    apply: () => mutate('scripts/verify-standards-selftest.mjs', (t) => t.replace(/^const cleanOk = cleanup\(\)$/m, 'cleanup()\nconst cleanOk = true')) },
+  // R24 / W24-E：判据的运行落点与采样并发安全（S32）
+  { id: 'M39', target: 'scripts/verify-repo.mjs', expect: 'S32', desc: '自检副本退回仓库内固定路径（并发互删、崩溃留残留）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace("mkdtempSync(join(tmpdir(), 'facedb-verify-selfcheck-'))", "join(ROOT, '.verify-selfcheck')")) },
+  { id: 'M40', target: 'scripts/check-third-party-notices-mutants.mjs', expect: 'S32', desc: '许可变异自检退回硬编码 /tmp 落点（并发互删致崩溃）',
+    apply: () => mutate('scripts/check-third-party-notices-mutants.mjs', (t) => t.replace("mkdtempSync(path.join(tmpdir(), 'facedb-notices-mutants-'))", "'/tmp/r20-f7-notices-mutants'")) },
+  { id: 'M41', target: 'scripts/check-dist-size-budget.mjs', expect: 'S32', desc: '摘掉体积判据的一次采样自洽守卫（读数自相矛盾也能报通过）',
+    // 【R24 复核席修正】锚点必须**全局**替换：该短语在文件里出现 3 次（1 处注释 + check/un 两个分支），
+    // 裸 `String.replace` 只改第一处（注释）⇒ M41 不再命中、自检恒 43/44、verify:selfcheck 永久红。
+    apply: () => mutate('scripts/check-dist-size-budget.mjs', (t) => t.replaceAll('一次采样自洽（快照期间产物未被改动）', '未使用的占位前提')) },
+  { id: 'M42', target: 'scripts/verify-repo.mjs', expect: 'S32', desc: 'scanFile 退回直接读盘（与 checkCsp 读到两个版本 ⇒ 撕裂读）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace('const src = readStable(p)', "const src = readFileSync(p, 'utf8')")) },
+  // 【R24 复核席 P3】S31 原先还有两处「文本在位即通过」：注释掉存活判定、反转前缀过滤都保持绿。
+  // 断言已改行锚定正则（`^    if \(pidAlive\(pid\)\) continue/m` 等），这两个变异体就是它的判别力证明。
+  { id: 'M43', target: 'scripts/verify-standards-selftest.mjs', expect: 'S31', desc: '注释掉清扫的存活判定（会误删并发实例的副本）',
+    apply: () => mutate('scripts/verify-standards-selftest.mjs', (t) => t.replace(/^(    if \(pidAlive\(pid\)\) continue)/m, '    // $1')) },
+  { id: 'M44', target: 'scripts/verify-standards-selftest.mjs', expect: 'S31', desc: '反转副本前缀过滤（只清扫不该扫的、放过真残留）',
+    apply: () => mutate('scripts/verify-standards-selftest.mjs', (t) => t.replace(/^    if \(!base\.startsWith\(WT_PREFIX\)\) continue$/m, '    if (base.startsWith(WT_PREFIX)) continue')) },
 ]
 
 let caught = 0
@@ -203,7 +280,9 @@ say('')
 say(`阴性对照（未变异的副本）：exit=${neg.code} ${tail}`)
 if (neg.code !== 0) say(neg.out.split('\n').filter((l) => l.startsWith('[FAIL]')).join('\n'))
 
-cleanup()
-const ok = caught === M.length && neg.code === 0
-say(ok ? `✅ 变异自检 ${caught}/${M.length} 全部命中，且阴性对照绿` : `❌ 变异自检 ${caught}/${M.length}，阴性对照 exit=${neg.code}`)
+const cleanOk = cleanup()
+const ok = caught === M.length && neg.code === 0 && cleanOk
+say(ok
+  ? `✅ 变异自检 ${caught}/${M.length} 全部命中，且阴性对照绿，副本已清理`
+  : `❌ 变异自检 ${caught}/${M.length}，阴性对照 exit=${neg.code}${cleanOk ? '' : '，副本清理未完成（见上）'}`)
 process.exit(ok ? 0 : 1)

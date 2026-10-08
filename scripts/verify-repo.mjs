@@ -7,8 +7,9 @@
 //   3. 任何一项失败即整体失败（退出码 1），并打印可复核的差异。
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 
 const ROOT = process.env.VERIFY_REPO_ROOT
   ? resolve(process.env.VERIFY_REPO_ROOT)
@@ -63,8 +64,21 @@ function section(name, fn) {
   }
 }
 
-const read = (rel) => readFileSync(join(ROOT, rel), 'utf8')
+const read = (rel) => readStable(join(ROOT, rel))
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex')
+
+// 【R24 / W24-E-05】撕裂读防护：一次运行里同一份文件只能采样一次。
+// 原先 checkCsp() 先读 index.html 取 CSP，scanFile() 又读一次取 `<img>`；实测 30 轮里 16 轮
+// 「运行期文件被改过、mtime 变化 true，而前提断言仍判绿」——两次读落在不同版本上，结论不自洽。
+// 现在：读一次即缓存，运行结束前复读 digest，任何不一致即判未判定（exit 2）。
+const READ_CACHE = new Map()
+function readStable(abs) {
+  if (!READ_CACHE.has(abs)) {
+    const buf = readFileSync(abs)
+    READ_CACHE.set(abs, { text: buf.toString('utf8'), digest: sha256(buf) })
+  }
+  return READ_CACHE.get(abs).text
+}
 
 // ── 1. public/ 资源指纹 ───────────────────────────────────────────────────────
 function checkPublicIntegrity() {
@@ -410,7 +424,7 @@ function checkCsp() {
   const SCAN_EXT = /\.(vue|ts|js|mjs|cjs|html|css)$/
   const scanFile = (p) => {
     const rel = relative(ROOT, p)
-    const src = readFileSync(p, 'utf8')
+    const src = readStable(p)
     // 注释里的字面量不算（R22 自己踩过：index.html 的说明文字里写了「界面不渲染 <img>」，
     // 按行直扫会把注释判成标签 —— 断言必须锚在语义位置，不能锚在「文件里有没有这个词」）。
     const masked = src
@@ -457,8 +471,11 @@ function checkCsp() {
 // 造一个最小可过的仓库副本，再逐个注入缺陷，确认「该红的红、干净的绿」。
 // 变异体自身若没生效（文本未变化），会明确报「本次不构成结论」而不是记成漏检。
 function runSelfCheck() {
-  const tmp = join(ROOT, '.verify-selfcheck')
-  rmSync(tmp, { recursive: true, force: true })
+  // 【R24 / W24-E-01】落点必须**每次运行唯一**：原先固定在仓库内的 `.verify-selfcheck`，
+  // 两个实例并发跑时互相删目录（实测并发 6 次里 4 次 exit=1、errno EINVAL/ENOTEMPTY/ENOENT，
+  // 且 A 崩溃时 B 仍可能报「30/30 符合预期」的假绿），崩溃时还会在工程根留下未忽略的残留目录。
+  // 现在放系统临时目录 + mkdtemp，既并发隔离，也不在仓库里留东西。
+  const tmp = mkdtempSync(join(tmpdir(), 'facedb-verify-selfcheck-'))
   const put = (rel, body) => {
     const abs = join(tmp, rel)
     mkdirSync(join(abs, '..'), { recursive: true })
@@ -682,6 +699,19 @@ if (process.argv.includes('--self-check')) {
   }
 
   const failed = results.filter((r) => r.ok === false)
+  // 【R24 / W24-E-05】采样自洽性：任何被读过的文件在本次运行期间被改动 ⇒ 结论不自洽，判未判定。
+  const drifted = []
+  for (const [abs, snap] of READ_CACHE) {
+    let now
+    try { now = sha256(readFileSync(abs)) } catch { drifted.push(relative(ROOT, abs) + '（运行期变得读不到）'); continue }
+    if (now !== snap.digest) drifted.push(relative(ROOT, abs))
+  }
+  if (drifted.length) {
+    console.log(`\n❌ 运行期有 ${drifted.length} 个被检查文件发生了改动 —— 本次采样不自洽，不构成结论（exit 2）`)
+    for (const d of drifted.slice(0, 5)) console.log(`   · ${d}`)
+    console.log('   （并发编辑/构建期间请勿以本次读数判定；请重跑）')
+    process.exit(2)
+  }
   console.log(`\n=== 汇总 ===`)
   console.log(`执行 ${executed} 项，通过 ${executed - failed.length}，失败 ${failed.length}；`
     + `未执行 ${undetermined + skippedByDesign} 项（样本为 0 的 ${undetermined} 项、环境所限的 ${skippedByDesign} 项）`)

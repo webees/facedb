@@ -114,6 +114,28 @@ export function takeSegmentDropped(): boolean {
   return v
 }
 
+/**
+ * 最近一次「段被丢弃」的原因（R24 / W24C-02·03·07）。只用于日志与排查，不导出成新的判定入口。
+ *
+ * 为什么必须统一走一个入口：这三条丢弃分支原先各自「静默」得不一样 ——
+ *   · 代次过期（collectSegment 的 fromEpoch 守卫）：只有一行 console.debug，**不置 segmentDropped**；
+ *   · 陈旧的自发停止回调（begin 里 onstop 的 `rec !== r`）：直接 return，连日志都没有；
+ *   · 同一采集点被并发取段时被抛弃的那一次：静默返回 null。
+ * 后果是同一个：界面与落库侧都看不出「这一步其实丢了一段视频」。这与 W23B-06 / R23-06 同族
+ * ——丢弃有多个分支、对外信号只有一个分支，于是「段被丢掉」这件事整体不可观测。
+ *
+ * 口径与体积过小那条分支**完全一致**：只有「丢掉之后本采集点一段都没有」才置 segmentDropped；
+ * 已有保留段（如 8 秒上限切开的前半段）时不置真。
+ */
+let lastDropReason = ''
+/** 本采集点已被取走段的次数（R24 / W24C-07）：>0 时后到的取段调用拿到 null 就是「被并发取走」，不是「没有视频」。 */
+let takeCount = 0
+function noteSegmentDrop(reason: string, detail: string): void {
+  lastDropReason = reason
+  if (lastSegment === null) segmentDropped = true
+  console.debug('[seg] 丢弃段（' + reason + '）：' + detail)
+}
+
 /** 正在进行的收尾操作；用于串行化，避免并发调用读到尚未赋值的 lastSegment */
 let finalizing: Promise<void> | null = null
 /**
@@ -186,7 +208,8 @@ function collectSegment(src: Blob[], fromEpoch: number): void {
   if (fromEpoch !== epoch) {
     // 直接丢弃：src 是调用方自己那一代的 chunk 数组（begin 时独立开辟），
     // 既不会覆盖 lastSegment 去冒充下一个采集点的视频，也不会动到新段正在攒的数据。
-    console.debug('[seg] 丢弃过期段（采集点已切换，代次 ' + fromEpoch + ' ≠ ' + epoch + '）')
+    // R24 / W24C-02：丢弃必须**对外可见**（此前只有这一行 console.debug，segmentDropped 不置位）。
+    noteSegmentDrop('stale-epoch', '采集点已切换，代次 ' + fromEpoch + ' ≠ ' + epoch)
     return
   }
   const seg = buildBlob(src)
@@ -396,6 +419,10 @@ function begin(stream: MediaStream, pose: string | null): boolean {
   r.onstop = () => {
     if (rec !== r) {
       liveRecorders.delete(r) // 已被 finalize 接管：登记表里也不能再留着它
+      // R24 / W24C-03：这条分支是**整段静默丢弃**（连日志都没有）。
+      // 实测 self-stop-stale-handler 场景：128KB 的段就此消失，而对外读数全是「没丢」。
+      // 它确实是迟到回调（内容属于上一代，不该冒充本采集点的视频），但「丢过」必须可见。
+      noteSegmentDrop('stale-self-stop', '录制器已被接管，其 onstop 迟到；本代不再收段')
       return
     }
     liveRecorders.delete(r)
@@ -463,6 +490,8 @@ export function startPoseRecording(stream: MediaStream, pose: string): boolean {
   }
   lastSegment = null // 新采集点：丢弃上一采集点的内容
   segmentDropped = false // 新采集点：上一个采集点的「段被丢弃」事实不得串味到这一段
+  lastDropReason = ''
+  takeCount = 0 // 新采集点：取段次数重新计数
   epoch++ // 新代次：上一段任何迟到的回写从此被丢弃，不会再冒充本采集点的视频
   return begin(stream, pose)
 }
@@ -490,6 +519,10 @@ export async function stopPoseRecording(): Promise<{ blob: Blob; mime: string } 
   currentPose = null
   const out = lastSegment
   lastSegment = null
+  // R24 / W24C-07：同一采集点被并发取段时，后到的那次会拿到 null —— 与「这一步真没有视频」
+  // 在对外读数上完全一样（此前是静默返回）。取过就记一笔，让后到的那次不再是静默的。
+  if (out) takeCount++
+  else if (takeCount > 0) noteSegmentDrop('already-taken', '本采集点的段已被并发取走，这次调用没有可返回的内容')
   return out
 }
 
@@ -516,6 +549,8 @@ export function teardownRecorder(): void {
   // 拆卸后不得留下「段被丢弃」的陈旧事实：组件重新挂载会新建采集点，
   // 若这里不清，上一次会话的丢弃会被新会话的第一次 take 读到。
   segmentDropped = false
+  lastDropReason = ''
+  takeCount = 0
   // 登记表里的每一个都要停：模块级 rec 只覆盖最新那一个（R13-F10）
   for (const other of [...liveRecorders]) {
     if (other === r) continue

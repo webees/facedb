@@ -806,6 +806,95 @@ add({ id: 'S30', covers: ['package.json', '.github/workflows/ci.yml'], name: '�
   }
 } })
 
+// ── S31 判据自检的副本 worktree 必须「清理可观测 + 被打断后自愈」（R24-01） ────────
+// 背景（R24 实测）：`cleanup()` 忽略 `git worktree remove` 的退出码 ⇒ 失败静默；
+// 进程被 SIGINT/SIGTERM 打断时完全不清理 ⇒ 副本目录与 worktree 注册双双留在主仓库里
+// （实测 143/130 + 残留 1/1）；而只加 JS 信号处理器不算兜底（阻塞在 spawnSync 时信号被推迟，
+// 末尾 process.exit 又不排队 ⇒ 处理器可能永不执行）。真正的兜底是下次运行开局的 sweepStale()。
+add({ id: 'S31', covers: ['scripts/verify-standards-selftest.mjs'], name: '判据自检的副本 worktree 清理可观测，且历史残留能在下次运行开局自愈', run() {
+  const f = 'scripts/verify-standards-selftest.mjs'
+  if (!has(f)) return { ok: false, detail: '缺 ' + f }
+  const raw = read(f)
+  // 【R24-01 二次修复】S31 原先用 `g.includes('sweepStale()')` / `includes('const cleanOk = cleanup()')`，
+  // 结果**被这个文件自己的变异体定义行满足**（M37/M38 的 `apply:` 里就写着这两个字面量），
+  // 删掉真实调用/判定也照样绿 —— 与 R13-F9/R22/R23 同族的「断言文本自匹配」。
+  // 修法两条并用：① 先剥掉 `const M = [ … ]` 变异体数组，只审代码；
+  //              ② 断言改**行锚定正则**（调用行、判定式整行），不再用「随便哪里出现」的子串。
+  const g = raw.replace(/^const M = \[[\s\S]*?^\]$/m, '// <变异体数组已剥离>\n')
+  const stripped = g.length < raw.length
+  const need = [
+    ['开局清扫历史残留（必须是调用行，不能只留函数定义）', /^sweepStale\(\)$/m],
+    ['清扫紧挨着 cleanup()（顺序：先清扫历史、再清理本次）', /^sweepStale\(\)\ncleanup\(\)$/m],
+    ['按 pid 判存活（不许误删并发实例的副本）', /^const pidAlive = \(pid\) => \{$/m],
+    ['清扫要用 pidAlive 而不是无条件删', /^    if \(pidAlive\(pid\)\) continue/m],
+    ['清扫只认本脚本的副本命名前缀（正向）', /^    if \(!base\.startsWith\(WT_PREFIX\)\) continue$/m],
+    ['清扫只认本脚本的副本命名前缀', /WT_PREFIX = 'facedb-standards-selftest-'/],
+    ['worktree remove 失败要回退 prune', /'worktree', 'prune'/],
+    ['清理结果必须进判定（不许静默）', /^const cleanOk = cleanup\(\)$/m],
+    ['判定式必须同时要求清理干净', /const ok = caught === M\.length && neg\.code === 0 && cleanOk/],
+    ['目录残留检查', /existsSync\(WT\)/],
+    ['注册残留检查', /'worktree', 'list'/],
+    ['清理失败要打印告警', /⚠️ 副本清理未完成/],
+    ['汇总行如实报告清理结果', /副本已清理/],
+    ['保留信号处理器（但注释已写明不是兜底）', /process\.on\(sig/],
+  ]
+  const miss = need.filter(([, re]) => !re.test(g)).map(([n]) => n)
+  if (!stripped) miss.push('变异体数组剥离失败（S31 审的是整份文件，断言文本可能自匹配）')
+  // 反向断言：不许把「残留」当成通过 —— 判定必须同时要求 caught 全中、阴性对照绿、清理干净。
+  if (!/caught === M\.length && neg\.code === 0 && cleanOk/.test(g)) miss.push('判定式必须同时要求清理干净（caught && neg.code===0 && cleanOk）')
+  return {
+    ok: miss.length === 0,
+    detail: miss.length ? '缺：' + miss.join('、') : '清扫（pid 存活判定）+ remove 退出码 + prune 回退 + 清理结果进判定 + 告警与汇总行 + 信号处理器非兜底注释 全部在位',
+  }
+} })
+
+// ── S32 判据的运行落点与采样必须并发安全（R24 / W24-E-01·03·05·06） ────────────
+// 背景（W24-E 实测）：三处判据把临时落点写死在共享路径上，或在不同时刻各读一次同一份文件。
+// 并发一跑就出事：`verify-repo --self-check` 的 `.verify-selfcheck`（并发 6 次里 4 次 exit=1，
+// EINVAL/ENOTEMPTY/ENOENT 齐全，A 崩溃时 B 仍可能判「30/30 符合预期」）、
+// 第三方许可变异自检的 `/tmp/r20-f7-notices-mutants`（6 次里 5 次崩）、
+// 以及 size 判据「N4 实测 17771418 B 判 OK」+「N9 sha 不符判 FAIL」的单轮自相矛盾。
+add({ id: 'S32', covers: ['scripts/verify-repo.mjs', 'scripts/check-dist-size-budget.mjs', 'scripts/check-third-party-notices-mutants.mjs'], name: '判据的运行落点按次唯一，且一次运行的采样自洽（不许固定 /tmp 路径、不许同一文件分次读）', run() {
+  const miss = []
+  const text = (rel) => (has(rel) ? read(rel) : null)
+
+  const vr = text('scripts/verify-repo.mjs')
+  if (vr === null) miss.push('缺 scripts/verify-repo.mjs')
+  else {
+    if (!/mkdtempSync\(join\(tmpdir\(\), 'facedb-verify-selfcheck-'\)\)/.test(vr)) miss.push('verify-repo 自检副本改 mkdtemp（每次运行唯一）')
+    if (vr.includes("'.verify-selfcheck'")) miss.push('verify-repo 仍把自检副本落在仓库内固定路径 .verify-selfcheck')
+    if (!/const READ_CACHE = new Map\(\)/.test(vr) || !/function readStable\(/.test(vr)) miss.push('verify-repo 缺 readStable 快照缓存')
+    if (!/const read = \(rel\) => readStable\(/.test(vr)) miss.push('verify-repo 的 read() 必须走 readStable')
+    if (!/const src = readStable\(p\)/.test(vr)) miss.push('verify-repo 的 scanFile 必须走 readStable（否则与 checkCsp 读到两个版本）')
+    if (!/本次采样不自洽，不构成结论/.test(vr)) miss.push('verify-repo 缺「运行期文件被改动」的自洽守卫')
+  }
+
+  const nm = text('scripts/check-third-party-notices-mutants.mjs')
+  if (nm === null) miss.push('缺 scripts/check-third-party-notices-mutants.mjs')
+  else {
+    if (!/mkdtempSync\(path\.join\(tmpdir\(\), 'facedb-notices-mutants-'\)\)/.test(nm)) miss.push('许可变异自检改 mkdtemp')
+    if (nm.includes("'/tmp/r20-f7-notices-mutants'")) miss.push('许可变异自检仍硬编码 /tmp/r20-f7-notices-mutants')
+  }
+
+  const sz = text('scripts/check-dist-size-budget.mjs')
+  if (sz === null) miss.push('缺 scripts/check-dist-size-budget.mjs')
+  else {
+    if (!/const SNAP = new Map\(\)/.test(sz)) miss.push('体积判据缺一次采样快照 SNAP')
+    if (!/const snapDigest = \(f\) =>/.test(sz)) miss.push('体积判据缺 snapDigest')
+    if (/raw \+= statSync\(path\.join\(DIST, f\)\)\.size/.test(sz)) miss.push('体积判据 N4 仍在断言里单独 statSync')
+    if (/const got = sha256\(p\)/.test(sz)) miss.push('体积判据 sha 断言仍在断言里单独读盘')
+    // 【R24 复核席修正】原断言只看「短语在某处出现」——而注释里也写着同一短语，
+    // 于是「把守卫从代码里摘掉、注释留着」仍绿（M41 因此漏检）。改为**代码锚定**：
+    // 必须存在真实的 `c.check('N0 环境前提：一次采样自洽…` 与 `c.un('N0 环境前提：一次采样自洽…` 调用。
+    if (!/c\.check\('N0 环境前提：一次采样自洽/.test(sz)) miss.push('体积判据缺采样自洽守卫的 check 分支（注释不算）')
+    if (!/c\.un\(\s*'N0 环境前提：一次采样自洽/s.test(sz)) miss.push('体积判据缺采样自洽守卫的 un 分支（注释不算）')
+  }
+  return {
+    ok: miss.length === 0,
+    detail: miss.length ? '缺：' + miss.join('、') : '三处落点均按次唯一（mkdtemp / 快照）+ 采样自洽守卫在位（verify-repo 的 .verify-selfcheck、许可自检的 /tmp 固定路径、体积判据的 N4 单独 statSync 都不会再回来）',
+  }
+} })
+
 for (const c of CHECKS) {
   let r
   try { r = c.run() } catch (e) { r = { ok: false, detail: '断言抛错：' + e.message } }

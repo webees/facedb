@@ -21,6 +21,7 @@ import { runUploadBatch, preSubmitQueue } from '../lib/upload-batch'
 import { buildPoseFiles } from '../lib/batch-files'
 import { primeAudio, resumeAudio, sfx } from '../lib/audio'
 import { t } from '../lib/i18n'
+import CaptureFooter from './CaptureFooter.vue'
 
 const props = defineProps<{ sessionId: string }>()
 const emit = defineEmits<{ done: [results: CaptureResult[]] }>()
@@ -83,7 +84,11 @@ const pose = computed(() => POSES[idx.value])
 // loop() 直接跳过 shoot()，于是 fails 永远到不了 MAX_FAILS，「重新识别」按钮永不出现。
 // 而提示让用户「刷新页面」——刷新会丢掉内存里本次全部已采集文件。
 // emptyBatch 同样并入：队列为空时唯一的出路是重新采集，入口必须可见（W23B-05）。
-const retryable = computed(() => fails.value >= MAX_FAILS || camLost.value || emptyBatch.value)
+// camStartFailed 也必须并入（R24 / W24A-03）：摄像头一开始就没取到时 fails 与 camLost 恒 false，
+// 三个条件全不成立、按钮永不渲染，用户只能刷新页面 ⇒ 丢掉内存里本次全部已采集文件。
+const retryable = computed(
+  () => fails.value >= MAX_FAILS || camLost.value || camStartFailed.value || emptyBatch.value,
+)
 const hint = computed(() => t(hints.key.value, hints.params.value))
 // 需要转头时，在椭圆外侧给出方向箭头（复用提示状态，不额外判断几何）
 const turnDir = computed<'left' | 'right' | null>(() =>
@@ -240,6 +245,9 @@ function openPoseSegment(): boolean {
 /** 设备是否已断开。断开后停止用逐帧判定覆盖提示（否则「摄像头已断开」会被姿态提示盖掉）。 */
 const camLost = ref(false)
 
+/** 摄像头**从头就没起来**（getUserMedia 直接抛错）。camLost 只在 startCamera 成功末尾清零，故启动即失败时它恒 false（R24 / W24A-03 的死锁）。 */
+const camStartFailed = ref(false)
+
 /**
  * 上次采集失败的时间戳。
  * 失败提示是「立即显示」的，但画面此时往往仍然达标，loop() 每帧都在投 hintHoldStill，
@@ -283,6 +291,7 @@ async function startCamera(deviceId?: string): Promise<void> {
     await el.play().catch(() => {})
   }
   camLost.value = false
+  camStartFailed.value = false
   camId.value = next.getVideoTracks()[0]?.getSettings().deviceId ?? ''
   const set = next.getVideoTracks()[0]?.getSettings()
   camRes.value = set?.width && set?.height ? `${set.width}x${set.height}` : `${videoEl.value?.videoWidth ?? 0}x${videoEl.value?.videoHeight ?? 0}`
@@ -454,6 +463,12 @@ const DRAIN_TRIES = 60
 const DRAIN_MS = 20
 
 async function submit(fromShoot = false): Promise<void> {
+  // R24B-01：自守，守卫不能只挂在 retrySubmit 上。实测 dbl 场景：同拍并发两次 submit()
+  // ⇒ 两个 POST 同时在飞、载荷逐字相同 ⇒ 服务端落两条等价记录。这里在第一个 await 之前置位。
+  if (submitting.value) {
+    dbg('提交入口：已有一次提交在飞，忽略这次调用（R24B-01）')
+    return
+  }
   submitting.value = true
   uploading.value = true
   uploadError.value = ''
@@ -483,9 +498,13 @@ async function submit(fromShoot = false): Promise<void> {
     hints.set('hintUploading')
     dbg('开始提交，文件数:', pendingFiles.length)
 
+    // R24B-02：**冻结这一批**。runUploadBatch 每轮、post() 每次重试都会重跑构造 FormData 的
+    // 回调，而回调闭包引用这个数组；不冻结的话「提交在飞期间新入队的文件」会进重试那次的 body，
+    // 却不在同一时刻算出的 meta.perFile 里（实测 latefile：late_extra.jpg 无 meta 条目）。
+    const batch = pendingFiles.slice()
     // 轮次 / 退避 / 预算的编排在 src/lib/upload-batch.ts（策略与界面状态解耦，可单独驱动）
     const run = await runUploadBatch(
-      pendingFiles,
+      batch,
       props.sessionId,
       { tries: SUBMIT_TRIES, backoffMs: SUBMIT_BACKOFF_MS, budgetMs: UPLOAD_BUDGET_MS },
       { isDisposed: () => disposed, onAttemptFail: (n, m) => dbg('第 ' + n + ' 次提交失败：', m) },
@@ -532,15 +551,19 @@ async function retry(): Promise<void> {
   resetHold()
   // 设备可能已断开：此时直接设「请{pose}」会让用户以为一切正常，而画面其实是静止的。
   // 先尝试重新取流；成功则 camLost 会被 startCamera 清掉，失败则保留断开提示。
-  if (camLost.value) {
+  // R24 / W24A-03：启动即失败（camStartFailed）也要走这条重取流路径，否则点了「重试」只改提示。
+  if (camLost.value || camStartFailed.value) {
     try {
       await startCamera(camId.value || undefined)
     } catch (e) {
+      camStartFailed.value = true
       cameraError(e)
       return
     }
   }
   hints.setNow('hintCameraOn', { pose: t(POSE_KEY[pose.value]) })
+  // R24 / W24A-03：挂载即失败时逐帧循环**从未启动**（raf 恒 0），不补启动则重取流成功也不判定。
+  if (!raf && !disposed) raf = requestAnimationFrame(loop)
   // 重开录制段：retry 之前录制器可能已因异常收尾被置空（此后一直没人在录），
   // 而重新取流的路径会让旧段与新流不再同源（switchCam 早已补了同样的补偿，这里此前漏了）。
   // startPoseRecording 对「同姿态且录制器仍在」是幂等的，健康时重复调用不会空转。
@@ -642,6 +665,8 @@ onMounted(async () => {
   try {
     await startCamera()
   } catch (e) {
+    // R24 / W24A-03：置位「摄像头没起来」，否则 retryable 三条件全不成立、按钮永不渲染。
+    camStartFailed.value = true
     cameraError(e)
     return
   }
@@ -754,46 +779,21 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 摄像头切换 -->
-    <div v-if="cameras.length > 1" class="flex justify-center">
-      <select
-        v-model="camId"
-        class="w-full rounded-lg border border-gray-300 bg-white px-4 py-3 text-base text-gray-800 md:w-auto"
-        @change="switchCam"
-      >
-        <option v-for="(c, i) in cameras" :key="c.deviceId || i" :value="c.deviceId">
-          {{ t('camera', { n: i + 1 }) }}
-        </option>
-      </select>
-    </div>
-
-    <!-- 重试 -->
-    <button
-      v-if="retryable"
-      class="w-full rounded-xl bg-blue-700 px-6 py-4 text-lg font-semibold text-white active:bg-blue-800 md:w-auto"
-      @click="retry"
-    >
-      {{ t('retry') }}
-    </button>
-
-    <!-- 提交失败的恢复入口：已采集的文件仍在内存里，点它整批重发；
-         不给入口的话用户只能刷新页面，而刷新会丢掉本次全部采集 -->
-    <button
-      v-if="submitFailed"
-      class="w-full rounded-xl bg-blue-700 px-6 py-4 text-lg font-semibold text-white active:bg-blue-800 md:w-auto"
-      @click="retrySubmit"
-    >
-      {{ t('retryUpload') }}
-    </button>
-
-    <!-- 实时指标：逐帧变化的数字会让界面看起来在「跳」，因此只在 ?debug=1 时显示，便于排查 -->
-    <p v-if="DEBUG" class="text-center text-xs leading-relaxed text-gray-400">
-      {{ t('metricCamera') }} {{ camRes }} · {{ t('metricYaw') }} {{ frame.yaw.toFixed(0) }}° ·
-      {{ t('metricPitch') }} {{ frame.pitch.toFixed(0) }}° ({{ frame.pitch < -3 ? t('debugUp') : frame.pitch > 3 ? t('debugDown') : t('debugLevel') }}) · {{ t('metricRoll') }} {{ frame.roll.toFixed(0) }}° ·
-      {{ t('metricFaceWidth') }} {{ Math.round(frame.faceWidthPx) }}px · {{ t('metricSharpness') }}
-      {{ Math.round(stats.blur) }} ({{ stats.roi }}) · {{ t('metricLight') }} {{ Math.round(stats.brightness) }}
-      · {{ t('metricBlink') }} {{ frame.eyeBlinkLeft.toFixed(2) }}/{{ frame.eyeBlinkRight.toFixed(2) }}
-      · {{ uploading ? t('debugUploading') : uploadError ? t('debugUploadFailed') + uploadError.slice(0, 40) : t('debugPending') + ' ' + pendingFiles.length + ' ' + t('debugFilesUnit') }}
-    </p>
+    <!-- 底部控制区（相机选择 / 两个恢复入口 / ?debug=1 指标）已抽到 CaptureFooter.vue（R24） -->
+    <CaptureFooter
+      v-model:cam-id="camId"
+      :cameras="cameras"
+      :retryable="retryable"
+      :submit-failed="submitFailed"
+      :cam-res="camRes"
+      :frame="frame"
+      :stats="stats"
+      :uploading="uploading"
+      :upload-error="uploadError"
+      :pending-count="pendingFiles.length"
+      @camera-changed="switchCam"
+      @retry-requested="retry"
+      @retry-submit-requested="retrySubmit"
+    />
   </div>
 </template>
