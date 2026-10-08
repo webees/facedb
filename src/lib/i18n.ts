@@ -42,6 +42,11 @@ const M = {
     // 提交重试全部失败后的终态文案。此前失败后界面仍停留在「上传中…」，
     // 用户既不知道失败、也没有可点的入口（已采文件只在内存，刷新即丢）。
     hintUploadFailed: '上传失败，请检查网络后点下方「重新提交」',
+    // 「服务端**拒绝**了这一批」的终态（R28 W28C-02）：3 轮重试全部撞同一个 4xx（文件过大 /
+    // 数量超限 / 字段校验失败）时网络是好的，说「请检查网络」会让用户一直点「重新提交」——
+    // 而那个入口对同一批是**幂等的失败**（实测连点 3 次每次照发 3 次请求、状态逐次相同）。
+    // 所以这里点名真实原因与真正有效的动作（重新采集），并说明重试不会有变化。
+    hintUploadRejected: '服务端拒绝了这一批（多为文件过大或数量超限），重试不会有变化，请点下方「重试」重新采集',
     // 「本次一个可上传的文件都没有」的终态（W23B-05）：整批文件都因体积过小被丢弃时，
     // 真实原因是一段都没录上，不是网络。用网络文案会把用户引去检查网络，
     // 且掩盖了唯一有效的动作 —— 重新采集。文案里点名下方那个按钮，与 retry 的标签一致。
@@ -140,6 +145,7 @@ const M = {
     hintFinalizing: 'Processing, please wait…',
     hintUploading: 'Uploading…',
     hintUploadFailed: 'Upload failed. Please check your network and tap "Retry upload" below',
+    hintUploadRejected: 'The server rejected this batch (usually files too large or too many). Retrying will not help — tap "Retry" below to capture again',
     hintEmptyBatch: 'No uploadable files were captured this time. Tap "Retry" below to capture again',
     hintStillFinalizing: 'This step is still finishing up. Wait a few seconds, then tap "Retry upload"',
     hintCameraOn: '{pose}',
