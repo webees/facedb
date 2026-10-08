@@ -28,7 +28,6 @@ const M = {
     hintTurnRight: '再向右转一点',
     hintLookUp: '再抬一点头',
     hintLookDown: '再低一点头',
-    hintHeadLevel: '头回正一点',
     hintStraighten: '头回正一点',
     hintFaceFront: '正对镜头',
     hintBlurry: '画面模糊，请保持稳定',
@@ -64,7 +63,6 @@ const M = {
     uploadFailed: '上传失败',
     failed: '失败：{msg}（保持姿态会自动重试）',
     failedMax: '连续失败，请检查网络后点「重试」',
-    uploading: '上传中…',
     camera: '摄像头 {n}',
 
     doneTitle: '识别完成',
@@ -119,7 +117,6 @@ const M = {
     hintTurnRight: 'A little more to the right',
     hintLookUp: 'A little higher',
     hintLookDown: 'A little lower',
-    hintHeadLevel: 'Level your head a bit',
     hintStraighten: 'Straighten your head a bit',
     hintFaceFront: 'Face the camera directly',
     hintBlurry: 'Image is blurry, please hold still',
@@ -143,7 +140,6 @@ const M = {
     uploadFailed: 'Upload failed',
     failed: 'Failed: {msg} (will retry automatically while holding pose)',
     failedMax: 'Repeated failures. Please check the network and tap "Retry"',
-    uploading: 'Uploading…',
     camera: 'Camera {n}',
 
     doneTitle: 'Recognition complete',
