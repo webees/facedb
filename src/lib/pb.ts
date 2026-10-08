@@ -341,10 +341,21 @@ export async function uploadSession(
     deviceInfo: head.deviceInfo,
     videoWidth: head.videoWidth,
     videoHeight: head.videoHeight,
-    perFile: batch.map((f) => {
+    perFile: batch.map((f, idx) => {
       const { deviceInfo: _d, videoWidth: _w, videoHeight: _h, ...rest } = f.meta
-      return { pose: f.pose, file: f.filename, ...rest }
+      // 【R25 / W25B-01】idx 是**权威对应键**：perFile 与表单里那份文件只能按「位置」对应，
+      // 因为 PocketBase 会改写文件名（超过 100 字符截断、含非 ASCII 就整段换成随机 token），
+      // 落库后的 file 字段与上传时的 filename 不一定相等。位置显式写进记录，
+      // 消费方就不必去猜 file 是否还被服务器动过。
+      return { idx, pose: f.pose, file: f.filename, ...rest }
     }),
+  }
+
+  // 【R25 / W25B-01】一次提交里「表单文件」与「meta.perFile」必须一一对应：两者都由上面这份
+  // 冻结的 batch 派生，长度不符只可能来自将来的重构 —— 那时宁可挡住，也不要写出一批错位的记录
+  // （表单里有 3 个文件、perFile 只有 2 条，落库后无法还原谁是谁）。
+  if (meta.perFile.length !== batch.length) {
+    throw new Error(`提交批次与元信息不一致（${batch.length} 个文件 / ${meta.perFile.length} 条 perFile）`)
   }
 
   await post(() => {

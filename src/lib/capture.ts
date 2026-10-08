@@ -33,7 +33,15 @@ const CANDIDATES = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/web
 
 export function pickVideoMime(): string {
   if (typeof MediaRecorder === 'undefined') return ''
-  for (const m of CANDIDATES) if (MediaRecorder.isTypeSupported(m)) return m
+  // 【R25 / W25D-06（P2）】`isTypeSupported` 在部分实现里**不存在**（旧 WebView、被裁剪的构建、
+  // 测试桩），原先这里没有守卫：异常抛在 `begin()` 的 `new MediaRecorder` try/catch **之前**，
+  // 于是「录制器启动失败」那条提示（`segmentFailed` → CaptureView 的 hintSegmentFailed）永远
+  // 走不到 —— 实测录到 0 个录制器、界面零提示、这一步静默没有视频。
+  // 有该函数就用它挑编码；没有就退回第一候选，让 `new MediaRecorder` 去失败（失败会被捕获并提示）。
+  const can = typeof MediaRecorder.isTypeSupported === 'function'
+    ? (m: string) => MediaRecorder.isTypeSupported(m)
+    : () => true
+  for (const m of CANDIDATES) if (can(m)) return m
   return ''
 }
 
