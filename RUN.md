@@ -1581,6 +1581,30 @@ MediaPipe（TFLite Tasks）会向 `odml.pa.googleapis.com` 上报使用数据。
   `window.fetch` 仍非原生（正常构建里就是内联层还在），此时网络并未放开。该情形只打 `console.debug`、
   **不当告警** —— 按文档「先撤模块层、再撤内联层」撤时中间那一刻必然如此，告警会变成噪声。
 
+**R24 的四处改动（都带判据）**：R24 的主题是并发与竞态，前三处都在上传链路上，第四处给「段被丢弃」补上可观测信号。
+
+- **提交入口自守**（`src/components/CaptureView.vue:submit()`）：`retrySubmit()` 本来就有
+  `if (submitting.value) return`，而 `submit()` 没有 ⇒ 同一次点击里并发两次 `submit()` 会发出
+  **两个内容完全相同的 POST**（实测 `fetchCount=2`，修复后 1）。现在两个入口同守。
+- **批次冻结**（`submit()` 与 `src/lib/pb.ts:uploadSession()`）：`post()` 每次重试都会重跑 `build()`，
+  闭包引用的活数组会把「提交在飞期间新入队的文件」塞进重试那一次的请求体，而 `meta.perFile` 里没有
+  对应条目（实测第 2 次 POST 的 photos 比 perFile 多 1 张）。现在两处都在入口取一次 `slice()`。
+- **后台宽限按请求归属**（`src/lib/pb.ts`）：宽限定时器与在途控制器原先是模块级单例 ⇒ 并发提交时
+  先结束的那次 `finally` 会清掉另一个仍在飞请求的宽限定时器，此后它不再被 abort 保护（实测
+  `graceAbortLogs` 0，修复后 1）。现在 `Inflight { ctl, timer }` 进 `Set`，`armHideGrace(entry)` /
+  `clearGrace(entry)` 按请求绑定，回前台走 `clearAllGrace()`。
+- **摄像头启动即失败时给出恢复入口**（`CaptureView.vue`）：`retryable` 原先只看 `camLost`，
+  而「挂载时 `getUserMedia` 就失败」既不置 `camLost` 也不让 `submitFailed` 成立 ⇒ 界面只给文案、
+  没有任何可点的恢复入口（只能刷新，刷新丢掉内存里全部已采集文件）。现在新增 `camStartFailed`，
+  `retry()` 会重新取流并补注册逐帧循环（实测 `retryable=true gum=2 raf注册=1`）。
+- **段被丢弃必须留信号**（`src/lib/capture.ts:noteSegmentDrop()`）：三条丢弃分支原先静默
+  （跨代收段 `stale-epoch`、陈旧自发停止 `stale-self-stop`、同点重复取段 `already-taken`），
+  落库侧分不清「录制失败」与「这一步没有视频」。现在统一 `console.debug('[seg] 丢弃段（…）：…')`
+  并置 `segmentDropped`。**只加可观测性，不改丢弃语义**（丢弃仍发生，只是不再无声）。
+
+判据：`lib/r24-app-concurrency-verify.mjs` 的 7 条断言全部**成对**（修复后成立且 HEAD 版不成立）；
+判据自身的并发安全由 `lib/r24-concurrency-verify.mjs`（C1–C4）与体积判据的采样自洽守卫覆盖。
+
 ### ⚠️ 为什么 CSP 不可省略
 
 **Worker 有独立的全局作用域，主线程的 patch 覆盖不到它。** 实测（第 47 轮，服务器侧命中计数）：
