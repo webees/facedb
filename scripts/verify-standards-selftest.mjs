@@ -257,8 +257,8 @@ const M = [
   // 三个变异体分别打「解码方式」「适用规则集」「报告口径」—— 少任何一条都会让修复被静默回退或让读数误导读者。
   { id: 'M45', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '二进制内容退回整份跳过（W25E-01：含 ghp_ 的文件 exit 0 放行）',
     apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(
-      "  const src = buf.toString(isBinary ? 'latin1' : 'utf8')\n  if (isBinary) binaryScanned++\n  else scanned++",
-      "  if (isBinary) {\n    skippedBinary++\n    continue\n  }\n  const src = buf.toString('utf8')\n  scanned++")) },
+      "  const isBinary = buf.subarray(0, 8192).includes(0)\n",
+      "  const isBinary = buf.subarray(0, 8192).includes(0)\n  if (isBinary) {\n    skippedBinary++\n    continue\n  }\n")) },
   { id: 'M46', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '摘掉 BINARY_RULES 适用集（二进制会退回跑全部规则或全部不跑）',
     apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace('const BINARY_RULES = new Set(', 'const UNUSED_BINARY_RULES = new Set(')) },
   { id: 'M47', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '扫描面报告不再写明「二进制已扫凭据类规则」（读者会把干净误读成全规则扫过）',
@@ -307,6 +307,16 @@ const M = [
     apply: () => mutate('scripts/check-repo-config-hygiene-selftest.mjs', (t) => t.replace(
       /process\.exit\(fail > 0 \? 1 : skipped > 0 \? 2 : 0\)/,
       'process.exit(fail === 0 ? 0 : 1)')) },
+  // R25REV-N1（P2）：UTF-16LE 解码视图被摘掉 ⇒ UTF-16 保存的凭据文件整类漏检（新旧两侧都 exit 0 放行）。
+  { id: 'M61', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '摘掉 UTF-16LE 解码视图（UTF-16 保存的 .env 整类漏检）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(
+      /    views\.push\(\{ name: 'utf16le', text: buf\.toString\('utf16le'\) \}\)\n/,
+      '')) },
+  // R25REV-N2（P3）：A5 退回「无条件 ck + 另记一条 ⚠️」⇒ 零样本时同一断言行 ✅/⚠️ 并存，通过计数被垫高。
+  { id: 'M62', target: 'scripts/check-repo-config-hygiene.mjs', expect: 'S33', desc: 'A5 退回无条件 ck（零样本时 ✅ 与 ⚠️ 并存）',
+    apply: () => mutate('scripts/check-repo-config-hygiene.mjs', (t) => t.replace(
+      /\} else \{\n  ck\('public\/SHA256SUMS 登记的每项都与磁盘一致'[\s\S]*?\n\}/,
+      "}\nck('public/SHA256SUMS 登记的每项都与磁盘一致', mismatch.length === 0, `${sums.length} 项`)")) },
 ]
 
 let caught = 0

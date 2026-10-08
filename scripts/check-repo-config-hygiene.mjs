@@ -180,9 +180,15 @@ for (const s of sums) {
   const h = createHash('sha256').update(readFileSync(p)).digest('hex')
   if (h !== s.sha) mismatch.push(`${s.path}(${h.slice(0, 12)} != ${s.sha.slice(0, 12)})`)
 }
-ck('public/SHA256SUMS 登记的每项都与磁盘一致', mismatch.length === 0, mismatch.length ? mismatch.join('、') : `${sums.length} 项全部一致`)
-if (sumsText === null) unk('A5 哈希资产内容与登记值一致', `读不到 ${sumsPath}`)
-else if (sums.length === 0) unk('A5 哈希资产内容与登记值一致', '登记项 0 个 —— 没有样本，本次不构成结论')
+// R25REV-N2：这一条原先**无条件** ck（先记一次 ✅ 再记一次 ⚠️）—— 读不到或零样本时同一断言行
+// 同时出现 ✅ 与 ⚠️，把「通过」的计数垫高（退出码仍正确为 2，但读数会骗人）。改成三态互斥。
+if (sumsText === null) {
+  unk('A5 哈希资产内容与登记值一致', `读不到 ${sumsPath}`)
+} else if (sums.length === 0) {
+  unk('A5 哈希资产内容与登记值一致', '登记项 0 个 —— 没有样本，本次不构成结论')
+} else {
+  ck('public/SHA256SUMS 登记的每项都与磁盘一致', mismatch.length === 0, mismatch.length ? mismatch.join('、') : `${sums.length} 项全部一致`)
+}
 
 log('')
 log(`通过 ${pass}，失败 ${fail}，未判定 ${un}`)

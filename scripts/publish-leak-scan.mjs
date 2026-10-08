@@ -116,12 +116,14 @@ const SENSITIVE_IGNORED = /(^|\/)(\.env(\..+)?|\.npmrc|\.netrc|credentials|id_(r
 const hits = {}
 let scanned = 0
 let binaryScanned = 0
+let utf16Scanned = 0 // 额外解码出的 UTF-16LE 视图数（R25REV-N1）
 const voided = [] // 未判定：读不到或超上限 —— 绝不当成「已扫过且干净」
 
 // 【R25 修复 / W25E-01（P1）】二进制文件**不再整份跳过**。
 // 旧形态：`if (isBinary) { skippedBinary++; …fileOnly…; continue }` —— 只要前 8KB 里有一个 NUL，
 // 整份内容就不扫、不进 voided、不影响退出码。实测：把 `ghp_…` 令牌写进「保存时带了一个 NUL」的文件
-// （或 UTF-16 保存的 .env），闸门报 `P0 命中 0 处`、`✅ 无 P1 阻断项`、**exit 0** 放行 push；
+// （或 UTF-16 保存的 .env —— 该形态当时仍漏检，由 R25REV-N1 在收口期指出并已补 UTF-16LE 视图），
+// 闸门报 `P0 命中 0 处`、`✅ 无 P1 阻断项`、**exit 0** 放行 push；
 // 同令牌不带 NUL 的阴性对照则正确 exit 1。对 PUBLIC 仓库来说这是不可逆的凭据泄露。
 //
 // 新形态：二进制内容按 **latin1** 解码（逐字节保真）后照扫**凭据类规则** —— 令牌是 ASCII 形态，
@@ -152,24 +154,40 @@ for (const f of files) {
   // 内容判二进制：前 8KB 出现 NUL 字节（v2 前按扩展名白名单，`.pem`/`.bak`/`.log` 被静默跳过）。
   // 注意：判成二进制**只改变解码方式与适用规则集**，不改变「这份内容要不要扫」。
   const isBinary = buf.subarray(0, 8192).includes(0)
-  const src = buf.toString(isBinary ? 'latin1' : 'utf8')
   if (isBinary) binaryScanned++
   else scanned++
-  const lines = src.split('\n')
-  for (const r of RULES) {
-    if (r.fileOnly) {
-      if (r.fileOnly.test(f)) hits[r.id] = (hits[r.id] || []).concat([{ file: f, line: 0, text: '(文件名命中)' }])
-      continue
-    }
-    // 二进制内容只跑凭据类规则（见 BINARY_RULES 的说明）；文件名类规则上面已经跑过。
-    if (isBinary && !BINARY_RULES.has(r.id)) continue
-    const re = new RegExp(r.re.source, r.re.flags.includes('g') ? r.re.flags : r.re.flags + 'g')
-    for (let i = 0; i < lines.length; i++) {
-      re.lastIndex = 0
-      let m
-      while ((m = re.exec(lines[i])) !== null) {
-        if (r.keep && !r.keep(m[0])) continue
-        ;(hits[r.id] = hits[r.id] || []).push({ file: f, line: i + 1, text: m[0].slice(0, 90) })
+  // 【R25 收口 / R25REV-N1（P2）】同一份字节可以有多种文本解读 —— 漏检的常见形态不是「没扫」，
+  // 而是「只扫了一种解读」。UTF-16LE 保存的 .env 里每个字符后面都跟着 NUL（`g\0h\0p\0_\0…`），
+  // latin1 视图下任何凭据正则都匹配不上；旧形态与「只按内容判二进制」的新形态都 exit 0 放行。
+  // 故对 NUL 占比高的文件**再加一个 UTF-16LE 视图**，两个视图都跑规则（命中按视图去重后合并）。
+  const head = buf.subarray(0, 8192)
+  const nulCount = head.filter((b) => b === 0).length
+  const views = [{ name: isBinary ? 'latin1' : 'utf8', text: buf.toString(isBinary ? 'latin1' : 'utf8') }]
+  if (nulCount > 0 && nulCount * 4 >= head.length) {
+    views.push({ name: 'utf16le', text: buf.toString('utf16le') })
+    utf16Scanned++
+  }
+  const seen = new Set()
+  for (const view of views) {
+    const lines = view.text.split('\n')
+    for (const r of RULES) {
+      if (r.fileOnly) {
+        if (r.fileOnly.test(f)) hits[r.id] = (hits[r.id] || []).concat([{ file: f, line: 0, text: '(文件名命中)' }])
+        continue
+      }
+      // 二进制内容只跑凭据类规则（见 BINARY_RULES 的说明）；文件名类规则上面已经跑过。
+      if (isBinary && !BINARY_RULES.has(r.id)) continue
+      const re = new RegExp(r.re.source, r.re.flags.includes('g') ? r.re.flags : r.re.flags + 'g')
+      for (let i = 0; i < lines.length; i++) {
+        re.lastIndex = 0
+        let m
+        while ((m = re.exec(lines[i])) !== null) {
+          if (r.keep && !r.keep(m[0])) continue
+          const key = r.id + '\u0000' + f + '\u0000' + m[0]
+          if (seen.has(key)) continue // 两个视图对同一处命中只记一次
+          seen.add(key)
+          ;(hits[r.id] = hits[r.id] || []).push({ file: f, line: i + 1, text: m[0].slice(0, 90), view: view.name })
+        }
       }
     }
   }
@@ -191,7 +209,7 @@ const ORDER = ['P0', 'P1', 'P2']
 console.log('  === 公开仓库发布前敏感信息扫描 ===')
 console.log('  仓库：webees/facedb（PUBLIC）')
 console.log(
-  '  跟踪文件 ' + tracked.length + ' 个 + 未跟踪未忽略 ' + untracked.length + ' 个 = ' + files.length + ' 个：扫描文本 ' + scanned + ' 个，二进制 ' + binaryScanned + ' 个（已扫凭据类规则，定位类规则不适用），未判定 ' + voided.length + ' 个'
+  '  跟踪文件 ' + tracked.length + ' 个 + 未跟踪未忽略 ' + untracked.length + ' 个 = ' + files.length + ' 个：扫描文本 ' + scanned + ' 个，二进制 ' + binaryScanned + ' 个（已扫凭据类规则，定位类规则不适用），其中 ' + utf16Scanned + ' 个额外按 UTF-16LE 解码后复扫，未判定 ' + voided.length + ' 个'
 )
 console.log()
 for (const sev of ORDER) {

@@ -117,6 +117,13 @@ const CASES = [
     },
     expect: { code: 1, hit: ['BEARER', 1] },
   },
+  // R25REV-N1（P2）：UTF-16LE 保存的凭据文件 —— 每个字符后跟 NUL，latin1 视图下凭据正则匹配不到。
+  // 「只按内容判二进制」的新形态同样漏检（实测 exit 0 放行）；补 UTF-16LE 视图后必须命中。
+  {
+    name: 'm18 UTF-16LE 保存的 .env 里的令牌（latin1 视图漏检 ⇒ 放行）',
+    files: { 'keys/u16.env': Buffer.from('token=' + GH + '\n', 'utf16le') },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
   // ── 阴性：干净仓库必须 exit 0 且相关规则 0 命中 ───────────────────────
   {
     name: 'n1 干净仓库（版本串 10.13.0 / 私网 / 回环 / 普通代码）',

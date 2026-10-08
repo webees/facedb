@@ -626,8 +626,8 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
     if (g.includes(SSH_HDR)) miss.push('闸门源码里出现完整 OPENSSH 私钥头字面量（会自阻断）')
   }
   if (m) {
-    // 电池的覆盖面：17 阳性 + 3 阴性 + 未判定语义（读不到 / 扫描面为空）+ 提示区 + 自扫
-    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'm14', 'm15', 'm16', 'm17', 'n1 ', 'n2 ', 'n3 ', 'u1 ', 'u2 ', 'i1 ', 's1 自扫真实仓库']) {
+    // 电池的覆盖面：18 阳性 + 3 阴性 + 未判定语义（读不到 / 扫描面为空）+ 提示区 + 自扫
+    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'm14', 'm15', 'm16', 'm17', 'm18', 'n1 ', 'n2 ', 'n3 ', 'u1 ', 'u2 ', 'i1 ', 's1 自扫真实仓库']) {
       if (!m.includes(k)) miss.push(`电池缺场景 ${k.trim()}`)
     }
     // R25 / W25E-01（P1）：二进制**不许整份跳过** —— 旧形态「前 8KB 有 NUL 就 continue」实测放行含 ghp_ 的文件。
@@ -639,6 +639,11 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
     if (!/binaryScanned \+ ' 个（已扫凭据类规则，定位类规则不适用）/.test(g)) miss.push('闸门的扫描面报告没有写明「二进制已扫凭据类规则、定位类规则不适用」—— 读者会把干净误读成全规则扫过')
     if (/if \(isBinary\) \{\s*\n\s*skippedBinary\+\+/.test(g)) miss.push('闸门退回「二进制整份跳过」的旧形态（W25E-01）')
     if (!/process\.exit\(1\)/.test(m)) miss.push('电池失败时不 exit 1（会把失败读成通过）')
+    // R25REV-N1（P2）：同一份字节可以有多种文本解读 —— UTF-16LE 保存的 .env 里每个字符后跟 NUL，
+    // latin1 视图下凭据正则整类匹配不到（实测新旧两侧都 exit 0 放行）。断言「UTF-16LE 视图存在」。
+    if (!/utf16le/.test(g) || !/nulCount \* 4 >= head\.length/.test(g)) miss.push('闸门缺 UTF-16LE 解码视图（UTF-16 保存的凭据文件整类漏检，R25REV-N1 回归）')
+    if (!/utf16Scanned/.test(g)) miss.push('闸门的扫描面报告没有写明「其中 N 个额外按 UTF-16LE 解码后复扫」')
+    if (!/view: view\.name/.test(g)) miss.push('命中记录没有带上视图名（无法分辨命中来自哪种解读）')
     // LEAK_SCAN 覆盖通道：把旧版闸门喂进同一套电池，才能证明 m16/m17 有判别力（R25 的成对读数就靠它）
     if (!/process\.env\.LEAK_SCAN \|\|/.test(m)) miss.push('电池缺 LEAK_SCAN 覆盖通道（无法把旧版闸门喂进同一套用例做成对读数）')
     // R23REV-N6：闸门必须对「扫描面为空」判未判定（零样本不得判通过），且该分支不许只剩 exit 0
@@ -928,7 +933,7 @@ add({ id: 'S33', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/chec
     if (!/else if \(gaRules\.length === 0\) unk\('A1/.test(hy)) miss.push('A1 缺「规则数 0 ⇒ 未判定」分支')
     if (!/else if \(sections\.length === 0\) unk\('A2/.test(hy)) miss.push('A2 缺「段落数 0 ⇒ 未判定」分支')
     if (!/else if \(textish\.length === 0\) unk\('A3/.test(hy)) miss.push('A3 缺「文本类 0 个 ⇒ 未判定」分支')
-    if (!/else if \(sums\.length === 0\) unk\('A5/.test(hy)) miss.push('A5 缺「登记项 0 个 ⇒ 未判定」分支')
+    if (!/sums\.length === 0\)[\s\S]{0,40}unk\('A5/.test(hy)) miss.push('A5 缺「登记项 0 个 ⇒ 未判定」分支')
     if (!/const trackedOk = /.test(hy)) miss.push('缺 trackedOk 前提（列不出已跟踪文件时 A1/A2 不许判「全部零命中」）')
     // 健壮性：读文本要经守卫，不许裸 readFileSync 配置
     if (!/const readText = \(abs\) => \{/.test(hy)) miss.push('缺 readText 守卫')
@@ -936,6 +941,9 @@ add({ id: 'S33', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/chec
     // 退出码三态 + 汇总行
     if (!/process\.exit\(fail > 0 \? 1 : un > 0 \? 2 : 0\)/.test(hy)) miss.push('退出码不是三态（失败 1 / 未判定 2 / 通过 0）')
     if (!/未判定 \$\{un\}/.test(hy)) miss.push('汇总行未打印未判定数')
+    // R25REV-N2（P3）：A5 原先**无条件** ck（先 ✅ 再 ⚠️）—— 零样本/读不到时同一断言行两种结论并存，
+    // 通过计数被垫高。要求 ck 落在 else 分支里（三态互斥）。
+    if (!/\} else \{\s*\n\s*ck\('public\/SHA256SUMS 登记的每项都与磁盘一致'/.test(hy)) miss.push('A5 的 ck 不在 else 分支里（零样本时同一行会同时出现 ✅ 与 ⚠️，R25REV-N2 回归）')
   }
   if (st === null) miss.push('缺 scripts/check-repo-config-hygiene-selftest.mjs')
   else {
@@ -948,6 +956,7 @@ add({ id: 'S33', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/chec
     if (!/process\.env\.HYG_BASE_REF \|\| '[0-9a-f]{7,40}'/.test(st)) miss.push('阴性对照的基线必须钉在固定的历史提交（HYG_BASE_REF 默认值为提交哈希）')
     if (!/已经含有本轮修复/.test(st)) miss.push('缺「基线里已含修复 ⇒ 判未判定」的装置前提（否则锚错会被误报成修复无效）')
     if (!/noStack/.test(st)) miss.push('电池缺「不许裸栈」断言')
+    if (!/notHas: \['✅ public\/SHA256SUMS 登记的每项都与磁盘一致'\]/.test(st)) miss.push('电池缺 A5 的「零样本时不许出现 ✅ 行」断言（R25REV-N2 回归）')
     if (!/process\.exit\(fail > 0 \? 1 : skipped > 0 \? 2 : 0\)/.test(st)) miss.push('电池退出码必须是三态：失败 1 / 有跳过项 2（未判定） / 0')
   }
   const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''

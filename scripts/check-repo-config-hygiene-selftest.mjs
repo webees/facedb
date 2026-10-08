@@ -92,7 +92,8 @@ const SCENARIOS = [
   {
     name: 'h3 空真命题 A3/A5（public/SHA256SUMS 0 字节）',
     over: { 'public/SHA256SUMS': '' },
-    expect: { code: 2, has: ['A3 哈希登记的文本资产受保护', '文本类 0 个', 'A5 哈希资产内容与登记值一致', '登记项 0 个'] },
+    // R25REV-N2：零样本时同一断言行**不许**同时出现 ✅ 与 ⚠️（原先无条件 ck ⇒ 通过计数被垫高）
+    expect: { code: 2, has: ['A3 哈希登记的文本资产受保护', '文本类 0 个', 'A5 哈希资产内容与登记值一致', '登记项 0 个'], notHas: ['✅ public/SHA256SUMS 登记的每项都与磁盘一致'] },
   },
   {
     name: 'h4 读不到：.gitattributes 缺失',
