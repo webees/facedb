@@ -922,7 +922,7 @@ add({ id: 'S32', covers: ['scripts/verify-repo.mjs', 'scripts/check-dist-size-bu
   }
 } })
 
-add({ id: 'S33', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/check-repo-config-hygiene-selftest.mjs', 'package.json', '.github/workflows/ci.yml'], name: '配置卫生判据不许退化成空真命题（零样本判未判定、退出码三态、读不到不裸栈），且自检接进 CI', run() {
+add({ id: 'S33', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/check-repo-config-hygiene-selftest.mjs', 'scripts/fixtures/check-repo-config-hygiene.prefix-v1.mjs', 'package.json', '.github/workflows/ci.yml'], name: '配置卫生判据不许退化成空真命题（零样本判未判定、退出码三态、读不到不裸栈），且自检接进 CI', run() {
   const miss = []
   const hy = has('scripts/check-repo-config-hygiene.mjs') ? read('scripts/check-repo-config-hygiene.mjs') : null
   const st = has('scripts/check-repo-config-hygiene-selftest.mjs') ? read('scripts/check-repo-config-hygiene-selftest.mjs') : null
@@ -949,15 +949,28 @@ add({ id: 'S33', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/chec
   else {
     if (!/mkdtempSync\(path\.join\(tmpdir\(\), 'facedb-hyg-selftest-'\)\)/.test(st)) miss.push('电池必须为每个场景建独立临时仓库')
     if (!/HYG_SCAN/.test(st)) miss.push('电池缺 HYG_SCAN 覆盖通道（成对读数用）')
-    // 【R25 收口发现，P2】阴性对照的基线**不许锚在 HEAD**：修复提交一落地，HEAD 就变成「已经修好的
-    // 树」，n1 两条立刻全红，看起来像修复无效。R14 / R21 / R25 已三次踩同型坑 ⇒ 钉死固定提交并
-    // 在基线里检出修复形态时显式判未判定。
+    // 【R25 收口发现，P2】阴性对照的基线**不许锚在 HEAD、也不许现取 git 历史**：
+    //   · 锚 HEAD：修复提交一落地 HEAD 就变成「已经修好的树」⇒ 对照崩塌（R14 / R21 / R25 三次同型）；
+    //   · 现取历史（`git show <ref>:`）：CI 的 checkout 默认是浅克隆（fetch-depth 1），历史提交不在
+    //     本地 ⇒ 取不到、对照被跳过、自检以 exit 2 收尾（R25 PR #29 首跑实测）。
+    // ⇒ 修复前版本冻结成 `scripts/fixtures/` 下的快照，对克隆深度 / 网络 / 历史改写全部免疫。
     if (/'show', 'HEAD:scripts\/check-repo-config-hygiene\.mjs'/.test(st)) miss.push('阴性对照的基线不许锚在 HEAD（它会随修复提交移动）')
-    if (!/process\.env\.HYG_BASE_REF \|\| '[0-9a-f]{7,40}'/.test(st)) miss.push('阴性对照的基线必须钉在固定的历史提交（HYG_BASE_REF 默认值为提交哈希）')
+    if (/HYG_BASE_REF/.test(st)) miss.push('电池不许再依赖 git 历史取基线（浅克隆下取不到 ⇒ 对照被跳过）')
+    if (!/fixtures', 'check-repo-config-hygiene\.prefix-v1\.mjs'/.test(st)) miss.push('电池必须读冻结基线快照（scripts/fixtures/check-repo-config-hygiene.prefix-v1.mjs）')
+    if (!/process\.env\.HYG_BASELINE/.test(st)) miss.push('冻结基线必须可用 HYG_BASELINE 覆盖（成对读数用）')
     if (!/已经含有本轮修复/.test(st)) miss.push('缺「基线里已含修复 ⇒ 判未判定」的装置前提（否则锚错会被误报成修复无效）')
     if (!/noStack/.test(st)) miss.push('电池缺「不许裸栈」断言')
     if (!/notHas: \['✅ public\/SHA256SUMS 登记的每项都与磁盘一致'\]/.test(st)) miss.push('电池缺 A5 的「零样本时不许出现 ✅ 行」断言（R25REV-N2 回归）')
     if (!/process\.exit\(fail > 0 \? 1 : skipped > 0 \? 2 : 0\)/.test(st)) miss.push('电池退出码必须是三态：失败 1 / 有跳过项 2（未判定） / 0')
+    // 冻结基线快照本身也要守：它必须存在、必须是「修复前」的形态、必须带 provenance 头。
+    // 少了第一条 ⇒ 阴性对照整条被跳过；少了第二条 ⇒ 对照变成「两侧都成立」的恒真。
+    const FX = 'scripts/fixtures/check-repo-config-hygiene.prefix-v1.mjs'
+    if (!has(FX)) miss.push('冻结基线快照不存在（阴性对照会整条被跳过）')
+    else {
+      const fx = read(FX)
+      if (/trackedOk|function unk\(/.test(fx)) miss.push('冻结基线里出现了修复版标记 —— 它已不是「修复前」的形态，阴性对照失去意义')
+      if (!/provenance/.test(fx)) miss.push('冻结基线缺 provenance 头（无法复核它取自哪个提交）')
+    }
   }
   const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
   if (ci === '') miss.push('缺 .github/workflows/ci.yml')

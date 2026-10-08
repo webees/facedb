@@ -12,7 +12,7 @@
 // 用法：node scripts/check-repo-config-hygiene-selftest.mjs
 //   HYG_SCAN=<判据路径>  覆盖被测判据（成对读数用）
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -146,22 +146,29 @@ for (const s of SCENARIOS) {
 
 // 阴性对照：同一批空样本 fixture 喂给**修复前**那版判据，必须 exit 0（证明修复前是假通过）
 //
-// 【基线钉死，不许用 HEAD】R14 已经吃过一次同型亏：对照锚在 HEAD，修复提交一落地 HEAD 就变好，
-// 对照立刻变红，看起来像「修复无效」。R25 收口时又踩一次（`e580091` 提交后本电池的 n1 两条全红）。
-// 故基线钉在 R25 分支起点（= 修复前的主线 `a5514c3`），可用 `HYG_BASE_REF` 覆盖。
-const HYG_BASE_REF = process.env.HYG_BASE_REF || 'a5514c3'
-const headSrc = spawnSync('git', ['-C', PROJ, 'show', `${HYG_BASE_REF}:scripts/check-repo-config-hygiene.mjs`], { encoding: 'utf8' })
-if (headSrc.status !== 0 || !headSrc.stdout) {
-  console.log(`  ⏭ 阴性对照（取不到基线 ${HYG_BASE_REF} 版判据 —— 本次不构成结论）`)
+// 【基线用冻结快照，不许现取 git 历史，也不许锚在 HEAD】
+//   · 锚 HEAD：R14 吃过一次（修复提交一落地 HEAD 就变好，对照立刻变红 → 看起来像「修复无效」）；
+//     R25 收口时又踩一次（`e580091` 提交后本电池的 n1 两条全红）。
+//   · 现取历史（`git show <ref>:`）：R25 收口期 PR #29 首跑实测 —— CI 的 `actions/checkout@v5`
+//     默认**浅克隆**（fetch-depth 1），`a5514c3` 不在本地 ⇒ 现取失败、对照整条被跳过、整仓 exit 2
+//     （读数：`8 个场景 + 阴性对照 —— 通过 9，失败 0（1 个场景被跳过 —— 本次不构成通过）`）。
+// ⇒ 修复前版本已冻结为 `scripts/fixtures/check-repo-config-hygiene.prefix-v1.mjs`（带 provenance 头），
+//    对克隆深度 / 网络 / 历史改写全部免疫；S33 断言它存在且不含修复版标记。
+const HYG_BASELINE = process.env.HYG_BASELINE || path.join(HERE, 'fixtures', 'check-repo-config-hygiene.prefix-v1.mjs')
+let baseSrc = null
+let baseErr = null
+try { baseSrc = readFileSync(HYG_BASELINE, 'utf8') } catch (e) { baseSrc = null; baseErr = e.code || e.message }
+if (baseSrc === null) {
+  console.log(`  ⏭ 阴性对照（读不到冻结基线 ${HYG_BASELINE}：${baseErr} —— 本次不构成结论）`)
   skipped++
-} else if (/trackedOk|function unk\(/.test(headSrc.stdout)) {
-  // 装置前提：基线里不许已经有本轮修复（典型成因＝HYG_BASE_REF 被指向含修复的提交）。
+} else if (/trackedOk|function unk\(/.test(baseSrc)) {
+  // 装置前提：基线里不许已经有本轮修复（典型成因＝有人把冻结快照更新成了修复版）。
   // 否则 n1 的两条断言必然红，而这**不是**被测对象的问题 —— 显式判未判定，别把装置错算成缺陷。
-  console.log(`  ⏭ 阴性对照（基线 ${HYG_BASE_REF} 里已经含有本轮修复：零样本三态守卫 —— 对照锚错，本次不构成结论）`)
+  console.log(`  ⏭ 阴性对照（冻结基线里已经含有本轮修复：零样本三态守卫 —— 对照锚错，本次不构成结论）`)
   skipped++
 } else {
   const headFile = path.join(mkdtempSync(path.join(tmpdir(), 'facedb-hyg-head-')), 'check-repo-config-hygiene.mjs')
-  writeFileSync(headFile, headSrc.stdout)
+  writeFileSync(headFile, baseSrc)
   dirs.push(path.dirname(headFile))
   // A1 空样本：基线版仍打印空真命题的 ✅ 行（这才是缺陷本体）；整体退出码同时被 A4 连带成 1
   // —— W25-E 报的「A1 情形整体通过 5 失败 0 exit 0」在本工程实测不成立，故这里分开断言两件事。
@@ -169,13 +176,13 @@ if (headSrc.status !== 0 || !headSrc.stdout) {
   dirs.push(dA1)
   const rA1 = run(dA1, headFile)
   rec(/✅ .gitattributes 每条规则都命中/.test(rA1.out) && rA1.code === 1,
-    `n1 阴性对照（基线 ${HYG_BASE_REF} 版判据 + A1 空样本 ⇒ 仍打印空真命题的 ✅ 行）｜实得 exit=${rA1.code}、含空真命题行=${/✅ .gitattributes 每条规则都命中/.test(rA1.out)}`)
+    `n1 阴性对照（冻结基线版判据 + A1 空样本 ⇒ 仍打印空真命题的 ✅ 行）｜实得 exit=${rA1.code}、含空真命题行=${/✅ .gitattributes 每条规则都命中/.test(rA1.out)}`)
   // A3 空样本：基线版整体 exit 0（真正的假通过）
   const dA3 = makeRepo({ 'public/SHA256SUMS': '' })
   dirs.push(dA3)
   const rA3 = run(dA3, headFile)
   rec(rA3.code === 0 && /通过 \d+，失败 0/.test(rA3.out) && /0 项全部一致/.test(rA3.out),
-    `n1 阴性对照（基线 ${HYG_BASE_REF} 版判据 + A3 空样本 ⇒ 修复前假通过 exit 0）｜实得 exit=${rA3.code}、含「0 项全部一致」=${/0 项全部一致/.test(rA3.out)}`)
+    `n1 阴性对照（冻结基线版判据 + A3 空样本 ⇒ 修复前假通过 exit 0）｜实得 exit=${rA3.code}、含「0 项全部一致」=${/0 项全部一致/.test(rA3.out)}`)
 }
 
 cleanup(dirs)

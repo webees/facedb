@@ -2426,7 +2426,7 @@ docker compose build pocketbase && docker compose up -d --force-recreate pocketb
 
 ```bash
 npm run verify            # 仓库自检：资源指纹 / 迁移不变量 / 文案键对称 / 二进制指纹 / 关键常量
-npm run verify:selfcheck  # 变异自检：证明上面每一项断言真的有判别力（1 个阴性对照 + 32 个变异）
+npm run verify:selfcheck  # 变异自检：证明上面每一项断言真的有判别力（1 个阴性对照 + 34 个变异）
 npm run verify:hygiene    # 配置卫生：.gitattributes / .editorconfig 的零命中规则与哈希资产保护
 npm run verify:hygiene-selftest  # 上面这条的零样本与健壮性自检（9 场景 + 2 阴性对照）
 npm run typecheck         # vue-tsc --noEmit
@@ -2458,6 +2458,21 @@ npm run build             # 生产构建
 |---|---|---|
 | 闸门只扫**一种文本解读** | UTF-16LE 保存的 `.env` 里每个字符后面跟着 NUL（`g\0h\0p\0_\0…`），`latin1` 视图下凭据正则整类匹配不到 ⇒ 新旧两侧都 `exit 0` 放行。**「判成二进制」只解决「要不要扫」，不解决「按哪种解读扫」** | 对 NUL 占比高的文件**再加一个 UTF-16LE 视图**（`nulCount * 4 >= head.length`），两个视图都跑规则、命中按 `(规则, 文件, 文本)` 去重，报告行写明「其中 N 个额外按 UTF-16LE 解码后复扫」；电池加 `m18`（UTF-16LE 的 `.env` 必须被抓），S27 断言视图存在，M61 守住 |
 | 零样本时同一断言行 ✅ 与 ⚠️ 并存 | `check-repo-config-hygiene.mjs` 的 A5 原先**无条件** `ck()`（先记一次 ✅ 再记一次 ⚠️）⇒ 读不到 / 登记项 0 个时通过计数被垫高（退出码仍正确为 2，但读数骗人） | A5 改三态**互斥**（读不到 ⇒ 未判定 / 登记项 0 ⇒ 未判定 / 否则才 `ck`）；电池 `h3` 加 `notHas: ['✅ public/SHA256SUMS 登记的每项都与磁盘一致']`；S33 断言 ck 落在 `else` 分支里，M62 守住 |
+
+**:warning: 阴性对照的基线：冻结快照，不许现取 `git` 历史**（R25 收口期 PR #29 首跑实测）
+`scripts/check-repo-config-hygiene-selftest.mjs` 的阴性对照需要「修复前那版判据」。它先后试过两种取法，
+两种都出过事：
+
+| 取法 | 出的事 |
+|---|---|
+| `git show HEAD:scripts/check-repo-config-hygiene.mjs` | 修复提交一落地，`HEAD` 就是**已经修好的树** ⇒ 对照整体塌成「两侧都成立」（R14 时还导致修复器把刚提交的修复自动 revert 一次） |
+| `git show a5514c3:…`（钉固定提交） | CI 的 `actions/checkout@v5` 默认是**浅克隆**（`fetch-depth 1`），`a5514c3` 不在本地 ⇒ 取不到、阴性对照被跳过、自检以 `exit 2` 收尾（读数：`8 个场景 + 阴性对照 —— 通过 9，失败 0（1 个场景被跳过 —— 本次不构成通过）`） |
+
+现在修复前版本**冻结**在 `scripts/fixtures/check-repo-config-hygiene.prefix-v1.mjs`（带 `provenance` 头，
+写明取自哪个提交），对克隆深度 / 网络 / 历史改写全部免疫。守则：
+`S33` 断言该快照存在、**不含**修复版标记、带 `provenance`，并断言电池**不再**依赖 `git` 历史；
+`M59`/`M63`/`M64` 三条变异体分别守住「基线退回修复后的判据自己」「退回现取历史」「快照被更新成修复版」。
+判据在浅克隆里跑得起来是硬要求 —— 贡献者的默认克隆就是浅克隆。
 
 **:warning: 与工作房运行根的关系**：更强的审计判据（文档契约、判定器四关、边界电池等）
 依赖工作房运行根下的脚本与一次性 PocketBase 实例，不在本仓库内；每次修复的完整证据索引
