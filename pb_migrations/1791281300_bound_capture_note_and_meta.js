@@ -14,7 +14,9 @@
 //       { sessionId, deviceInfo(约 120 字符), videoWidth, videoHeight,
 //         perFile: [{ idx, pose, file, blurVariance, brightness, qualityScore, capturedAt, segmentOk }] }
 //     一次提交最多 16 个文件（5 个照片点 × 2 张 + 6 个视频点），单条 perFile 实测约 160~200 字节
-//     ⇒ 真实 meta 约 3.5 KB。取 64 KB 上限 = 约 18 倍余量：正常采集永远碰不到，
+//     ⇒ 真实 meta 量级是**几 KB**（R26 复核席实测 16 文件结构 2706 B；此前 run-lead 用另一种计数得 3006 B
+//     —— 这个数字随 deviceInfo 长度浮动，故这里只写量级、不写定值）。
+//     取 64 KB 上限 = 二十余倍余量：正常采集永远碰不到，
 //     而「100 KB 起步的放大写入」会被 400 挡掉。
 //   · note：本项目代码从不写它（全仓 grep `note` 在 src/ 只命中无关的 noteSegmentDrop），
 //     是后台手工字段。取 2000 字符 —— 比任何人工备注都宽，同时挡住「一次 POST 写 5000 字符」
