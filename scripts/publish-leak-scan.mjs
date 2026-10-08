@@ -171,11 +171,17 @@ function archiveViews(buf) {
     let n = 0
     while (off + 30 <= buf.length && buf[off] === 0x50 && buf[off + 1] === 0x4b && buf[off + 2] === 0x03 && buf[off + 3] === 0x04) {
       const method = buf.readUInt16LE(off + 8)
+      const flags = buf.readUInt16LE(off + 6)
       const compSize = buf.readUInt32LE(off + 18)
       const nameLen = buf.readUInt16LE(off + 26)
       const extraLen = buf.readUInt16LE(off + 28)
       const dataStart = off + 30 + nameLen + extraLen
       if (compSize === 0 || dataStart + compSize > buf.length) break // 流式写入（有 data descriptor）→ 放弃，交给调用方记未判定
+      // R26REV-2-02：原先不看 method，任何非 0 的方法都拿去 raw inflate —— `method=99`（WinZip AES）
+      // 的载荷被解出来后会被当成「已扫描且干净」。只认 0（stored）与 8（deflate），其余（含加密位
+      // bit0）一律抛错，让调用方记**未判定**（exit 2），绝不判「扫描过且干净」。
+      if (method !== 0 && method !== 8) throw new Error(`zip 条目用了未支持的压缩方法 ${method}（可能是加密/AES）`)
+      if ((flags & 0x0001) !== 0) throw new Error('zip 条目带加密标志（general purpose bit 0）')
       const raw = buf.subarray(dataStart, dataStart + compSize)
       const data = method === 0 ? raw : inflateRawSync(raw, { maxOutputLength: MAX_INFLATED_BYTES })
       out.push({ name: `unzip:${buf.subarray(off + 30, off + 30 + nameLen).toString('latin1')}`, text: data.toString('utf8') })

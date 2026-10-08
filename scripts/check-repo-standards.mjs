@@ -650,6 +650,18 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
     if (!/function archiveViews\(buf\)/.test(g) || !/gunzipSync/.test(g) || !/inflateRawSync/.test(g)) miss.push('闸门缺按魔数解压（gzip / zip(deflate) 里的凭据整类漏检，W26E-05）')
     if (!/archiveError/.test(g) || !/按魔数识别为压缩内容但解不开/.test(g)) miss.push('闸门对「识别出压缩魔数却解不开」没有判未判定（读不到 ≠ 干净）')
     if (!/MAX_INFLATED_BYTES/.test(g)) miss.push('闸门缺解压输出上限（zip bomb 会把闸门拖死）')
+    // R26REV-2-02：zip 必须校验压缩方法与加密位 —— 「解不开」要判未判定，绝不能当「已扫描且干净」。
+    if (!/zip 条目用了未支持的压缩方法/.test(g)) miss.push('zip 解压没校验压缩方法（method≠0/8 的载荷会被 raw inflate 解出并被当成已扫描，R26REV-2-02）')
+    if (!/flags & 0x0001/.test(g)) miss.push('zip 解压没查加密标志位（general purpose bit 0）')
+    if (!/u4 zip 条目用了未支持的压缩方法/.test(m)) miss.push('电池缺 u4（method=99 AES ⇒ exit 2 未判定）')
+    // 行为探针的读数解析必须抓**正式报告行**（R26REV-2-01/05：原先「第一行含 BEARER + 不校验格式」，
+    // 补一行普通日志就能把它骗成假绿/假红）。它读的正是本文件 ⇒ 断言串必须**运行时拼装**，
+    // 直接写完整字面量会被这一行自己满足（本项目已复现六次的同类坑）。
+    const self = has('scripts/check-repo-standards.mjs') ? read('scripts/check-repo-standards.mjs') : ''
+    const probeNeedle = ['/', '^\\s*[', '\u2705', '\u274c', '] P', '\\d BEARER'].join('')
+    if (!self.includes(probeNeedle)) miss.push('行为探针必须用「正式报告行」正则解析命中数（不许退回模糊查找，R26REV-2-01）')
+    const fuzzyNeedle = ['out.split(', "'\\n')", '.find((l) => l.includes(', "'BEARER'", '))'].join('')
+    if (self.includes(fuzzyNeedle)) miss.push('行为探针退回模糊查找（第一行含 BEARER 就取命中数）—— 两端都能被一行普通日志欺骗')
     if (!/isValidUtf8\(buf\)/.test(g) || !/legacy:\$\{enc\}/.test(g) || !/'gbk', 'shift_jis', 'big5'/.test(g)) miss.push('闸门缺传统 CJK 编码视图（GBK/Shift-JIS/Big5 里的全角令牌整类漏检，W26E-07）')
     if (!/跨行/.test(g) || !/new RegExp\(r\.re\.source\)\.test\(cm\[0\]\.split\('\\n'\)\[0\]\)/.test(g)) miss.push('闸门缺「令牌被换行拆开」的跨行扫描（或缺「单行部分已构成命中就不重复计数」的守卫，W26E-09）')
     // 断言必须钉在**报告行那个表达式**上：只查「文件里有没有这句话」会被 BINARY_RULES 上方那段说明注释满足
@@ -702,15 +714,15 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
       sh('git', ['add', '-A'], { cwd: probeDir })
       const r = spawnSync('node', [path.join(ROOT, GATE)], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, LEAK_SCAN_ROOT: probeDir } })
       const out = (r.stdout || '') + (r.stderr || '')
-      const bearerLine = out.split('\n').find((l) => l.includes('BEARER')) || ''
-      const hits = Number((bearerLine.match(/BEARER/) && bearerLine.match(/命中 (\d+) 处/) || [])[1] || 0)
-      if (r.status !== 1 || hits !== 2) miss.push(`行为探针不成立：UTF-16BE 与 gzip 里的 ghp_ 令牌应各命中 1 处、共 2 处，实得 exit=${r.status} 命中 ${hits} 处 —— 多解读视图 / 压缩解压这条机制实际没工作，哪怕它的代码还写着`)
+      const bearerLine = (out.match(/^\s*[✅❌] P\d BEARER\s.*?命中 (\d+) 处.*$/m) || [])[0] || ''
+      const hits = Number((bearerLine.match(/命中 (\d+) 处/) || [])[1] || 0)
+      if (r.status !== 1 || hits !== 2) miss.push(`行为探针不成立：UTF-16BE 与 gzip 里的 ghp_ 令牌应各命中 1 处、共 2 处，实得 exit=${r.status} 命中 ${hits} 处（报告行 ${bearerLine ? '「' + bearerLine.trim() + '」' : '缺失'}）—— 多解读视图 / 压缩解压这条机制实际没工作，哪怕它的代码还写着`)
     } catch (e) {
       miss.push(`行为探针没跑起来（${e.message}）—— 本次不构成「闸门能抓 UTF-16 / 压缩凭据」的结论`)
     } finally {
       rmSync(probeDir, { recursive: true, force: true })
     }
-  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（整份文件 NUL）且**二进制里凭据类规则照扫**（禁扩展名白名单回退 / 禁整份跳过）· 多解读视图全套（UTF-16LE/BE × 对齐、UTF-32 门控、手写解码、容错、传统 CJK、压缩解压 + 未判定、归一化、跨行扫描去重）· 未判定 exit 2（读不到 / 扫描面为空 / 压缩内容解不开）· 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 31 阳性 / 4 阴性 / 3 未判定 / 1 提示区（v3 场景 m19–m31 逐个在位）· **行为探针（UTF-16BE 令牌真跑一遍闸门）** · npm/CI 接线 · 文档口径一致' }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（整份文件 NUL）且**二进制里凭据类规则照扫**（禁扩展名白名单回退 / 禁整份跳过）· 多解读视图全套（UTF-16LE/BE × 对齐、UTF-32 门控、手写解码、容错、传统 CJK、压缩解压 + 未判定、归一化、跨行扫描去重）· 未判定 exit 2（读不到 / 扫描面为空 / 压缩内容解不开）· 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 31 阳性 / 4 阴性 / 4 未判定（含 zip 方法）/ 1 提示区（v3 场景 m19–m31、u3/u4 逐个在位，汇总行现算）· **行为探针（UTF-16BE 令牌真跑一遍闸门）** · npm/CI 接线 · 文档口径一致' }
 } })
 
 // ── S28 仓库判据的变异自检接线与判别力（R22） ──────────────────────────

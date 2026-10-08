@@ -309,6 +309,26 @@ const CASES = [
     },
     expect: { code: 2, contains: '未判定' },
   },
+  // u4（R26REV-2-02）：zip 里出现未支持的压缩方法（method=99 = WinZip AES）⇒ 不得当「已扫描且干净」。
+  // 修复前 v3 会拿 AES 载荷去 raw inflate，解出来就记成「扫过了、没问题」并把 exit 判成 1/0。
+  {
+    name: 'u4 zip 条目用了未支持的压缩方法（method=99 AES）→ exit 2 未判定',
+    files: {
+      'assets/aes.zip': (() => {
+        const nm = Buffer.from('inner.env', 'utf8')
+        const body = deflateRawSync(Buffer.from('token=' + GH + '\n'))
+        const lfh = Buffer.alloc(30)
+        lfh.writeUInt32LE(0x04034b50, 0)
+        lfh.writeUInt16LE(20, 4)
+        lfh.writeUInt16LE(99, 8) // method = 99（AES）
+        lfh.writeUInt32LE(body.length, 18)
+        lfh.writeUInt32LE(body.length, 22)
+        lfh.writeUInt16LE(nm.length, 26)
+        return Buffer.concat([lfh, nm, body])
+      })(),
+    },
+    expect: { code: 2, contains: '未判定' },
+  },
   // ── 提示区：被忽略的敏感文件必须可见 ─────────────────────────────────
   {
     name: 'i1 被忽略的 .env.local 必须出现在提示区',
@@ -383,5 +403,5 @@ const undecidedCases = CASES.filter((c) => /^u\d/.test(c.name)).length
 const hints = CASES.filter((c) => /^i\d/.test(c.name)).length
 console.log(
   `  ✅ 全部通过：${positives} 个阳性形态全部被抓（含 R25 的二进制旁路、R26 的 UTF-16BE/UTF-32/窗口/对齐/gzip/zip/零宽/NFKC/GBK/折行）、` +
-    `${negatives} 组阴性对照零误报、未判定语义（读不到 / 扫描面为空 / 压缩内容解不开）${undecidedCases} 个场景、提示区 ${hints} 个场景、自扫不阻断`
+    `${negatives} 组阴性对照零误报、未判定语义（读不到 / 扫描面为空 / 压缩内容解不开 / 不支持的压缩方法）${undecidedCases} 个场景（共 ${CASES.length} 个）、提示区 ${hints} 个场景、自扫不阻断`
 )

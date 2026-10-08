@@ -375,6 +375,10 @@ const M = [
     apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace('  if (byDesign) skippedByDesign++\n  else undetermined++', '  if (byDesign) skippedByDesign++')) },
   { id: 'M79', target: 'scripts/verify-repo.mjs', expect: 'S35', desc: '摘掉「有样本为 0 的未执行项 ⇒ 不构成通过」的判定分支（**锚点非唯一**：该串在文件里有两处，必须全局替换，否则只改第一处、S35 照样绿 —— R24REV-N3 同族）',
     apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace(/if \(undetermined > 0\) \{/g, 'if (false) {')) },
+  { id: 'M80', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: 'zip 不再校验压缩方法（method=99 AES 的载荷被 raw inflate 解出即当「已扫描且干净」）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace("      if (method !== 0 && method !== 8) throw new Error(`zip 条目用了未支持的压缩方法 ${method}（可能是加密/AES）`)\n", '')) },
+  { id: 'M81', target: 'scripts/check-repo-standards.mjs', expect: 'S27', desc: '行为探针退回「第一行含 BEARER 的文本 + 命中数」（两端都能被一行普通日志欺骗）',
+    apply: () => mutate('scripts/check-repo-standards.mjs', (t) => t.replace("const bearerLine = (out.match(/^\\s*[✅❌] P\\d BEARER\\s.*?命中 (\\d+) 处.*$/m) || [])[0] || ''", "const bearerLine = out.split('\\n').find((l) => l.includes('BEARER')) || ''")) },
 ]
 
 let caught = 0
