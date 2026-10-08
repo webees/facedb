@@ -3,6 +3,9 @@
 // 匿名无法 PATCH；若为此放开 updateRule，等于允许任何人修改任意记录。
 // 改为内存缓存 + 末次一次性 POST：只需 createRule，且不会出现「半条记录」。
 import { t } from './i18n'
+// R27：幂等键的派生与「重复批次」判别式抽到 submit-key.ts —— 它们是纯函数，判据要能直接加载它们
+// 做行为断言（留在本文件里只能正则断言文本在位，实测两个未覆盖变异都能骗过判据，见该文件头注释）。
+import { isDuplicateBatch, submitIdOf } from './submit-key'
 
 export type CaptureMeta = {
   yaw: number
@@ -102,13 +105,14 @@ function isNetworkError(e: unknown): boolean {
   )
 }
 
-// 关于重试与重复记录（已知取舍，非疏漏）：
-// 5xx 会重试 3 次。若服务端其实已写入、只是响应在途中丢失，重试会再写一条，
-// 于是同一次识别可能产生两条记录。之所以不为此加幂等机制：
-//   · captures 没有可用于幂等的唯一约束（PocketBase 的 text 字段不建唯一索引）；
-//   · 「提交前查重」需要多一次查询，且查重自身也可能失败，反而更脆；
-//   · 两条完整记录 远好于 一条都没有 —— 本项目要保证的是人脸信息不丢。
-// 文件名带毫秒时间戳，因此重复记录之间也不会互相覆盖。
+// 关于重试与重复记录（R27 起有幂等键，取舍已变，旧口径见 git 历史）：
+// 5xx / 响应丢失会重试（内层 3 次 × 外层多轮）。首次写入成功但响应丢失时，重试会再写一遍 ——
+// 这正是 R27 的 W27A-01/W27A-05 与 W27C-06 实测到的形态：同一批最多 9 条记录（16 文件批
+// 线性外推 144 个文件）。现在 uploadSession 会随表单提交 `submit_id`（由冻结批次内容确定性
+// 派生），服务端有唯一索引，重复批次被 400 挡下，客户端按响应**形态**把它认成
+// 「这一批已经写进去了」（见 isDuplicateBatch 与 post 的 allowAlreadyWritten）。
+// 残留面：**不同批**但内容逐字节相同的两次采集仍会各写一条 —— 那是正确语义（用户真的采了两次）。
+// 之所以不用「提交前先查重」：多一次查询，且查重自身也可能失败，反而更脆。
 
 // 在途请求的控制器 + 一条独立于定时器的中断路径。
 //
@@ -209,7 +213,15 @@ function hookHideAbort(): void {
  * @param deadline 整批提交的截止时刻（Date.now() 口径）。由调用方传入，
  *                 使内层重试与外层多轮重试共享同一份预算；缺省时按单轮预算计。
  */
-async function post(build: () => FormData, what: string, deadline: number): Promise<void> {
+async function post(
+  build: () => FormData,
+  what: string,
+  deadline: number,
+  // R27：本批带幂等键时，把「唯一索引冲突」当成功。语义上它是「这一批已经写进去了」，
+  // 与「写入失败」相反 —— 若按 4xx 永久错误抛出去，界面会显示上传失败并给出重试入口，
+  // 用户再点一次仍然失败（唯一索引会一直挡），而库里其实已经有完整记录了。
+  allowAlreadyWritten = false,
+): Promise<void> {
   // 入口就记下本次实际拿到的预算：错误消息必须按实际预算说话，
   // 不能引用模块常量 —— 调用方给的 deadline 可能只剩余很少时间（如第二版预算的尾巴）。
   const budgetMs = Math.max(0, deadline - Date.now())
@@ -246,6 +258,12 @@ async function post(build: () => FormData, what: string, deadline: number): Prom
         return
       }
       const body = await res.text().catch(() => '')
+      if (allowAlreadyWritten && res.status === 400 && isDuplicateBatch(body)) {
+        // 唯一索引挡住的是**同一批**的重复提交（submit_id 由冻结批次内容派生）⇒ 这一批
+        // 已经在库里了。不重试、不报错：重试也只会再撞一次同一个索引。
+        clearGrace(entry)
+        return
+      }
       const msg = `${what}: ${res.status} ${body.slice(0, 150)}`
       // 4xx 是请求本身的问题，重试只会白白等待 —— 但 429（限流）与 408（请求超时）例外：
       // 它们的语义是「同一个请求稍后可以成功」，属暂时性错误，必须走退避重试。
@@ -358,13 +376,17 @@ export async function uploadSession(
     throw new Error(`提交批次与元信息不一致（${batch.length} 个文件 / ${meta.perFile.length} 条 perFile）`)
   }
 
+  // R27：幂等键由上面这份冻结的 batch 派生（不是每轮随机）⇒ 同一批的每次重试同值。
+  const submitId = submitIdOf(sessionId, batch)
+
   await post(() => {
     const form = new FormData()
     form.append('session_id', sessionId)
+    form.append('submit_id', submitId)
     for (const f of batch) {
       form.append(f.kind === 'video' ? 'video' : 'photos', f.blob, f.filename)
     }
     form.append('meta', JSON.stringify(meta))
     return form
-  }, t('uploadFailed'), deadline)
+  }, t('uploadFailed'), deadline, true)
 }
