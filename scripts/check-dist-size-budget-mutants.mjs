@@ -14,7 +14,7 @@
 //
 // 用法：npm run verify:size-selftest        （需先 npm run build）
 //      SIZE_SRC_DIST=<其他产物目录> node scripts/check-dist-size-budget-mutants.mjs
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import path from 'node:path'
@@ -143,6 +143,17 @@ const variants = [
     mutate: (dir) => {
       rmSync(path.join(dir, 'dist'), { recursive: true, force: true })
       return [`dist 存在 = ${existsSync(path.join(dir, 'dist'))}`]
+    },
+  },
+  {
+    id: 'm6-symlink-nm',
+    desc: '把 node_modules 做成符号链接（R23 实测：软链会改变 chunk 名）→ 必须 exit 2 未判定',
+    expect: { rc: 2, fails: [], undecided: ['N0'] },
+    mutate: (dir) => {
+      const nm = path.join(dir, 'node_modules')
+      // 悬空软链即可：判据只 lstat 它是不是链接，不解析内容
+      symlinkSync(path.join(os.tmpdir(), 'facedb-deps-not-real'), nm)
+      return [`node_modules 是符号链接 = ${lstatSync(nm).isSymbolicLink()}（指向不存在的目标也算）`]
     },
   },
 ]

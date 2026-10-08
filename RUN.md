@@ -474,6 +474,15 @@ CSP 里还会追加 `https://pb.example.com wss://pb.example.com`。因此**任�
 仓库 `.env`（被 `.gitignore` 忽略，当前 `PUBLIC_PB_URL=` 为空）一旦被本地填值，清单类判据会**整体变红**而不是报「环境不同」。
 `scripts/check-dist-size-budget.mjs` 对此的处理是：**检测到 `PUBLIC_PB_URL` 非空即判未判定（exit 2），绝不判通过**。
 
+**⚠️ 构建目录里的 `node_modules` 必须是真实目录，不能是符号链接**（R23 实测，运行根 `evidence/R23-verify-ci-clean.log`）：
+同一棵树、同一条 `npm run build`，只把 `node_modules` 从真实目录换成指向它的软链，
+产物就从 `index.3034178f9f.js` / `lib-vue.8351304052.js` / `m.79c0ab86b6.js`
+变成 `index.59ab2f4658.js` / `lib-vue.41bac71c26.js` / `c.283e6ba8c2.js`（在同一软链目录内**可复现**，
+但与真实目录构建的结果不可比）。意义有两层：一是要隔离副本时用 `cp -al`（硬链副本 = 真实目录）或 `cp -R`，
+**别用 `ln -s`**；二是软链里跑 `npm ci` / `install` / `prune` 会穿透软链把工程根的依赖树重实化
+（R23 事故 01：`node_modules/.bin` 被削到 6 项、`vue-tsc` 软链消失）。
+`scripts/check-dist-size-budget.mjs` 对此的处理同样**判未判定（exit 2），绝不判通过**，并有对应变异体 `m6-symlink-nm`。
+
 
 **关键认识**：`dist` 只有 27.4MB（13 个文件），**镜像的大头从来不是产物，而是「托管它的服务器」**。
 

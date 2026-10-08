@@ -57,7 +57,7 @@
 // 用法：npm run verify:size                    （需先 npm run build）
 //      SIZE_ROOT=<其他根> node scripts/check-dist-size-budget.mjs   （变异自检用）
 //      node scripts/check-dist-size-budget.mjs --dist <产物目录>
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
@@ -174,6 +174,31 @@ if (PB_URL !== '') {
       '清单类基线隐含绑定构建环境，本次未判定（exit 2），不判通过也不判失败',
   )
   process.exit(c.report())
+}
+
+// (3) node_modules 必须是真实目录（不能是符号链接）：R23 实测 —— 同一棵树、同一命令，
+//     只把 node_modules 从真实目录换成指向它的软链，构建产物就从
+//     `index.3034178f9f.js` / `lib-vue.8351304052.js` / `m.79c0ab86b6.js` 变成
+//     `index.59ab2f4658.js` / `lib-vue.41bac71c26.js` / `c.283e6ba8c2.js`（差值不在体积上，
+//     而在解析结果）。此时文件名与体积基线都不可比：判红会把「构建方式不同」误报成产物漂移。
+//     要隔离副本请用 `cp -al`（硬链副本 = 真实目录）或 `cp -R`，不要用 `ln -s`。
+{
+  const NM = path.join(ROOT, 'node_modules')
+  let isLink = false
+  try {
+    isLink = lstatSync(NM).isSymbolicLink()
+  } catch {
+    // 没有 node_modules 目录（例如自检在只含 dist/ 的临时树上跑）：不构成前提违反
+  }
+  if (isLink) {
+    c.un(
+      'N0 环境前提：node_modules 是真实目录',
+      `实测 ${NM} 是符号链接 —— 软链会改变构建解析结果（chunk 名 m.79c0ab86b6.js → ` +
+        'c.283e6ba8c2.js、lib-vue 哈希也随之一变），清单与体积基线在同一软链目录内可复现、' +
+        '但与真实目录构建的结果不可比 → 本次未判定（exit 2）。请在带真实 node_modules 的检出里构建',
+    )
+    process.exit(c.report())
+  }
 }
 
 // ── N1 零样本纪律：产物目录不存在或为空 → 未判定，绝不判通过 ──
