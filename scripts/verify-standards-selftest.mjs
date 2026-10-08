@@ -150,6 +150,16 @@ const M = [
     apply: () => { rmSync(join(WT, '.github/PULL_REQUEST_TEMPLATE.md'), { force: true }) } },
   { id: 'M27', target: 'scripts/check-repo-standards.mjs', expect: 'S29', desc: '判据里新增一个大小写写错的读取点（macOS 上解析得到、Linux 上 ENOENT）',
     apply: () => mutate('scripts/check-repo-standards.mjs', (t) => t + "\nconst _r22caseProbe = () => has('.github/issue_template/bug_report.yml')\n") },
+  // 【R23-LEAD-05】本地一键与 CI 步骤对齐：M28–M31 分别打「本地少一步」「CI 多一步」
+  // 「顺序错（构建跑到依赖 dist 的判据之后）」「本地凭空多一步」四种坏状态。
+  { id: 'M28', target: 'package.json', expect: 'S30', desc: 'verify:ci 少了一步 CI 真在跑的判据（本地一键静默不完整）',
+    apply: () => mutate('package.json', (t) => t.replace(' && npm run verify:notices &&', ' &&')) },
+  { id: 'M29', target: '.github/workflows/ci.yml', expect: 'S30', desc: 'CI 里新增一个 verify:ci 没有的 npm 步骤（本地一键与 CI 分叉）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t + '\n      - name: 探针步骤（M29）\n        run: npm run preview\n') },
+  { id: 'M30', target: 'package.json', expect: 'S30', desc: 'verify:ci 里构建与体积判据的顺序被调换（体积判据会判未判定）',
+    apply: () => mutate('package.json', (t) => t.replace('npm run build && npm run verify:size', 'npm run verify:size && npm run build')) },
+  { id: 'M31', target: 'package.json', expect: 'S30', desc: 'verify:all 里塞进一个 CI 侧不存在的步骤（本地捷径凭空长出步骤）',
+    apply: () => mutate('package.json', (t) => t.replace(/"verify:all": "[^"]*"/, (s) => s.slice(0, -1) + ' && npm run preview"')) },
 ]
 
 let caught = 0

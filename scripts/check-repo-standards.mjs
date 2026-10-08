@@ -674,6 +674,57 @@ add({ id: 'S29', covers: ['scripts/check-repo-standards.mjs', 'scripts/verify-re
   return { ok: miss.length === 0, detail: miss.length ? miss.slice(0, 4).join('；') : `${SCAN.length} 个判据脚本 · ${scanned} 个读取点全部与跟踪名逐字符一致` }
 } })
 
+// ── S30 本地一键必须与 CI 步骤逐条对齐（R23） ────────────────────────────
+// 触发事故（R23-LEAD-05，实测）：`verify:all` 自称「本地一键」，但它是一个**陈旧聚合**——
+// 缺 `typecheck`、缺 `verify:notices`、缺 `verify:size`，且从不含任何变异自检电池；
+// 而 CI 实际跑 16 步（含构建、体积/许可判据、5 个自检电池）。于是「本地 `verify:all` 全绿」
+// 与「CI 全绿」之间隔着一大片没人跑的面 —— 这与 R22-21（本地绿、CI 红）同族：
+// **假通过的来源可以是「本地那条捷径本身不完整」**，而不是任何一条断言写错。
+// 守两件事：
+//  ① 存在 `verify:ci`，其 npm 步骤序列与工作流里出现的 `npm run X` 步骤**同集同序**；
+//  ② `verify:all` 的步骤集合必须是 `verify:ci` 的子集（允许存在更小的本地捷径，但不许凭空多步骤）。
+// 为什么要求「同序」：构建必须先于一切依赖 dist 的判据（体积/许可/自检电池），顺序错了会判未判定。
+add({ id: 'S30', covers: ['package.json', '.github/workflows/ci.yml'], name: '本地一键与 CI 步骤逐条对齐（verify:ci 同集同序，verify:all 为其子集）', run() {
+  const miss = []
+  let pkg = {}
+  try { pkg = has('package.json') ? JSON.parse(read('package.json')) : {} } catch { return { ok: false, detail: 'package.json 不是合法 JSON' } }
+  const scripts = pkg.scripts || {}
+  const wf = tracked.filter((f) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(f))
+  if (!wf.length) return { ok: false, detail: '没有跟踪任何工作流文件（判据无从对齐）' }
+  // CI 侧的 npm 步骤（去重、保持首次出现顺序）；`npm ci` 不是 `npm run`，天然不入集
+  const ciSteps = []
+  for (const f of wf) {
+    if (!has(f)) { miss.push(`${f} 已跟踪但工作区缺失`); continue }
+    for (const m of read(f).matchAll(/^\s*run:\s*(.+)$/gm)) {
+      for (const n of m[1].matchAll(/\bnpm run ([A-Za-z0-9:_-]+)/g)) if (!ciSteps.includes(n[1])) ciSteps.push(n[1])
+    }
+  }
+  const chain = (name) => (scripts[name] || '').split('&&').map((s) => s.trim())
+    .map((s) => (s.match(/^npm run ([A-Za-z0-9:_-]+)$/) || [])[1]).filter(Boolean)
+  const ciLocal = chain('verify:ci')
+  if (!scripts['verify:ci']) miss.push('package.json 缺少 verify:ci（与 CI 逐条对齐的一键）')
+  else {
+    const missing = ciSteps.filter((s) => !ciLocal.includes(s))
+    const extra = ciLocal.filter((s) => !ciSteps.includes(s))
+    if (missing.length) miss.push(`verify:ci 少了 CI 在跑的步骤：${missing.join('、')}`)
+    if (extra.length) miss.push(`verify:ci 多了 CI 不跑的步骤：${extra.join('、')}`)
+    if (!missing.length && !extra.length && ciLocal.join(',') !== ciSteps.join(',')) {
+      miss.push(`verify:ci 与 CI 顺序不一致（构建必须先于依赖 dist 的判据）`)
+    }
+  }
+  const allLocal = chain('verify:all')
+  if (!scripts['verify:all']) miss.push('package.json 缺少 verify:all（本地快速一键）')
+  else {
+    const ghosts = allLocal.filter((s) => !ciLocal.includes(s))
+    if (ghosts.length) miss.push(`verify:all 里有 CI 侧不存在的步骤：${ghosts.join('、')}`)
+  }
+  return {
+    ok: miss.length === 0,
+    detail: miss.length ? miss.slice(0, 4).join('；')
+      : `${wf.length} 个工作流 · CI 侧 ${ciSteps.length} 个 npm 步骤 · verify:ci 同集同序 · verify:all 为 ${allLocal.length} 步子集`,
+  }
+} })
+
 for (const c of CHECKS) {
   let r
   try { r = c.run() } catch (e) { r = { ok: false, detail: '断言抛错：' + e.message } }
