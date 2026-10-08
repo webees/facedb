@@ -7,8 +7,10 @@
 //  3. S23 原先 spawn 运行根的 check-runmd-doc.mjs（D0–D19）→ 仓库内改为可独立机检的等价物：
 //     RUN.md 里提到的每个文件路径必须真实存在（这是 D0–D19 里与「文档与源码一致」最相关、
 //     且不依赖运行根的那部分；其余文本口径检查留在运行根）。
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { gzipSync } from 'node:zlib'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -602,7 +604,7 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
     // 这里禁的是「拿本机绝对路径当扫描根」，即 /Users/<真用户名>/<真实目录>。
     if (/\/Users\/[A-Za-z0-9_.-]+\/(Desktop|__GITHUB__|Projects|Documents)/.test(g)) miss.push('闸门里出现硬编码的本机绝对路径')
     // 修复不许回退：内容判二进制（NUL 字节），且不许再出现扩展名白名单
-    if (!/subarray\(0,\s*8192\)\.includes\(0\)/.test(g)) miss.push('闸门没有按内容判二进制（前 8KB NUL 字节）—— 会退回按扩展名跳过 .pem/.bak')
+    if (!/buf\.includes\(0\)/.test(g)) miss.push('闸门没有按内容判二进制（整份文件的 NUL 字节；只看前 8KB 会让「前半 ASCII 后半 UTF-16」整类漏检，W26E-03）')
     if (/TEXT_EXT/.test(g)) miss.push('闸门里又出现了扩展名白名单 TEXT_EXT（R22 已删）')
     if (/st\.size > 2 \* 1024 \* 1024/.test(g)) miss.push('闸门又按 2MB 静默跳过（R22 已改为全量扫 + 超上限判未判定）')
     if (!/LEAK_MAX_BYTES/.test(g)) miss.push('闸门没有 LEAK_MAX_BYTES 扫描上限通道')
@@ -631,20 +633,38 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
       if (!m.includes(k)) miss.push(`电池缺场景 ${k.trim()}`)
     }
     // R25 / W25E-01（P1）：二进制**不许整份跳过** —— 旧形态「前 8KB 有 NUL 就 continue」实测放行含 ghp_ 的文件。
-    // 断言的是「判二进制之后仍然扫」：解码用 latin1，且凭据类规则集存在、定位类规则被显式排除（口径可见）。
-    if (!/isBinary \? 'latin1' : 'utf8'/.test(g)) miss.push('闸门没有对二进制内容按 latin1 解码后照扫（W25E-01 回归：二进制整份跳过会放行凭据）')
+    // R26 / W26E-01…E-09（P1/P2）：v2 的形态是「只扫了一种解读」（只加了一个 UTF-16LE 视图，且要
+    // 前 8KB 的 NUL 密度够高、按字节 0 对齐、不解压）。下面这些断言把 v3 的**每一块机制**钉住：
+    // 少任何一块，对应的漏检形态就会回来（电池的 m19–m31 是行为侧的证据，这里是结构侧）。
+    if (!/const \{ views, archiveError \} = viewsFor\(buf\)/.test(g)) miss.push('主扫描循环没有走 viewsFor（多解读视图）—— 会退回「只扫一种解读」的 v2 形态')
+    if (!/if \(isBinary && !view\.decoded && !BINARY_RULES\.has\(r\.id\)\) continue/.test(g)) miss.push('规则适用面没有按**视图**判（定位类规则会退回「对整份二进制一律不跑」，UTF-16 里的公网 IP 会漏；或反过来对逐字节 latin1 视图跑，带来假红）')
     if (!/const BINARY_RULES = new Set\(/.test(g)) miss.push('闸门缺 BINARY_RULES（二进制适用规则集）—— 二进制内容会退回整份跳过')
+    if (!/function decodeUtf16be\(/.test(g)) miss.push('闸门缺手写 UTF-16BE 解码（`Buffer` 不认 utf16be，会退回只认 UTF-16LE）')
+    if (!/function decodeUtf32\(b, be\)/.test(g)) miss.push('闸门缺手写 UTF-32 解码（`Buffer` 不认 utf32le，直接用会抛 ERR_UNKNOWN_ENCODING 把闸门整份崩掉）')
+    if (/toString\('utf32le'\)|toString\('utf16be'\)/.test(g)) miss.push('闸门把 utf32le/utf16be 当成了 Buffer 支持的编码（Node 只支持 utf16le，这样写会崩）')
+    if (!/for \(const off of \[0, 1\]\)/.test(g)) miss.push('闸门没有试两种字节对齐（奇数长度前缀会让整段视图错位，W26E-04）')
+    if (!/nulCount \* 4 >= head\.length/.test(g)) miss.push('闸门缺「NUL 占比极高才试 UTF-32」的门控（会在普通文本上做无谓解码）')
+    if (!/function tryView\(/.test(g) || !/function plausibleText\(/.test(g)) miss.push('闸门缺视图解码的容错/文本性判定（单个视图解码失败不许让整份闸门崩掉，也不许把乱码视图当文本）')
+    if (!/function normalizeText\(/.test(g) || !/normalize\('NFKC'\)/.test(g)) miss.push('闸门缺归一化（CR 行尾 / 零宽字符 / 全角同形，W26E-06/07/08）')
+    if (!/\\u200B-\\u200D/.test(g)) miss.push('归一化没有剥零宽字符（令牌中间插 U+200B 会整类失配，W26E-06）')
+    if (!/function archiveViews\(buf\)/.test(g) || !/gunzipSync/.test(g) || !/inflateRawSync/.test(g)) miss.push('闸门缺按魔数解压（gzip / zip(deflate) 里的凭据整类漏检，W26E-05）')
+    if (!/archiveError/.test(g) || !/按魔数识别为压缩内容但解不开/.test(g)) miss.push('闸门对「识别出压缩魔数却解不开」没有判未判定（读不到 ≠ 干净）')
+    if (!/MAX_INFLATED_BYTES/.test(g)) miss.push('闸门缺解压输出上限（zip bomb 会把闸门拖死）')
+    if (!/isValidUtf8\(buf\)/.test(g) || !/legacy:\$\{enc\}/.test(g) || !/'gbk', 'shift_jis', 'big5'/.test(g)) miss.push('闸门缺传统 CJK 编码视图（GBK/Shift-JIS/Big5 里的全角令牌整类漏检，W26E-07）')
+    if (!/跨行/.test(g) || !/new RegExp\(r\.re\.source\)\.test\(cm\[0\]\.split\('\\n'\)\[0\]\)/.test(g)) miss.push('闸门缺「令牌被换行拆开」的跨行扫描（或缺「单行部分已构成命中就不重复计数」的守卫，W26E-09）')
     // 断言必须钉在**报告行那个表达式**上：只查「文件里有没有这句话」会被 BINARY_RULES 上方那段说明注释满足
     //（M47 实测：把报告里的括号说明删掉，S27 照样绿 —— 又是「注释满足断言」那一族，本轮第 5 次）。
-    if (!/binaryScanned \+ ' 个（已扫凭据类规则，定位类规则不适用）/.test(g)) miss.push('闸门的扫描面报告没有写明「二进制已扫凭据类规则、定位类规则不适用」—— 读者会把干净误读成全规则扫过')
+    if (!/binaryScanned \+ ' 个（凭据类规则照扫；定位类规则只在真实解码视图上跑，逐字节 latin1 视图不跑）/.test(g)) miss.push('闸门的扫描面报告没有写明「二进制里凭据类规则照扫、定位类规则只在真实解码视图上跑」—— 读者会把干净误读成全规则扫过')
     if (/if \(isBinary\) \{\s*\n\s*skippedBinary\+\+/.test(g)) miss.push('闸门退回「二进制整份跳过」的旧形态（W25E-01）')
     if (!/process\.exit\(1\)/.test(m)) miss.push('电池失败时不 exit 1（会把失败读成通过）')
-    // R25REV-N1（P2）：同一份字节可以有多种文本解读 —— UTF-16LE 保存的 .env 里每个字符后跟 NUL，
-    // latin1 视图下凭据正则整类匹配不到（实测新旧两侧都 exit 0 放行）。断言「UTF-16LE 视图存在」。
-    if (!/utf16le/.test(g) || !/nulCount \* 4 >= head\.length/.test(g)) miss.push('闸门缺 UTF-16LE 解码视图（UTF-16 保存的凭据文件整类漏检，R25REV-N1 回归）')
-    if (!/utf16Scanned/.test(g)) miss.push('闸门的扫描面报告没有写明「其中 N 个额外按 UTF-16LE 解码后复扫」')
     if (!/view: view\.name/.test(g)) miss.push('命中记录没有带上视图名（无法分辨命中来自哪种解读）')
-    // LEAK_SCAN 覆盖通道：把旧版闸门喂进同一套电池，才能证明 m16/m17 有判别力（R25 的成对读数就靠它）
+    // 电池的覆盖面必须跟着机制走：v3 的每个机制至少要有**一个行为场景**（m19–m31 + n4 + u3）
+    for (const k of ['m19', 'm20', 'm21', 'm22', 'm23', 'm24', 'm25', 'm26', 'm27', 'm28', 'm29', 'm30', 'm31', 'n4 ', 'u3 ']) {
+      if (!m.includes(k)) miss.push(`电池缺 v3 场景 ${k.trim()}（机制有断言但行为无证据）`)
+    }
+    // 汇总行必须**现算**分类数：写死数字会在加场景时悄悄过期，而它是 CI 的读数来源（R26）
+    if (!/const positives = CASES\.filter/.test(m)) miss.push('电池的汇总行写死了场景数（加场景就会说过期的话）')
+    // LEAK_SCAN 覆盖通道：把旧版闸门喂进同一套电池，才能证明 m19–m31 有判别力（R26 的成对读数就靠它）
     if (!/process\.env\.LEAK_SCAN \|\|/.test(m)) miss.push('电池缺 LEAK_SCAN 覆盖通道（无法把旧版闸门喂进同一套用例做成对读数）')
     // R23REV-N6：闸门必须对「扫描面为空」判未判定（零样本不得判通过），且该分支不许只剩 exit 0
     if (!/files\.length === 0/.test(g) || !/扫描面为空/.test(g)) miss.push('闸门对空扫描面没有判未判定（R23REV-N6 回归）')
@@ -668,7 +688,29 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
   const pr = prHit.path ? read(prHit.path) : ''
   if (prHit.path && (!/verify:publish/.test(pr) || !/阻断/.test(pr))) miss.push('PR 模板没有写明发布卫生闸门的真实阻断线')
   if (!/P1/.test(ci.split('\n').find((l) => /name: 发布卫生闸门/.test(l)) || '')) miss.push('CI 步骤名没有写明阻断线（P0/P1）')
-  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制且**二进制内容照扫凭据类规则**（禁扩展名白名单回退 / 禁整份跳过）· 未判定 exit 2（读不到 / 扫描面为空）· 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 17+3+2+1 场景 · npm/CI 接线 · 文档口径一致' }
+    // ── 行为探针（R26 / W26-E 的 B 族：只靠「文本在位」的结构断言挡不住机制被摘掉）──────
+    // 上面所有断言都是读源码文本。这里真造一个临时 git 仓库 + 两个文件（UTF-16BE 保存的 .env、
+    // gzip 里的 .env），跑一遍**真闸门**，要求 exit 1 且 BEARER 恰好命中 2 处。
+    // 机制被摘掉时（比如 UTF-16 视图整块不再生成、解压后不再复扫），它们的代码可能仍然都在、
+    // 结构断言全绿 —— 只有这一条会红。这正是 W26E-10…E-13 指出的那条缺口。
+    const probeDir = mkdtempSync(path.join(tmpdir(), 'facedb-s27-probe-'))
+    try {
+      const tok = 'token=' + 'ghp_' + 'A'.repeat(30) + '\n'
+      writeFileSync(path.join(probeDir, 'u16be.env'), Buffer.from(tok, 'utf16le').swap16()) // 字节序翻成 BE
+      writeFileSync(path.join(probeDir, 'gz.env.gz'), gzipSync(Buffer.from(tok, 'utf8'), { level: 9 }))
+      sh('git', ['init', '-q'], { cwd: probeDir })
+      sh('git', ['add', '-A'], { cwd: probeDir })
+      const r = spawnSync('node', [path.join(ROOT, GATE)], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, LEAK_SCAN_ROOT: probeDir } })
+      const out = (r.stdout || '') + (r.stderr || '')
+      const bearerLine = out.split('\n').find((l) => l.includes('BEARER')) || ''
+      const hits = Number((bearerLine.match(/BEARER/) && bearerLine.match(/命中 (\d+) 处/) || [])[1] || 0)
+      if (r.status !== 1 || hits !== 2) miss.push(`行为探针不成立：UTF-16BE 与 gzip 里的 ghp_ 令牌应各命中 1 处、共 2 处，实得 exit=${r.status} 命中 ${hits} 处 —— 多解读视图 / 压缩解压这条机制实际没工作，哪怕它的代码还写着`)
+    } catch (e) {
+      miss.push(`行为探针没跑起来（${e.message}）—— 本次不构成「闸门能抓 UTF-16 / 压缩凭据」的结论`)
+    } finally {
+      rmSync(probeDir, { recursive: true, force: true })
+    }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（整份文件 NUL）且**二进制里凭据类规则照扫**（禁扩展名白名单回退 / 禁整份跳过）· 多解读视图全套（UTF-16LE/BE × 对齐、UTF-32 门控、手写解码、容错、传统 CJK、压缩解压 + 未判定、归一化、跨行扫描去重）· 未判定 exit 2（读不到 / 扫描面为空 / 压缩内容解不开）· 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 31 阳性 / 4 阴性 / 3 未判定 / 1 提示区（v3 场景 m19–m31 逐个在位）· **行为探针（UTF-16BE 令牌真跑一遍闸门）** · npm/CI 接线 · 文档口径一致' }
 } })
 
 // ── S28 仓库判据的变异自检接线与判别力（R22） ──────────────────────────
@@ -709,6 +751,16 @@ add({ id: 'S28', covers: ['scripts/verify-repo.mjs', 'package.json', '.github/wo
     if (!v.includes('/<!--[\\s\\S]*?-->/g')) miss.push('缺少注释遮蔽 —— 说明文字里的 <img> 会被自己的检查判成标签')
     if (!/样式里没有跨源 url\(\) 图片引用/.test(v)) miss.push('缺少样式跨源图片断言的标题')
     for (const m of ['M12', 'M13', 'M14', 'M15']) if (!v.includes(`name: '${m} `)) miss.push(`变异体 ${m} 被摘掉`)
+    // 【R26 / W26E-17…E-18】只验「变异体的声明行在不在」挡不住「原子被掏空」：把 M12–M15 的
+    // `mutate: () => put(...)` 改成 `mutate: () => {}` 之后声明行还在、S28 照样 [OK]。
+    // 所以逐条要求：① 该原子的体里真有一次 `put(`（真的改文件）；② 改的是**它要改的那个文件**。
+    for (const [m, target] of [['M12', 'index.html'], ['M13', 'src/components/CaptureView.vue'], ['M14', 'index.html'], ['M15', 'src/style.css']]) {
+      const seg = v.split(`name: '${m} `)[1]
+      const block = seg ? seg.split("{ name: 'M")[0] : ''
+      if (!block) { miss.push(`变异体 ${m} 的定义块定位不到（原子结构被改写）`); continue }
+      if (!/mutate: \(\) => put\(/.test(block)) miss.push(`变异体 ${m} 的体里没有真正的文件写入（mutate 被掏空 ⇒ 该原子不再产生缺陷）`)
+      if (!block.includes(`'${target}'`)) miss.push(`变异体 ${m} 改的不是 ${target}（改了别的文件等于没造出缺陷）`)
+    }
     // R23：六指令 CSP 的取值护栏（每条都是「指令在、取值被改回宽松」的形态，只验词存在的断言无感）
     for (const d of ['script-src', 'style-src', 'frame-src', 'worker-src']) {
       if (!v.includes(`dirToks('${d}')`)) miss.push(`缺少 ${d} 的取值断言（只验指令存在的话，取值被改回宽松抓不到）`)

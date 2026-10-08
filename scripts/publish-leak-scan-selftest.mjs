@@ -12,7 +12,30 @@
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, copyFileSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { gzipSync, deflateRawSync } from 'node:zlib'
 import path from 'node:path'
+
+/** UTF-16BE 编码（Node 的 Buffer 不认 `'utf16be'`，只认 `utf16le`）。 */
+function toUtf16be(s) {
+  const b = Buffer.alloc(s.length * 2)
+  for (let i = 0; i < s.length; i++) b.writeUInt16BE(s.charCodeAt(i), i * 2)
+  return b
+}
+
+/** 造一个只含一个条目的 zip（stored 或 deflate）—— 用于「压缩内容必须解压后复扫」的场景。 */
+function zipOne(name, data, { store = false } = {}) {
+  const nm = Buffer.from(name, 'utf8')
+  const raw = Buffer.from(data)
+  const body = store ? raw : deflateRawSync(raw)
+  const lfh = Buffer.alloc(30)
+  lfh.writeUInt32LE(0x04034b50, 0)
+  lfh.writeUInt16LE(20, 4)
+  lfh.writeUInt16LE(store ? 0 : 8, 8) // method：0 = stored，8 = deflate
+  lfh.writeUInt32LE(body.length, 18)
+  lfh.writeUInt32LE(raw.length, 22)
+  lfh.writeUInt16LE(nm.length, 26)
+  return Buffer.concat([lfh, nm, body])
+}
 
 const HERE = path.resolve(import.meta.dirname)
 // LEAK_SCAN 覆盖：把「旧版闸门」喂进同一套电池，就能证明每个变异体有判别力（R25 的 m16/m17 就是这么证的：
@@ -124,6 +147,97 @@ const CASES = [
     files: { 'keys/u16.env': Buffer.from('token=' + GH + '\n', 'utf16le') },
     expect: { code: 1, hit: ['BEARER', 1] },
   },
+  // ── R26 / W26E-01…E-09（P1/P2）：**「只扫了一种解读」**这一族漏检形态 ────────────────────
+  // 每个场景都用「同载荷以另一种编码保存」构造：修复前整类 exit 0 放行（W26-E 有原始读数）。
+  {
+    name: 'm19 UTF-16BE 保存的 .env（v2 只加 UTF-16LE 视图 ⇒ 整类漏检）',
+    files: { 'keys/u16be.env': toUtf16be('token=' + GH + '\n') },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
+  {
+    name: 'm20 UTF-32LE 保存的 .env（v2 不认识 UTF-32）',
+    files: {
+      'keys/u32le.env': (() => {
+        const s = 'token=' + GH + '\n'
+        const b = Buffer.alloc(s.length * 4)
+        for (let i = 0; i < s.length; i++) b.writeUInt32LE(s.codePointAt(i), i * 4)
+        return b
+      })(),
+    },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
+  {
+    name: 'm21 UTF-32BE 保存的 .env（v2 不认识 UTF-32）',
+    files: {
+      'keys/u32be.env': (() => {
+        const s = 'token=' + GH + '\n'
+        const b = Buffer.alloc(s.length * 4)
+        for (let i = 0; i < s.length; i++) b.writeUInt32BE(s.codePointAt(i), i * 4)
+        return b
+      })(),
+    },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
+  {
+    name: 'm22 前 8KB 全 ASCII、令牌在 UTF-16 段（v2 只看前 8KB 的 NUL 密度 ⇒ 不生成视图）',
+    files: {
+      'keys/window.env': Buffer.concat([Buffer.from('# 说明\n'.repeat(600)), Buffer.from('token=' + GH + '\n', 'utf16le')]),
+    },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
+  {
+    name: 'm23 奇数长度前缀的 UTF-16LE（v2 按字节 0 对齐 ⇒ 整段错位漏检）',
+    files: { 'keys/odd.env': Buffer.concat([Buffer.from('X'), Buffer.from('token=' + GH + '\n', 'utf16le')]) },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
+  {
+    name: 'm24 gzip 里的 .env（v2 不解压 ⇒ 整类漏检）',
+    files: { 'keys/gz.bin': gzipSync(Buffer.from('token=' + GH + '\n')) },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
+  {
+    name: 'm25 zip(deflate) 里的 .env（v2 不解压 ⇒ 整类漏检）',
+    files: { 'keys/z.zip': zipOne('keys/inner.env', 'token=' + GH + '\n') },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
+  {
+    name: 'm26 令牌被换行拆成两行（逐行扫必然漏检）',
+    files: { 'keys/split.env': 'token=ghp_\n' + 'A'.repeat(30) + '\n' },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
+  {
+    name: 'm27 零宽字符插在令牌中间（v2 不剥零宽 ⇒ 整类失配）',
+    files: { 'keys/zwsp.env': 'token=ghp_' + '\u200B' + 'A'.repeat(30) + '\n' },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
+  {
+    name: 'm28 全角同形令牌（v2 不做 NFKC 归一化 ⇒ 漏检）',
+    files: { 'keys/fullwidth.env': 'token=' + '\uFF47\uFF48\uFF50\uFF3F' + 'A'.repeat(30) + '\n' },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
+  {
+    name: 'm29 GBK 双字节里的全角令牌（非 UTF-8 ⇒ 必须试传统编码视图 + NFKC）',
+    files: {
+      'keys/gbk.env': Buffer.concat([
+        // GBK 双字节的「ｇｈｐ＿」（0xA3E7 0xA3E8 0xA3F0 0xA3DF）——latin1 视图下是乱码，整类漏检
+        Buffer.from([0xa3, 0xe7, 0xa3, 0xe8, 0xa3, 0xf0, 0xa3, 0xdf]),
+        Buffer.from('A'.repeat(30) + '\n', 'latin1'),
+      ]),
+    },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
+  {
+    // 这条不是 v2 的漏检形态（v2 也能抓到），作用是**保持型**：归一化把裸 CR 也当换行后，
+    // `token=…` 这类规则在老 Mac 换行的文件里仍然成立。
+    name: 'm30 裸 CR 行尾（归一化必须把 \\r 也当换行；保持型场景）',
+    files: { 'keys/cr.env': 'token=' + GH + '\r' },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
+  {
+    name: 'm31 UTF-16LE 里的公网 IP（定位类规则必须跟着真实解码视图跑）',
+    files: { 'keys/u16ip.env': Buffer.from('host=' + [113, 20, 8, 27].join('.') + '\n', 'utf16le') },
+    expect: { code: 1, hit: ['PUBLIC-IP', 1] },
+  },
   // ── 阴性：干净仓库必须 exit 0 且相关规则 0 命中 ───────────────────────
   {
     name: 'n1 干净仓库（版本串 10.13.0 / 私网 / 回环 / 普通代码）',
@@ -153,6 +267,16 @@ const CASES = [
     },
     expect: { code: 0, hit: ['BEARER', 0], zeroAlso: ['SECRET-ASSIGN', 'PUBLIC-IP', 'PRIVATE-IP', 'LOCAL-PATH'] },
   },
+  // n4（R26）：多视图解码**不许**带来假红。UTF-16 里的普通文本（含像路径/像版本号的内容）
+  // 与「合法但无凭据」的 gzip 都必须 exit 0 —— 这条钉住「多解读 ≠ 见谁报谁」。
+  {
+    name: 'n4 UTF-16LE 的普通文本 + 合法 gzip（无凭据）⇒ exit 0，不得假红',
+    files: {
+      'docs/u16.md': Buffer.from('部署说明：监听 127.0.0.1:3000，版本 10.13.0\n', 'utf16le'),
+      'assets/plain.gz': gzipSync(Buffer.from('版本 10.13.0\n私网 ' + IP_PRIVATE + '\n')),
+    },
+    expect: { code: 0, hit: ['BEARER', 0], zeroAlso: ['SECRET-ASSIGN', 'PUBLIC-IP', 'PRIVATEKEY'] },
+  },
   // ── 未判定语义：读不到 ≠ 干净 ────────────────────────────────────────
   {
     name: 'u1 索引有而工作区缺失 → exit 2 未判定',
@@ -166,6 +290,24 @@ const CASES = [
     files: {},
     realScanner: true,
     expect: { code: 2, contains: '扫描面为空' },
+  },
+  // u3（R26）：识别出压缩魔数却解不开（流式写入的 zip / 截断的 gzip）⇒ 未判定 exit 2。
+  // 「读不到 ≠ 干净」在多视图这一层同样成立：不能因为解不开就当这个文件没问题。
+  {
+    name: 'u3 有 zip 魔数但条目不可解（流式写入）→ exit 2 未判定',
+    files: {
+      'assets/stream.zip': (() => {
+        const nm = Buffer.from('inner.env', 'utf8')
+        const lfh = Buffer.alloc(30)
+        lfh.writeUInt32LE(0x04034b50, 0)
+        lfh.writeUInt16LE(20, 4)
+        lfh.writeUInt16LE(8, 8)
+        lfh.writeUInt32LE(0, 18) // compSize = 0（真流式 zip 靠 data descriptor 补长度）
+        lfh.writeUInt16LE(nm.length, 26)
+        return Buffer.concat([lfh, nm, deflateRawSync(Buffer.from('token=' + GH + '\n'))])
+      })(),
+    },
+    expect: { code: 2, contains: '未判定' },
   },
   // ── 提示区：被忽略的敏感文件必须可见 ─────────────────────────────────
   {
@@ -233,4 +375,13 @@ if (failures.length) {
   for (const f of failures) console.log(`    - ${f.name}：${f.problems.join('；')}`)
   process.exit(1)
 }
-console.log('  ✅ 全部通过：17 个阳性形态全部被抓（含 R25 的两个二进制旁路形态）、3 组阴性对照零误报、未判定语义（读不到 / 扫描面为空）与提示区成立、自扫不阻断')
+// 汇总行按场景名首字母**现算**分类数（R26）：写死数字会在加场景时悄悄过期，
+// 而这里是 CI 的读数来源，读错就等于把覆盖面说错。
+const positives = CASES.filter((c) => /^m\d/.test(c.name)).length
+const negatives = CASES.filter((c) => /^n\d/.test(c.name)).length
+const undecidedCases = CASES.filter((c) => /^u\d/.test(c.name)).length
+const hints = CASES.filter((c) => /^i\d/.test(c.name)).length
+console.log(
+  `  ✅ 全部通过：${positives} 个阳性形态全部被抓（含 R25 的二进制旁路、R26 的 UTF-16BE/UTF-32/窗口/对齐/gzip/zip/零宽/NFKC/GBK/折行）、` +
+    `${negatives} 组阴性对照零误报、未判定语义（读不到 / 扫描面为空 / 压缩内容解不开）${undecidedCases} 个场景、提示区 ${hints} 个场景、自扫不阻断`
+)
