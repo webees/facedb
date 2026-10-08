@@ -3,6 +3,9 @@
 // 匿名无法 PATCH；若为此放开 updateRule，等于允许任何人修改任意记录。
 // 改为内存缓存 + 末次一次性 POST：只需 createRule，且不会出现「半条记录」。
 import { t } from './i18n'
+// R27：幂等键的派生与「重复批次」判别式抽到 submit-key.ts —— 它们是纯函数，判据要能直接加载它们
+// 做行为断言（留在本文件里只能正则断言文本在位，实测两个未覆盖变异都能骗过判据，见该文件头注释）。
+import { isDuplicateBatch, submitIdOf } from './submit-key'
 
 export type CaptureMeta = {
   yaw: number
@@ -110,61 +113,6 @@ function isNetworkError(e: unknown): boolean {
 // 「这一批已经写进去了」（见 isDuplicateBatch 与 post 的 allowAlreadyWritten）。
 // 残留面：**不同批**但内容逐字节相同的两次采集仍会各写一条 —— 那是正确语义（用户真的采了两次）。
 // 之所以不用「提交前先查重」：多一次查询，且查重自身也可能失败，反而更脆。
-
-/**
- * 判断 400 响应是不是「同一批的重复提交」（R27 实测口径）。
- *
- * PocketBase 0.40 **不给**唯一索引冲突任何错误码：现场实测第二次提交的回包是
- * `{"data":{},"message":"创建记录失败.","status":400}` —— data 是空对象、没有顶层 code。
- * 而字段级校验错误（文件数超限 / 文本超长 / JSON 超限）都带 `data.<字段>.code`
- * （如 `validation_too_many_files`、`validation_max_text_constraint`）。故只能按形态识别：
- * 400 + 有 data 且为空 + 无顶层 code。
- *
- * 退化行为（万一将来 PB 改了文案或形态）：这条分支不再命中 ⇒ 回到 R27 之前的体验
- * （界面报「上传失败」、给出重试入口），而**服务端仍然挡住重复写入** —— 最坏是假失败，
- * 不会写重复记录，也不会把别的字段校验错误误判成成功。
- */
-function isDuplicateBatch(body: string): boolean {
-  try {
-    const j = JSON.parse(body) as { data?: Record<string, unknown>; code?: unknown } | null
-    if (!j || typeof j !== 'object') return false
-    if (j.code) return false
-    if (!j.data || typeof j.data !== 'object') return false
-    return Object.keys(j.data).length === 0
-  } catch {
-    return false
-  }
-}
-
-/**
- * 提交级幂等键（R27）：由**冻结批次的内容**确定性派生。
- *
- * 为什么不随机生成一次：重试发生在上传层的外层（runUploadBatch 每一轮都重新调用
- * uploadSession），随机值每轮都会变 ⇒ 去重直接失效。派生则天然满足「同一批的每次重试
- * 得到同一个键、不同批几乎不可能相同」。
- *
- * 描述串里放的都是**冻结后不再变**的字段：sessionId、每个文件的 kind / pose / filename /
- * 字节数 / MIME、以及采集时刻（毫秒）与质量分。不放 blob 内容（那要读全部字节 + 异步哈希，
- * 而毫秒级 capturedAt 已足以把两次真实采集分开）。
- *
- * 哈希用 FNV-1a 64 位（BigInt）：同步、零依赖。这里要的是「同批同值、异批几无碰撞」，
- * 不是密码学强度 —— 键只用于唯一索引，碰撞的后果是「两批里后一批被服务端拒掉」。
- */
-function submitIdOf(sessionId: string, batch: PendingFile[]): string {
-  const desc = batch
-    .map((f) =>
-      [sessionId, f.kind, f.pose, f.filename, f.blob.size, f.blob.type, f.meta.capturedAt, f.meta.qualityScore].join(
-        '\u0001',
-      ),
-    )
-    .join('\u0002')
-  let h = 0xcbf29ce484222325n
-  for (let i = 0; i < desc.length; i++) {
-    h ^= BigInt(desc.charCodeAt(i))
-    h = (h * 0x100000001b3n) & 0xffffffffffffffffn
-  }
-  return 'sub-' + h.toString(16).padStart(16, '0')
-}
 
 // 在途请求的控制器 + 一条独立于定时器的中断路径。
 //
