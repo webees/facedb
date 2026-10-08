@@ -20,6 +20,41 @@
 //     它们是外部 vendored 资产，大小阈值抓不住「同大小换内容」，sha256 抓得住。
 //   · 4 个内容哈希 chunk 锁「文件名 ↔ 内容」对应关系：内容一变，构建就会改文件名；
 //     同名不同内容只可能是陈旧产物或缓存投毒面。
+//     【R23 第一次重锚】入口 chunk 由 index.cbc909cd34.js 改为 index.5eccc0c87b.js：本轮改了
+//     遥测拦截的输入取值口径（cross-realm）、撤层诊断，并删掉内联层的 XHR 补丁
+//     （见 RUN.md「遥测拦截：三层」）。那一次**只换文件名与内容哈希，阈值一字未动**
+//     （实测 95937 B，仍在 0.5% 容差内）。
+//     【R23 第二次重锚】入口 chunk 改为 index.3034178f9f.js，**基线随实测抬高**
+//     （web gzip 95700 → 96311、原始总字节 27429645 → 27430594），上限仍由同一推导式派生。
+//     为什么允许抬：本轮实测 96311 B 超出旧上限 133 B，增量可逐条归因且全部来自已确证的缺陷修复
+//     （无一处是「顺手加的代码」）：
+//       · W23B-05 空队列早退 + hintEmptyBatch（i18n 2 键）= 用户拍到照片却被告知「录制为空」的修复；
+//       · W23B-06 段被丢弃的对外信号 takeSegmentDropped + meta.segmentOk；
+//       · W23B-08 网络类错误分类 isNetworkError + uploadNetworkFailed 文案；
+//       · 为让 CaptureView.vue 回到 800 行阈值（S20）而抽出的两个模块
+//         （src/lib/upload-batch.ts、src/lib/batch-files.ts）；
+//       · 段收尾 try/catch（照片不再被段收尾失败连坐）。
+//     为什么不是「把容差放宽」：0.5% / 2% 的推导式与取整一字未改，判据仍会拦住
+//     「注入 256 个死函数」这类真膨胀（实测 +1.11%）。抬基线的代价是**这一轮的余量变薄**
+//     （新基线 96311、上限 96792、余量 481 B），故本次重锚在轮报里逐条登记，
+//     并要求后续每次重锚同样逐条列出增量来源。
+//     W21-A 原始基线（历史，勿删：仓库标准 S26 要求判据自带注释写明阈值来源）：
+//     web gzip 95700 B → 上限 96178 B；原始总字节 27429645 B → 上限 27978238 B。
+//     【R23 第三次重锚（收口期，复核席发现驱动）】入口 chunk 改为 index.b0621d6a09.js，
+//     基线随实测抬高（web gzip 96311 → 96573、原始总字节 27430594 → 27431217）。增量逐条：
+//       · R23REV-N3 修「等收尾超时后仍按队列为空下结论」→ CaptureView.vue 增 3 行守卫
+//         + i18n 2 键（hintStillFinalizing / stillFinalizing）；
+//       · R23REV-N4 修 isNetworkError 漏 Node/undici 形态（connect ECONNREFUSED 在 cause 里）
+//         → pb.ts 正则扩 12 个形态 + 拼接 cause 文本。
+//     上限仍由同一推导式派生（floor ×1.005 / ceil ×1.02），不是放宽容差；余量 482 B。
+//     重锚工具已固化：`$RUN/lib/size-reanchor.mjs --root <工程根> [--write]`（口径与判据同源），
+//     不再为一次性重锚现写临时脚本。
+//     关于「基线与实测精确相等」（R23REV-N11，已登记为已知取舍）：本判据是**棘轮**而不是
+//     「与历史版本比较」—— 基线就是上一次通过时的实测快照，两者相等是设计使然，不是读数错。
+//     代价是：任何改动源码的轮次都必须重锚（R23 一轮里重锚 3 次），否则 N3/N4 会先报红。
+//     之所以仍这样定：把基线钉在「上一个已知良好的快照」上，任何净增长都必须有人显式过一遍
+//     并逐条归因（重锚要求把增量来源写进本注释），比给一个无人认领的固定余量更能拦住悄悄变胖。
+//     反面代价也已实测：0.5% 的余量只有 482 B，一次「顺手加的代码」就会顶破 —— 这正是设计意图。
 //
 // gzip 口径说明（为什么调系统 gzip 而不是 node 的 zlib）：基线 95700 B 是用系统 `gzip -9 -c`
 // 量的；本机实测 node 自带 zlib（1.3.1-e00f703）对同一批文件给出 96168 B（+468 B），
@@ -37,7 +72,7 @@
 // 用法：npm run verify:size                    （需先 npm run build）
 //      SIZE_ROOT=<其他根> node scripts/check-dist-size-budget.mjs   （变异自检用）
 //      node scripts/check-dist-size-budget.mjs --dist <产物目录>
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
@@ -56,11 +91,24 @@ if (distFlag >= 0 && !argv[distFlag + 1]) {
 const DIST = distFlag >= 0 ? path.resolve(argv[distFlag + 1]) : path.join(ROOT, 'dist')
 
 // —— 5 个阈值常量（来源见文件头；改这里必须同步改文件头的推导式）——
-const WEB_GZIP_BASELINE_BYTES = 95700
-const WEB_GZIP_CAP_BYTES = 96178
-const RAW_TOTAL_BASELINE_BYTES = 27429645
-const RAW_TOTAL_CAP_BYTES = 27978238
+// 【R23 第二次重锚】基线由实测值抬到 96311 / 27430594（增量逐条列在文件头），
+// 上限仍按同一推导式派生（web gzip +0.5%、原始总字节 +2%），不是把容差放宽。
+const WEB_GZIP_BASELINE_BYTES = 96543
+const WEB_GZIP_CAP_BYTES = 97025
+const RAW_TOTAL_BASELINE_BYTES = 27431220
+const RAW_TOTAL_CAP_BYTES = 27979845
 const EXPECTED_FILE_COUNT = 13
+
+// —— 源码指纹：产物必须是**当前源码**构建出来的 ——
+// 【R23 第四次重锚（PR #27 的 CI 抓到）】此前判据只钉「产物长什么样」，不钉「产物是不是当前源码
+// 构建的」：我在本地用一份**陈旧 dist** 重锚（入口 chunk 名 `index.b0621d6a09.js`），
+// 本地 verify:size 全绿、CI 一跑就红（干净检出重建得 `index.ebc8a68402.js`）。
+// 这种「本地绿、CI 红」的成因不是环境差异，而是**判据缺一条前提**：dist 与源码不同源。
+// 修法：把「喂给打包器的源码输入」的 sha256 记在这里；判据启动时重算，不一致即
+// **未判定（exit 2）**，提示先 `rm -rf dist && npm run build` 再重锚。
+// 覆盖输入：`index.html`、`package.json`、`src/**`（递归、按路径排序）。不含 node_modules
+// （软链/真实目录各有 N0 前提）与 `dist/`（那是被检查对象）。
+const SOURCE_FINGERPRINT = '385a8cdbafdc4d90ad0b54c152f237e54244ca8f59ac34b8c0093f6f65307033'
 
 // 阈值自洽（防手抄错，尤其是 27978237.9 这类取整）：常量必须等于由基线派生的取整结果。
 const DERIVED = {
@@ -86,7 +134,7 @@ const LOCKED_SHA256 = {
 }
 // —— 4 个内容哈希 chunk：文件名里的 hash 由内容算出，故「同名不同内容」= 陈旧/投毒产物 ——
 const HASHED_CHUNKS = {
-  'static/js/index.cbc909cd34.js': '42854c1a3268e8f664f66d1594d599cb2c40b2ca500347f484738d5cf1253ed9',
+  'static/js/index.ebc8a68402.js': '2740b35c328acfca4acab2d656157d6992a1dfc8ab85fbc5375f8abdb004bbd1',
   'static/js/lib-vue.8351304052.js': '9185e33ee21bdde949c18f7771c0b9fa0acf413712d83f1412cb4dd9a012ca0f',
   'static/js/m.79c0ab86b6.js': '2956850bd7ffc083eb290d72745395e20dfa588d75d8d9271368e5ed590346b5',
   'static/css/index.d05fa997d9.css': '45171915300c369b502f0658ef5ef5bdf36f6c6ae667cf94343cb4a28dd034a8',
@@ -152,6 +200,66 @@ if (PB_URL !== '') {
       '清单类基线隐含绑定构建环境，本次未判定（exit 2），不判通过也不判失败',
   )
   process.exit(c.report())
+}
+
+// (3) node_modules 必须是真实目录（不能是符号链接）：R23 实测 —— 同一棵树、同一命令，
+//     只把 node_modules 从真实目录换成指向它的软链，构建产物就从
+//     `index.3034178f9f.js` / `lib-vue.8351304052.js` / `m.79c0ab86b6.js` 变成
+//     `index.59ab2f4658.js` / `lib-vue.41bac71c26.js` / `c.283e6ba8c2.js`（差值不在体积上，
+//     而在解析结果）。此时文件名与体积基线都不可比：判红会把「构建方式不同」误报成产物漂移。
+//     要隔离副本请用 `cp -al`（硬链副本 = 真实目录）或 `cp -R`，不要用 `ln -s`。
+{
+  const NM = path.join(ROOT, 'node_modules')
+  let isLink = false
+  try {
+    isLink = lstatSync(NM).isSymbolicLink()
+  } catch {
+    // 没有 node_modules 目录（例如自检在只含 dist/ 的临时树上跑）：不构成前提违反
+  }
+  if (isLink) {
+    c.un(
+      'N0 环境前提：node_modules 是真实目录',
+      `实测 ${NM} 是符号链接 —— 软链会改变构建解析结果（chunk 名 m.79c0ab86b6.js → ` +
+        'c.283e6ba8c2.js、lib-vue 哈希也随之一变），清单与体积基线在同一软链目录内可复现、' +
+        '但与真实目录构建的结果不可比 → 本次未判定（exit 2）。请在带真实 node_modules 的检出里构建',
+    )
+    process.exit(c.report())
+  }
+}
+
+// (4) dist 必须是**当前源码**构建出来的（R23 第四次重锚补）：判据此前只钉产物长相，不钉「产物是不是
+//     这份源码构建的」。实测代价：我用一份陈旧 dist 重锚 ⇒ 本地 verify:size 16/16 全绿、CI 一跑就红
+//     （干净检出重建得另一个入口 chunk 名）。这是判据缺前提，不是环境差异。
+//     只在能算出指纹的根上核对（合成树/自检树没有 src/，不适用，打印一行说明即可）。
+{
+  const srcDir = path.join(ROOT, 'src')
+  const indexHtml = path.join(ROOT, 'index.html')
+  const pkg = path.join(ROOT, 'package.json')
+  const canFingerprint = existsSync(srcDir) && existsSync(indexHtml) && existsSync(pkg)
+  if (!canFingerprint) {
+    console.log('[INFO] N0 环境前提：dist 与源码同源 —— 本根没有 src//index.html/package.json（自检或合成树），不适用')
+  } else {
+    const inputs = ['index.html', 'package.json', ...listFiles(srcDir).map((f) => 'src/' + f)].sort()
+    const h = createHash('sha256')
+    for (const rel of inputs) h.update(rel + '\0' + sha256(path.join(ROOT, rel)) + '\0')
+    const actual = h.digest('hex')
+    if (SOURCE_FINGERPRINT === 'PLACEHOLDER_SOURCE_FINGERPRINT') {
+      c.un(
+        'N0 环境前提：dist 与源码同源',
+        `本判据还没有记录源码指纹（占位符未替换）→ 本次未判定（exit 2）。用 lib/size-reanchor.mjs --write 写入`,
+      )
+      process.exit(c.report())
+    }
+    if (actual !== SOURCE_FINGERPRINT) {
+      c.un(
+        'N0 环境前提：dist 与源码同源',
+        `实测源码指纹 ${actual.slice(0, 12)}… ≠ 判据记录的 ${SOURCE_FINGERPRINT.slice(0, 12)}…（覆盖 ${inputs.length} 个输入）` +
+          ' —— 源码改过而产物没重建（或反之）：此时文件名/体积基线与产物不可比，判红会把「没重建」误报成产物漂移。' +
+          '先 `rm -rf dist && npm run build`，再用 lib/size-reanchor.mjs --write 重锚 → 本次未判定（exit 2）',
+      )
+      process.exit(c.report())
+    }
+  }
 }
 
 // ── N1 零样本纪律：产物目录不存在或为空 → 未判定，绝不判通过 ──

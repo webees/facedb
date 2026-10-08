@@ -61,11 +61,17 @@ docker compose config -q   # 若改动 docker-compose.yml
 `.github/`、`scripts/`、`.editorconfig`、`.gitattributes` 或哈希资产时请一并跑：
 
 ```bash
-npm run verify:standards    # 29 项：文档 / 治理文件 / 工作流 / 脚本之间的交叉核对
+npm run verify:standards    # 30 项：文档 / 治理文件 / 工作流 / 脚本之间的交叉核对
 npm run verify:hygiene      # 5 项：零命中规则、哈希资产保护、行尾口径
-npm run verify:standards-selftest   # 判据自身的变异自检（29 个变异体必须全部被抓到）
-npm run verify:all          # 上面除变异自检外的全部（本地一键）
+npm run verify:standards-selftest   # 判据自身的变异自检（38 个变异体必须全部被抓到）
+npm run verify:all          # 本地快速一键（不构建、不跑变异自检）
+npm run verify:ci           # 与 CI 逐条同集同序的一键（含构建、体积/许可判据与全部变异自检）
 ```
+
+`verify:ci` 的步骤序列由 `S30` 断言与工作流**逐条对齐** —— 它存在的理由是：本地捷径
+（`verify:all`）一旦落后于 CI，就会出现「本地全绿、CI 判红」，而那种红与工程缺陷无关，
+纯属**捷径本身不完整**（R23 实测：`verify:all` 曾缺 `typecheck`、`verify:notices`、
+`verify:size` 与全部自检电池）。
 
 被判据挡下来时，先看它打印的失败原因，不要直接改判据：断言都锚在仓库自己声明的规范
 或生态硬约束上，报红通常意味着**代码与文档已经不一致**。

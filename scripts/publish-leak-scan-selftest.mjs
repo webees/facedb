@@ -18,7 +18,7 @@ const HERE = path.resolve(import.meta.dirname)
 const SCANNER = path.join(HERE, 'publish-leak-scan.mjs')
 const WORK = mkdtempSync(path.join(tmpdir(), 'leak-selftest-'))
 
-function makeRepo(files, { ignore = [], removeAfterAdd = [] } = {}) {
+function makeRepo(files, { ignore = [], removeAfterAdd = [], copyScanner = true } = {}) {
   const dir = mkdtempSync(path.join(WORK, 'repo-'))
   execFileSync('git', ['init', '-q'], { cwd: dir })
   if (ignore.length) writeFileSync(path.join(dir, '.gitignore'), ignore.join('\n') + '\n')
@@ -30,13 +30,29 @@ function makeRepo(files, { ignore = [], removeAfterAdd = [] } = {}) {
   // 注意：不加 -f —— 否则被 .gitignore 忽略的敏感文件会被强制入库，"忽略但敏感"的提示区就测不到
   execFileSync('git', ['add', '-A'], { cwd: dir })
   for (const rel of removeAfterAdd) unlinkSync(path.join(dir, rel))
-  copyFileSync(SCANNER, path.join(dir, 'scanner.mjs'))
+  if (copyScanner) copyFileSync(SCANNER, path.join(dir, 'scanner.mjs'))
   return dir
 }
 
 function runScan(dir, env = {}) {
   try {
     const out = execFileSync(process.execPath, [path.join(dir, 'scanner.mjs')], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: { ...process.env, LEAK_SCAN_ROOT: dir, ...env },
+    })
+    return { code: 0, out }
+  } catch (e) {
+    return { code: e.status ?? -1, out: (e.stdout || '') + (e.stderr || '') }
+  }
+}
+
+// 跑**真实** scripts/publish-leak-scan.mjs（不把副本放进被扫仓库）。
+// 为什么需要这条路径：副本自身是「未跟踪文件」，一放进仓库就让「扫描面为空」不可能成立 ——
+// 空仓库场景（R23REV-N6）只能用真实脚本 + LEAK_SCAN_ROOT 指到空仓库来构造。
+function runScanReal(dir, env = {}) {
+  try {
+    const out = execFileSync(process.execPath, [SCANNER], {
       cwd: dir,
       encoding: 'utf8',
       env: { ...process.env, LEAK_SCAN_ROOT: dir, ...env },
@@ -75,6 +91,9 @@ const CASES = [
   { name: 'm11 公网 IP（P1 命中必须阻断：v1 默认只挡 P0）', files: { 'README.md': '目标机 ' + IP_PUBLIC + '\n' }, expect: { code: 1, hit: ['PUBLIC-IP', 1] } },
   { name: 'm12 Tailscale 网段', files: { 'README.md': '内网 ' + IP_TAILNET + '\n' }, expect: { code: 1, hit: ['TAILNET', 1] } },
   { name: 'm13 被跟踪的人脸照片（文件名规则）', files: { 'data/face.jpg': 'binary-ish content\n' }, expect: { code: 1, hit: ['MEDIA', 1] } },
+  // R23REV-N8：旧版用 `\b` 作前导边界，而 `_` 是单词字符 ⇒ 带下划线前缀的键名整类漏检（实测 0 命中）。
+  { name: 'm14 带下划线前缀的凭据键名（db_password=…，旧版 \\b 漏检）', files: { 'src/db.ts': 'const db_password = "' + 'hunter2xyz' + '"\n' }, expect: { code: 1, hit: ['SECRET-ASSIGN', 1] } },
+  { name: 'm15 AWS_SECRET_ACCESS_KEY=…（下划线前缀 + 大写键）', files: { '.env.prod': 'AWS_SECRET_ACCESS_KEY=' + 'wJalrXUtnFEMIK7MDENGbPxRfiCY' + '\n' }, expect: { code: 1, hit: ['SECRET-ASSIGN', 1] } },
   // ── 阴性：干净仓库必须 exit 0 且相关规则 0 命中 ───────────────────────
   {
     name: 'n1 干净仓库（版本串 10.13.0 / 私网 / 回环 / 普通代码）',
@@ -97,6 +116,13 @@ const CASES = [
     removeAfterAdd: ['src/gone.ts'],
     expect: { code: 2, contains: '未判定' },
   },
+  // R23REV-N6：零样本此前被判 exit 0「✅ 无 P1 阻断项」——「一个文件都没扫」不是「扫过且干净」。
+  {
+    name: 'u2 空仓库（扫描面 0 个文件）→ exit 2 未判定，不得判通过',
+    files: {},
+    realScanner: true,
+    expect: { code: 2, contains: '扫描面为空' },
+  },
   // ── 提示区：被忽略的敏感文件必须可见 ─────────────────────────────────
   {
     name: 'i1 被忽略的 .env.local 必须出现在提示区',
@@ -109,8 +135,8 @@ const CASES = [
 let pass = 0
 const failures = []
 for (const c of CASES) {
-  const dir = makeRepo(c.files, { ignore: c.ignore || [], removeAfterAdd: c.removeAfterAdd || [] })
-  const { code, out } = runScan(dir)
+  const dir = makeRepo(c.files, { ignore: c.ignore || [], removeAfterAdd: c.removeAfterAdd || [], copyScanner: !c.realScanner })
+  const { code, out } = c.realScanner ? runScanReal(dir) : runScan(dir)
   const problems = []
   if (code !== c.expect.code) problems.push(`退出码 ${code} ≠ 期望 ${c.expect.code}`)
   for (const [id, n] of Object.entries(c.expect.hit ? { [c.expect.hit[0]]: c.expect.hit[1] } : {})) {
@@ -163,4 +189,4 @@ if (failures.length) {
   for (const f of failures) console.log(`    - ${f.name}：${f.problems.join('；')}`)
   process.exit(1)
 }
-console.log('  ✅ 全部通过：13 个阳性形态全部被抓、2 组阴性对照零误报、未判定语义与提示区成立、自扫不阻断')
+console.log('  ✅ 全部通过：15 个阳性形态全部被抓、2 组阴性对照零误报、未判定语义（读不到 / 扫描面为空）与提示区成立、自扫不阻断')

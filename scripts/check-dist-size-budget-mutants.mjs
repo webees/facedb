@@ -14,7 +14,7 @@
 //
 // 用法：npm run verify:size-selftest        （需先 npm run build）
 //      SIZE_SRC_DIST=<其他产物目录> node scripts/check-dist-size-budget-mutants.mjs
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import path from 'node:path'
@@ -40,6 +40,8 @@ function listFiles(dir) {
   walk(dir, '')
   return out.sort()
 }
+// 与判据同源的「原始总字节」量法：目录下所有文件的字节和（目录项开销不计）
+const rawTotal = (dir) => listFiles(dir).reduce((n, f) => n + statSync(path.join(dir, f)).size, 0)
 // 与判据同源的量法：系统 `gzip -9 -c <文件>`，逐字节数长度
 function gzipTotal(dir) {
   const files = ['index.html']
@@ -145,7 +147,75 @@ const variants = [
       return [`dist 存在 = ${existsSync(path.join(dir, 'dist'))}`]
     },
   },
+  {
+    id: 'm6-symlink-nm',
+    desc: '把 node_modules 做成符号链接（R23 实测：软链会改变 chunk 名）→ 必须 exit 2 未判定',
+    expect: { rc: 2, fails: [], undecided: ['N0'] },
+    mutate: (dir) => {
+      const nm = path.join(dir, 'node_modules')
+      // 悬空软链即可：判据只 lstat 它是不是链接，不解析内容
+      symlinkSync(path.join(os.tmpdir(), 'facedb-deps-not-real'), nm)
+      return [`node_modules 是符号链接 = ${lstatSync(nm).isSymbolicLink()}（指向不存在的目标也算）`]
+    },
+  },
+  {
+    id: 'm7-raw-inflate',
+    // R23REV-N10：本轮之前**没有任何变异体打过「原始总字节 +2%」这条上限档** ——
+    // 复核席自己的草案算式算出负值（RangeError）后放弃了，于是这道「防 wasm/模型整体变胖」的闸
+    // 整轮没被真变异验证过。这里补上：往非 web-gzip 面的 wasm 追加 600KB 不可压缩内容 ⇒
+    // 原始总字节顶穿上限（2% = 548612 B），而 web gzip 面（只看 6 个 web 文件）不动。
+    desc: '往 dist/wasm 追加 600 KB 不可压缩内容：原始总字节顶穿 +2% 上限，web 传输面不受影响',
+    // 期望同时翻 N9（该 wasm 的 sha256 锁）—— 这是**正确**行为：追加字节既顶穿总量上限、
+    // 又改变被锁文件的内容哈希。本变异体的靶子是 N4（此前没有任何变异体打过这条档），
+    // 顺带证明「体积档」与「内容哈希档」是两条独立的防线（与 m2 的附加断言互补）。
+    expect: { rc: 1, fails: ['N4', 'N9'], undecided: [] },
+    mutate: (dir) => {
+      const p = path.join(dir, 'dist/wasm/vision_wasm_internal.wasm')
+      const before = statSync(p).size
+      const rawBefore = rawTotal(path.join(dir, 'dist'))
+      writeFileSync(p, Buffer.concat([readFileSync(p), randomBytes(600 * 1024)]))
+      const after = statSync(p).size
+      const rawAfter = rawTotal(path.join(dir, 'dist'))
+      return [
+        `${path.basename(p)} 原始字节 ${before} → ${after}（+${after - before}）`,
+        `原始总字节 ${rawBefore} → ${rawAfter}（+${rawAfter - rawBefore}，上限 = 基线 + 2% = ${Math.ceil(rawTotal(SRC_DIST) * 1.02)}）`,
+      ]
+    },
+  },
+  {
+    // R23（PR #27 的 CI 抓到）：判据此前只钉「产物长什么样」，不钉「产物是不是这份源码构建的」——
+    // 我用一份陈旧 dist 重锚，本地 16/16 全绿、CI 一跑就红（干净检出重建得另一个入口 chunk 名）。
+    // 补上源码同源前提后，这一对变异体证明它真的会响：m8a 把 src/ 原样复制（不适用→适用且必须仍绿），
+    // m8b 在复制的 src/ 里改一行（源码动了、产物没重建）⇒ 必须 exit 2 未判定。
+    // 两者成对：只测 m8b 无法排除「复制本身就触发」这种假阳性。
+    id: 'm8a-src-copied-control',
+    desc: '把 src/ + index.html + package.json 原样复制进树（阴性对照：复制本身不得触发同源前提）',
+    expect: { rc: 0, fails: [], undecided: [] },
+    mutate: (dir) => copySourceInputs(dir),
+  },
+  {
+    id: 'm8b-src-drift',
+    desc: '复制的 src/ 里改一行（源码与产物不同源）→ 必须 exit 2 未判定',
+    expect: { rc: 2, fails: [], undecided: ['N0'] },
+    mutate: (dir) => {
+      const proof = copySourceInputs(dir)
+      const p = path.join(dir, 'src/main.ts')
+      const before = readFileSync(p, 'utf8')
+      writeFileSync(p, before + '\n// R23 同源前提的变异体：这一行让源码指纹改变\n')
+      return [...proof, `src/main.ts 字节 ${before.length} → ${statSync(p).size}（追加一行注释）`]
+    },
+  },
 ]
+
+// 把「喂给打包器的源码输入」从工程复制进临时树（m8a/m8b 共用）。
+// 刻意只复制 index.html / package.json / src/ —— 判据的源码指纹覆盖的就是这三者。
+function copySourceInputs(dir) {
+  const cp = spawnSync('cp', ['-R', path.join(REPO, 'src'), path.join(dir, 'src')], { encoding: 'utf8' })
+  if (cp.status !== 0) throw new Error(`cp -R src 失败：${(cp.stderr || '').trim()}`)
+  for (const f of ['index.html', 'package.json']) copyFileSync(path.join(REPO, f), path.join(dir, f))
+  const n = listFiles(path.join(dir, 'src')).length
+  return [`复制 src/ ${n} 个文件 + index.html + package.json（复制后尚未改动）`]
+}
 
 const TMP = mkdtempSync(path.join(os.tmpdir(), 'facedb-size-mutants-'))
 const results = []

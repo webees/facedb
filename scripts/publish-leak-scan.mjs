@@ -79,8 +79,18 @@ const RULES = [
     sev: 'P0',
     // 值必须以字母或数字开头且长度 ≥ 6：否则本行 desc 里的 `password=/secret=/token=` 会**自匹配**
     // （修复前实测：把本脚本放进仓库后闸门一上线就把自己报成 P0 并自阻断）。
-    desc: '形如 password=… / secret=… / token=… / api_key=… 且右侧是像凭据的值',
-    re: /\b(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9][A-Za-z0-9_.+/=-]{5,}/gi,
+    // 前导边界用 `(?<![A-Za-z0-9])` 而非 `\b`：`\b` 要求前一字符是非单词字符，而 `_` 是单词字符，
+    // 于是「下划线前缀的凭据键名」（如 `db` + `_` + `password`）会被**整类静默漏掉**
+    // （R23REV-N8 实测：`\b` 版本对该形态命中 0）。
+    // 前缀写成「一段段以 `_`/`-` 结尾」（`(?:[A-Za-z0-9]+[_-])*`）而不是 `[A-Za-z0-9_]*`：
+    // 后者会把 `_mediapipeLoggerGetEncodedApiKey`（vendored wasm JS 里的驼峰标识符）吃进来 ——
+    // `api[_-]?key` 匹配其中的驼峰 `ApiKey`，值 `Module` 又够长，于是**本仓库自扫自己报 P0 自阻断**
+    // （R23 实测：命中 2 处，全部在 `public/wasm/*.js`）。故 `api[_-]key` 的分隔符是**必需**的，
+    // 驼峰形态（`apiKey`/`authToken`）**刻意不匹配** —— 这是精度换召回：P0 闸门假红的代价高于漏报少数驼峰键名。
+    // ⚠️ 本注释不许出现「键名 + = + 像凭据的值」的完整字面量：扫描器扫到自己的源码，
+    // 那样会自匹配成 P0 并自阻断（R13-F9 / R22 已踩过两次，R23 第三次）。
+    desc: '形如 password=… / secret=… / token=… / api_key=…（含下划线前缀与 SECRET_ACCESS_KEY 形态；驼峰键名不算）且右侧是像凭据的值',
+    re: /(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_-])*(?:password|passwd|secret[_-]?access[_-]?key|secret|token|api[_-]key|private[_-]key|access[_-]token|auth[_-]token)\b\s*[:=]\s*["']?[A-Za-z0-9][A-Za-z0-9_.+/=-]{5,}/gi,
   },
   { id: 'BEARER', sev: 'P0', desc: '令牌字面量（Bearer / GitHub / GitLab / Slack / AWS / OpenAI / Google / HF / npm / Docker / PyPI / JWT）', re: new RegExp('\\b(' + TOKEN_PATTERNS.join('|') + ')\\b', 'g') },
   { id: 'PRIVATEKEY', sev: 'P0', desc: 'PEM 私钥头（RSA/EC/OPENSSH/DSA/PGP…）', re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/g },
@@ -212,6 +222,17 @@ if (voided.length) {
   console.log('  ⏭ 未判定 ' + voided.length + ' 个文件 —— 本次运行不构成「已扫描且干净」的结论：')
   for (const v of voided.slice(0, 12)) console.log('      ' + v.file + '：' + v.why)
   console.log('  ⏭ 请先解决上述文件（补齐工作区或抬高 LEAK_MAX_BYTES）再判发布卫生（exit 2）。')
+  process.exit(2)
+}
+
+if (files.length === 0) {
+  // R23REV-N6：**零样本不得判通过**。空仓库（`git init` 后什么都没有）此前会走到最后一行
+  // `blocked === 0 → exit 0`，打印「✅ 无 P1 阻断项」——那是「一个文件都没扫」而不是「扫过且干净」。
+  // 与 `voided` 分开写：voided 是「点名了却读不到」，这里是「扫描面本身就是空的」。
+  console.log()
+  console.log('  ⏭ 扫描面为空（跟踪 0 个 + 未跟踪未忽略 0 个）—— 本次运行不构成「已扫描且干净」的结论：')
+  console.log('      LEAK_SCAN_ROOT=' + ROOT)
+  console.log('      若你本意是扫本仓库，请确认在仓库根运行、且 git 索引非空（exit 2）。')
   process.exit(2)
 }
 

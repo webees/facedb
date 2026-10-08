@@ -11,11 +11,17 @@
 // 会被放行到真实网络（`%2e` 同理）。这里运行时还有 CSP 兜底，但那是「两层防线漏了一层」。
 const BLOCKED = /(^|\.)googleapis\.com\.?$/i
 
+// 取主机名不能只认 instanceof（旧实现踩的坑）：cross-realm（iframe / Worker 传进来的）URL
+// 过不了本 realm 的 instanceof，而且 URL 没有 .url（是 .href）—— 旧实现按 instanceof 取值会
+// 把这类输入读成空主机、于是放行。W23-C 实测：撤掉内联层只留本层时 cross-realm URL 真出网
+// （R22-07；两层俱在时被内联层兜住，所以以前看不见）。表达式与 index.html 内联层逐字一致。
+// 残留（已登记）：非法 RequestInfo 会串成 "[object …]"、落到页面自身主机而不被拦 —— 但原生
+// fetch/XHR 对非法输入本身抛 TypeError，走不到网络，故不构成外发通道。
 function hostOf(input: RequestInfo | URL): string {
   try {
-    const url =
-      typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
-    return new URL(url, location.href).hostname
+    const u = (input as { url?: unknown }).url
+    const raw = typeof input === 'string' ? input : typeof u === 'string' ? u : String(input)
+    return new URL(raw, location.href).hostname
   } catch {
     return ''
   }
@@ -35,7 +41,7 @@ const EMPTY = (): Response =>
 // 这里做成「先撤上一层、再装新的」而不是「已有就跳过」—— 跳过会留下旧代码的补丁，
 // 于是改了规则却不生效，比多一层更难发现。
 // 内联层（index.html）与模块层各用各的 window 槽位：模块层撤层时**不能**把内联层一起撤掉。
-type Layer = { uninstall: () => void }
+type Layer = { uninstall: () => { restored: number; expected: number; fellBackToOtherPatch: boolean } }
 const w = window as unknown as { __facedbBlockModule?: Layer }
 
 function install(): Layer {
@@ -133,12 +139,22 @@ return {
       restored++
     }
     const expected = patchedBeacon ? 4 : 3
+    // 两种「网络没放开」要分开说：① 还原数不足 = 撤层顺序不对（本层不在顶层）；
+    // ② 还原数够、但底下还压着一层补丁（正常构建里是 index.html 的内联层）—— 后者下撤掉本层
+    // 并没有放开网络。②只 debug 不告警：按文档「先撤模块层、再撤内联层」是正常流程，中间那一刻
+    // 不该吵；需要「网络真的放开了」的调用方读返回值的 fellBackToOtherPatch。
+    const fellBackToOtherPatch =
+      window.fetch !== patchedFetch &&
+      !/\[native code\]/.test(Function.prototype.toString.call(window.fetch))
     if (restored < expected) {
       console.warn(
         `[telemetry] 撤层时本层不在顶层：${expected} 个补丁点只还原了 ${restored} 个。` +
           '撤层必须后装先撤（先撤模块层再撤内联层），否则本层补丁会残留。'
       )
+    } else if (fellBackToOtherPatch) {
+      console.debug('[telemetry] 本层已撤，但 window.fetch 仍不是原生实现（内联层还压在上面）—— 网络尚未放开。')
     }
+    return { restored, expected, fellBackToOtherPatch }
   },
 }
 }

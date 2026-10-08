@@ -80,12 +80,12 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
-      - name: 判据自身的变异自检（29 个变异体必须全部被抓到，且未变异的副本全绿）
+      - name: 判据自身的变异自检（38 个变异体必须全部被抓到，且未变异的副本全绿）
         run: npm run verify:standards-selftest
 
       # 仓库结构面与 CSP 面的判据（verify-repo.mjs）此前**从未在 CI 里自检** ——
-      # 它的 20 个变异体只在本地跑，判据被无声削弱时 CI 仍然全绿（R22 实测发现）。
-      - name: 仓库判据的变异自检（20 个变异体/零样本/越界场景必须全部符合预期）
+      # 它的 30 个变异体只在本地跑，判据被无声削弱时 CI 仍然全绿（R22 实测发现）。
+      - name: 仓库判据的变异自检（30 个变异体/零样本/越界场景必须全部符合预期）
         run: npm run verify:selfcheck
 
       - name: 第三方许可判据的变异自检（9 个变异体 + 缺 dist 必须判未判定）
@@ -96,7 +96,7 @@ jobs:
       - name: 生产构建（体积自检的样本）
         run: npm run build
 
-      - name: 产物体积判据的变异自检（6 个变异体：删 wasm / 同大小换内容 / web 注入 / SHA256SUMS 漂移 / 缺 dist / 对照）
+      - name: 产物体积判据的变异自检（10 个变异体：删 wasm / 同大小换内容 / web 注入 / SHA256SUMS 漂移 / 缺 dist / 软链 node_modules / 原始总字节顶穿 / 源码同源前提的对照与漂移 / 对照）
         run: npm run verify:size-selftest
 
       # 13 个阳性形态（.bak 令牌 / .pem 私钥 / 新式令牌前缀 / 超大文本 / OpenSSH 私钥 / 跟踪的 .env / 公网 IP / Tailscale / 媒体）

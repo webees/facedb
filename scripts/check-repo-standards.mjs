@@ -36,6 +36,34 @@ const resolveTracked = (rel) => {
 }
 const isDirPath = (rel) => tracked.some((t) => t.startsWith(rel.replace(/\/$/, '') + '/'))
 
+// 【R23REV-N2】工作流里的 `run:` 有两种写法：单行（`run: npm run X`）与 block scalar
+// （`run: |` + 缩进正文，多命令步骤的常规写法）。只认单行会让后者的步骤**凭空消失**，
+// 于是「CI 有没有以独立步骤跑某判据」被反向误判（实测：把 `run: npm run verify:notices`
+// 改成 block scalar 后，S25/S30 同时报「CI 没有以独立步骤跑 / verify:ci 多了 CI 不跑的步骤」）。
+// 所有解析工作流步骤的地方都必须走这个函数，不要再各自写 `^\s*run:\s*(.+)$`。
+const ciRunBodies = (text) => {
+  const out = []
+  const all = text.split('\n')
+  for (let i = 0; i < all.length; i++) {
+    const m = all[i].match(/^(\s*)(?:-\s*)?run:\s*(.*)$/)
+    if (!m) continue
+    const indent = m[1].length
+    const inline = m[2].trim()
+    if (inline && !/^[|>]/.test(inline)) { out.push(inline); continue }
+    const body = []
+    for (let j = i + 1; j < all.length; j++) {
+      const l = all[j]
+      if (!l.trim()) continue
+      if (l.match(/^\s*/)[0].length <= indent) break
+      body.push(l.trim())
+    }
+    out.push(body.join(' '))
+  }
+  return out
+}
+// 某个 npm script 是否以**独立步骤**出现在 CI 里（单行或 block scalar 都算）。
+const ciHasStep = (text, script) => ciRunBodies(text).some((b) => b.trim() === `npm run ${script}`)
+
 const lines = []
 let pass = 0
 let fail = 0
@@ -249,9 +277,8 @@ add({ id: 'S15', covers: yamlFilesUnder('.github/workflows'), name: '每个工�
   checked++
   const txt = read(rel)
   const m0 = miss.length
-  for (const m of txt.matchAll(/^\s*(?:-\s*)?run:\s*(.+)$/gm)) {
+  for (const v of ciRunBodies(txt)) {
     runs++
-    const v = m[1].trim()
     if (!v) miss.push(`${rel}: 有空 run:`)
     for (const n of v.matchAll(/npm run ([a-zA-Z0-9:_-]+)/g)) if (!scripts.includes(n[1])) miss.push(`${rel} 里的 npm run ${n[1]} 不存在于 package.json`)
   }
@@ -480,8 +507,7 @@ add({ id: 'S25', covers: ['THIRD-PARTY-NOTICES.md'], name: '第三方声明文�
   // 必须按**整行**匹配：'npm run verify:notices' 是 'npm run verify:notices-selftest' 的前缀，
   // 用 includes 会让「摘掉真判据、只留下自检」也判绿（M16c 变异体实测踩到，已改成行级正则）。
   for (const s of ['verify:notices', 'verify:notices-selftest']) {
-    const line = new RegExp(`^\\s*run:\\s*npm run ${s.replace(':', ':')}\\s*$`, 'm')
-    if (!line.test(ci)) miss.push(`CI 没有以独立步骤跑：npm run ${s}`)
+    if (!ciHasStep(ci, s)) miss.push(`CI 没有以独立步骤跑：npm run ${s}`)
   }
   if (!has('docs/THIRD-PARTY.md') || !read('docs/THIRD-PARTY.md').includes('THIRD-PARTY-NOTICES.md')) miss.push('docs/THIRD-PARTY.md 没有引用该文件（文档与处置脱钩）')
   return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '文件标记齐备 · 构建复制 · npm script 与 CI 接线 · 文档引用' }
@@ -518,7 +544,19 @@ add({ id: 'S26', covers: ['scripts/lib/checker.mjs', 'scripts/check-dist-size-bu
     // 环境前提与零样本纪律：非默认构建环境、缺产物，都不得判通过
     if (!/PUBLIC_PB_URL/.test(g)) miss.push('判据没有 PUBLIC_PB_URL 环境前提断言（该变量会改产物内容与文件名）')
     if (!/from '\.\/lib\/checker\.mjs'/.test(g)) miss.push('判据没有复用 scripts/lib/checker.mjs（未判定/关键跳过不得判通过的纪律）')
+    // 【R23 第四次重锚】「产物是不是这份源码构建的」这条前提不许被摘掉 —— 摘掉就会回到
+    // 「本地用陈旧 dist 重锚 ⇒ 本地 16/16 全绿、CI 一跑就红」（PR #27 实际发生过）。
+    if (!/const SOURCE_FINGERPRINT = '(?:[a-f0-9]{64}|PLACEHOLDER_SOURCE_FINGERPRINT)'/.test(g))
+      miss.push('判据没有 SOURCE_FINGERPRINT 常量（dist 与源码同源这一前提被摘掉了）')
+    if (!/dist 与源码同源/.test(g)) miss.push('判据没有「dist 与源码同源」的 N0 前提块')
+    // 注：写这个常量的重锚工具是审计运行根里的 lib/size-reanchor.mjs，**不在本仓库**（不属于产物
+    // 的一部分），故这里不要求它存在。错锚的兜底是判据自己：源码指纹一对不上就判未判定，
+    // 而 CI 必然在干净检出上跑（PR #27 就是这么抓到本地那次错锚的）。
   }
+  const mut = has(MUT) ? read(MUT) : ''
+  // 前提要有变异体守着：只测「源码漂移」不测「原样复制」无法排除复制本身触发（假阳性）；
+  // 只测复制不测漂移则等于没测。
+  for (const id of ['m8a-src-copied-control', 'm8b-src-drift']) if (!mut.includes(id)) miss.push(`变异体 ${id} 不存在（同源前提失去判别力证明）`)
   const pkg = has('package.json') ? read('package.json') : ''
   for (const s of ['verify:size', 'verify:size-selftest']) if (!pkg.includes(`"${s}"`)) miss.push(`package.json 缺 npm script：${s}`)
   // 不得塞进 verify:all：该判据需要 dist，全新克隆无构建即失败（与 verify:notices 的既有取舍一致）
@@ -576,11 +614,15 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
     if (g.includes(SSH_HDR)) miss.push('闸门源码里出现完整 OPENSSH 私钥头字面量（会自阻断）')
   }
   if (m) {
-    // 电池的覆盖面：13 阳性 + 2 阴性 + 未判定语义 + 提示区 + 自扫
-    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'n1 ', 'n2 ', 'u1 ', 'i1 ', 's1 自扫真实仓库']) {
+    // 电池的覆盖面：15 阳性 + 2 阴性 + 未判定语义（读不到 / 扫描面为空）+ 提示区 + 自扫
+    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'm14', 'm15', 'n1 ', 'n2 ', 'u1 ', 'u2 ', 'i1 ', 's1 自扫真实仓库']) {
       if (!m.includes(k)) miss.push(`电池缺场景 ${k.trim()}`)
     }
     if (!/process\.exit\(1\)/.test(m)) miss.push('电池失败时不 exit 1（会把失败读成通过）')
+    // R23REV-N6：闸门必须对「扫描面为空」判未判定（零样本不得判通过），且该分支不许只剩 exit 0
+    if (!/files\.length === 0/.test(g) || !/扫描面为空/.test(g)) miss.push('闸门对空扫描面没有判未判定（R23REV-N6 回归）')
+    // R23REV-N8：SECRET-ASSIGN 的前导边界不许退回 `\b`（下划线前缀键名会整类漏检）
+    if (!/\(\?<!\[A-Za-z0-9\]\)/.test(g)) miss.push('SECRET-ASSIGN 前导边界退回 \\b 形态（下划线前缀键名整类漏检，R23REV-N8 回归）')
   }
   // 接线：npm script + CI 独立步骤（includes 会让「摘掉真判据只留自检」也判绿）
   const pkg = has('package.json') ? read('package.json') : ''
@@ -599,12 +641,14 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
   const pr = prHit.path ? read(prHit.path) : ''
   if (prHit.path && (!/verify:publish/.test(pr) || !/阻断/.test(pr))) miss.push('PR 模板没有写明发布卫生闸门的真实阻断线')
   if (!/P1/.test(ci.split('\n').find((l) => /name: 发布卫生闸门/.test(l)) || '')) miss.push('CI 步骤名没有写明阻断线（P0/P1）')
-  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（禁扩展名白名单回退）· 未判定 exit 2 · 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 13+2+2+1 场景 · npm/CI 接线 · 文档口径一致' }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（禁扩展名白名单回退）· 未判定 exit 2（读不到 / 扫描面为空）· 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 15+2+2+1 场景 · npm/CI 接线 · 文档口径一致' }
 } })
 
 // ── S28 仓库判据的变异自检接线与判别力（R22） ──────────────────────────
 // 为什么单独立一条：`scripts/verify-repo.mjs` 是仓库结构面与 CSP 面的判据，它的判别力来自
-// `--self-check` 的 20 个变异体（M1–M15 + 零样本 4 条 + 越界 2 条）。R22 实测：这个自检
+// `--self-check` 的 30 个变异体（M1–M19 沿用 + 零样本 4 条 + 越界 2 条；R23 的 W23-H 修
+// R22-04/05 时补了 M16–M19，R23 的六指令 CSP 又补了 M20–M25 六条 —— 判据的计数必须跟着走，
+// 否则 CI 步骤名与真实判别力脱钩）。R22 实测：这个自检
 // **从未进 CI**（package.json 有 `verify:selfcheck`，但 CI 里一次都没跑）—— 于是「判据被无声
 // 削弱」的路径正坐在 CI 绿灯的背面。这与 R22REV 报的「只验 img-src 这个词存在」是同一层级的
 // 两个问题：一个是断言太弱，一个是守断言的东西没接线。这里守三件事：
@@ -627,7 +671,7 @@ add({ id: 'S28', covers: ['scripts/verify-repo.mjs', 'package.json', '.github/wo
   }
   // CI 步骤用**行级正则**匹配，不用 includes：includes 会被注释或别的脚本里的同名字符串满足
   // （S25/M16c 与 S27/M21 都踩过同型坑）。
-  if (!/^\s*run:\s*npm run verify:selfcheck\s*$/m.test(ci)) miss.push('CI 没有以独立步骤跑 npm run verify:selfcheck（判据的判别力在 CI 里无人守）')
+  if (!ciHasStep(ci, 'verify:selfcheck')) miss.push('CI 没有以独立步骤跑 npm run verify:selfcheck（判据的判别力在 CI 里无人守）')
   if (v) {
     // 必须锚在**声明行**上：只测 /imgLoose/ 会被「声明被摘、引用还在」的变异体骗过（M25 实测：
     // 摘掉 `const imgLoose = …` 后文件里仍有 `imgLoose.length === 0`，断言照旧为真 → 变异体漏检）。
@@ -638,6 +682,17 @@ add({ id: 'S28', covers: ['scripts/verify-repo.mjs', 'package.json', '.github/wo
     if (!v.includes('/<!--[\\s\\S]*?-->/g')) miss.push('缺少注释遮蔽 —— 说明文字里的 <img> 会被自己的检查判成标签')
     if (!/样式里没有跨源 url\(\) 图片引用/.test(v)) miss.push('缺少样式跨源图片断言的标题')
     for (const m of ['M12', 'M13', 'M14', 'M15']) if (!v.includes(`name: '${m} `)) miss.push(`变异体 ${m} 被摘掉`)
+    // R23：六指令 CSP 的取值护栏（每条都是「指令在、取值被改回宽松」的形态，只验词存在的断言无感）
+    for (const d of ['script-src', 'style-src', 'frame-src', 'worker-src']) {
+      if (!v.includes(`dirToks('${d}')`)) miss.push(`缺少 ${d} 的取值断言（只验指令存在的话，取值被改回宽松抓不到）`)
+    }
+    if (!/worker-src 恰好放行 blob:\/data:/.test(v)) miss.push('worker-src 取值断言的标题被改名或摘掉（省掉它会回落 script-src 的 self）')
+    if (!/CSP 声明了 frame-src 'none'/.test(v)) miss.push("缺少 frame-src 'none' 断言")
+    for (const m of ['M20', 'M21', 'M22', 'M23', 'M24', 'M25']) {
+      // 变异体名里可能含单引号（如 `'wasm-unsafe-eval'`），那时声明行用双引号 —— 两种都要认，
+      // 否则「改名/换引号」会被误报成「被摘掉」（本检查第一次就跑出过这个假红）。
+      if (!v.includes(`name: '${m} `) && !v.includes(`name: "${m} `)) miss.push(`变异体 ${m} 被摘掉（CSP 取值护栏的判别力载体）`)
+    }
     if (!/process\.exit\(bad \? 1 : 0\)/.test(v)) miss.push('自检失败没有非零退出（自检本身变成恒真）')
   }
   return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '3 个文件 · npm script 指向真文件且带 --self-check · CI 独立步骤 · 取值断言 + 前提锁扩面 + 注释遮蔽 · M12–M15 · 自检非零退出' }
@@ -672,6 +727,83 @@ add({ id: 'S29', covers: ['scripts/check-repo-standards.mjs', 'scripts/verify-re
     }
   }
   return { ok: miss.length === 0, detail: miss.length ? miss.slice(0, 4).join('；') : `${SCAN.length} 个判据脚本 · ${scanned} 个读取点全部与跟踪名逐字符一致` }
+} })
+
+// ── S30 本地一键必须与 CI 步骤逐条对齐（R23） ────────────────────────────
+// 触发事故（R23-LEAD-05，实测）：`verify:all` 自称「本地一键」，但它是一个**陈旧聚合**——
+// 缺 `typecheck`、缺 `verify:notices`、缺 `verify:size`，且从不含任何变异自检电池；
+// 而 CI 实际跑 16 步（含构建、体积/许可判据、5 个自检电池）。于是「本地 `verify:all` 全绿」
+// 与「CI 全绿」之间隔着一大片没人跑的面 —— 这与 R22-21（本地绿、CI 红）同族：
+// **假通过的来源可以是「本地那条捷径本身不完整」**，而不是任何一条断言写错。
+// 守两件事：
+//  ① 存在 `verify:ci`，其 npm 步骤序列与工作流里出现的 `npm run X` 步骤**同集同序**；
+//  ② `verify:all` 的步骤集合必须是 `verify:ci` 的子集（允许存在更小的本地捷径，但不许凭空多步骤）。
+// 为什么要求「同序」：构建必须先于一切依赖 dist 的判据（体积/许可/自检电池），顺序错了会判未判定。
+add({ id: 'S30', covers: ['package.json', '.github/workflows/ci.yml'], name: '本地一键与 CI 步骤逐条对齐（verify:ci 同集同序，verify:all 为其子集）', run() {
+  const miss = []
+  let pkg = {}
+  try { pkg = has('package.json') ? JSON.parse(read('package.json')) : {} } catch { return { ok: false, detail: 'package.json 不是合法 JSON' } }
+  const scripts = pkg.scripts || {}
+  const wf = tracked.filter((f) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(f))
+  if (!wf.length) return { ok: false, detail: '没有跟踪任何工作流文件（判据无从对齐）' }
+  // CI 侧的 npm 步骤（去重、保持首次出现顺序）；`npm ci` 不是 `npm run`，天然不入集
+  // 步骤正文解析必须同时支持单行 `run: npm run X` 与 block scalar（`run: |` + 缩进正文）——
+  // 只认单行会让 `run: |` 形式的步骤**凭空消失**，于是 verify:ci 被反向误报成「多了 CI 不跑的步骤」
+  // （R23REV-N2 实测：把 `run: npm run verify:notices` 改成 block scalar 后 S30 报红）。
+  const ciSteps = []
+  for (const f of wf) {
+    if (!has(f)) { miss.push(`${f} 已跟踪但工作区缺失`); continue }
+    const text = read(f)
+    const lines = text.split('\n')
+    for (const r of ciRunBodies(text)) {
+      for (const n of r.matchAll(/\bnpm run ([A-Za-z0-9:_-]+)/g)) if (!ciSteps.includes(n[1])) ciSteps.push(n[1])
+    }
+    // R23REV-N1：`if: false` 会让「同集同序」在**CI 永不执行**的情况下同时为真。
+    // 窗口判定：从 `if:` 行往下，直到出现缩进 ≤ 该行的新键为止，窗口里出现 `npm run` 即命中。
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/^(\s*)if:\s*(.*)$/)
+      if (!m) continue
+      const val = m[2].trim().replace(/^['"]|['"]$/g, '')
+      if (!/^(false|\$\{\{\s*false\s*\}\})$/.test(val)) continue
+      const indent = m[1].length
+      let hit = false
+      for (let j = i + 1; j < lines.length; j++) {
+        const l = lines[j]
+        if (!l.trim()) continue
+        const li = l.match(/^\s*/)[0].length
+        // 新步骤（`- name:` 形式的列表项）或缩进更浅的新键 ⇒ 窗口结束
+        if (/^\s*- /.test(l) && li <= indent) break
+        if (li < indent && /^\s*[A-Za-z_-]+:/.test(l)) break
+        // 同缩进的键行属于同一个 step（`if:` 与自身的 `run:` 缩进相同），必须留在窗口内
+        if (/\bnpm run [A-Za-z0-9:_-]+/.test(l)) { hit = true; break }
+      }
+      if (hit) miss.push(`${f}:${i + 1} 的 \`if: false\` 关掉了承载 npm run 的 job/步骤 —— CI 不会执行它，「同集同序」在此恒真`)
+    }
+  }
+  const chain = (name) => (scripts[name] || '').split('&&').map((s) => s.trim())
+    .map((s) => (s.match(/^npm run ([A-Za-z0-9:_-]+)$/) || [])[1]).filter(Boolean)
+  const ciLocal = chain('verify:ci')
+  if (!scripts['verify:ci']) miss.push('package.json 缺少 verify:ci（与 CI 逐条对齐的一键）')
+  else {
+    const missing = ciSteps.filter((s) => !ciLocal.includes(s))
+    const extra = ciLocal.filter((s) => !ciSteps.includes(s))
+    if (missing.length) miss.push(`verify:ci 少了 CI 在跑的步骤：${missing.join('、')}`)
+    if (extra.length) miss.push(`verify:ci 多了 CI 不跑的步骤：${extra.join('、')}`)
+    if (!missing.length && !extra.length && ciLocal.join(',') !== ciSteps.join(',')) {
+      miss.push(`verify:ci 与 CI 顺序不一致（构建必须先于依赖 dist 的判据）`)
+    }
+  }
+  const allLocal = chain('verify:all')
+  if (!scripts['verify:all']) miss.push('package.json 缺少 verify:all（本地快速一键）')
+  else {
+    const ghosts = allLocal.filter((s) => !ciLocal.includes(s))
+    if (ghosts.length) miss.push(`verify:all 里有 CI 侧不存在的步骤：${ghosts.join('、')}`)
+  }
+  return {
+    ok: miss.length === 0,
+    detail: miss.length ? miss.slice(0, 4).join('；')
+      : `${wf.length} 个工作流 · CI 侧 ${ciSteps.length} 个 npm 步骤 · verify:ci 同集同序 · verify:all 为 ${allLocal.length} 步子集`,
+  }
 } })
 
 for (const c of CHECKS) {

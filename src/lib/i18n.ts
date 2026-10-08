@@ -28,7 +28,6 @@ const M = {
     hintTurnRight: '再向右转一点',
     hintLookUp: '再抬一点头',
     hintLookDown: '再低一点头',
-    hintHeadLevel: '头回正一点',
     hintStraighten: '头回正一点',
     hintFaceFront: '正对镜头',
     hintBlurry: '画面模糊，请保持稳定',
@@ -43,6 +42,13 @@ const M = {
     // 提交重试全部失败后的终态文案。此前失败后界面仍停留在「上传中…」，
     // 用户既不知道失败、也没有可点的入口（已采文件只在内存，刷新即丢）。
     hintUploadFailed: '上传失败，请检查网络后点下方「重新提交」',
+    // 「本次一个可上传的文件都没有」的终态（W23B-05）：整批文件都因体积过小被丢弃时，
+    // 真实原因是一段都没录上，不是网络。用网络文案会把用户引去检查网络，
+    // 且掩盖了唯一有效的动作 —— 重新采集。文案里点名下方那个按钮，与 retry 的标签一致。
+    hintEmptyBatch: '本次没录到可上传的文件，请点下方「重试」重新采集',
+    // 「收尾还没结束、队列状态未知」（R23REV-N3）：按钮触发的提交等满上限仍 busy 时用这条。
+    // 与 hintEmptyBatch 分开是必须的 —— 后者引导用户点「重新采集」，而那会清空待提交队列。
+    hintStillFinalizing: '这一步还在收尾，请等几秒再点「重新提交」',
     // 不要在这里再加「请」：pose* 系列文案本身已带祈使语气（「请正对镜头」等），
     // 加了会拼成「请请正对镜头」。
     hintCameraOn: '{pose}',
@@ -64,7 +70,6 @@ const M = {
     uploadFailed: '上传失败',
     failed: '失败：{msg}（保持姿态会自动重试）',
     failedMax: '连续失败，请检查网络后点「重试」',
-    uploading: '上传中…',
     camera: '摄像头 {n}',
 
     doneTitle: '识别完成',
@@ -89,6 +94,13 @@ const M = {
     debugFilesUnit: '个文件',
     metricRoll: '头部倾斜',
     emptyRecording: '录制结果为空',
+    // 与 emptyRecording 的区别：emptyRecording = 队列确实为空（一个文件都没录到）；
+    // stillFinalizing = 队列状态未知（收尾还没结束，R23REV-N3）。两者都不发请求，但归因不同。
+    stillFinalizing: '还在收尾，请稍后重试',
+    // 网络层失败（请求根本没到服务端：DNS 失败 / 连接被拒 / 断网 / CORS 预检失败）。
+    // 浏览器原文是「Failed to fetch」「Load failed」这类，对用户没有可操作性（W23B-08）；
+    // 这里给出「是什么 + 怎么办」。原始错误仍在控制台，诊断信息不丢。
+    uploadNetworkFailed: '网络不可达或连接被拒，请检查网络后重试',
     // 采集过程内部的异常（取帧失败等）。技术细节不进界面 —— 否则切到英文时会中英混杂，
     // 且内部错误对用户没有可操作性。细节见控制台（?debug=1）。
     captureFailed: '采集出错，请保持姿态',
@@ -119,7 +131,6 @@ const M = {
     hintTurnRight: 'A little more to the right',
     hintLookUp: 'A little higher',
     hintLookDown: 'A little lower',
-    hintHeadLevel: 'Level your head a bit',
     hintStraighten: 'Straighten your head a bit',
     hintFaceFront: 'Face the camera directly',
     hintBlurry: 'Image is blurry, please hold still',
@@ -129,6 +140,8 @@ const M = {
     hintFinalizing: 'Processing, please wait…',
     hintUploading: 'Uploading…',
     hintUploadFailed: 'Upload failed. Please check your network and tap "Retry upload" below',
+    hintEmptyBatch: 'No uploadable files were captured this time. Tap "Retry" below to capture again',
+    hintStillFinalizing: 'This step is still finishing up. Wait a few seconds, then tap "Retry upload"',
     hintCameraOn: '{pose}',
 
     cameraDenied: 'Camera permission denied. Please allow camera access and refresh the page',
@@ -143,7 +156,6 @@ const M = {
     uploadFailed: 'Upload failed',
     failed: 'Failed: {msg} (will retry automatically while holding pose)',
     failedMax: 'Repeated failures. Please check the network and tap "Retry"',
-    uploading: 'Uploading…',
     camera: 'Camera {n}',
 
     doneTitle: 'Recognition complete',
@@ -167,6 +179,8 @@ const M = {
     debugFilesUnit: 'files',
     metricRoll: 'Roll',
     emptyRecording: 'Empty recording',
+    stillFinalizing: 'Still finishing up, please retry in a moment',
+    uploadNetworkFailed: 'Network unreachable or connection refused. Check your connection and retry',
     captureFailed: 'Capture error, please hold your pose',
   },
 } as const

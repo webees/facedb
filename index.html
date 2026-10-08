@@ -3,19 +3,18 @@
   <head>
     <meta charset="UTF-8" />
 
-    <!-- 只约束「连接」与「图片」两个维度；不写 default-src，故对脚本/样式/字体毫无影响。
-         connect-src：'self'（网关同源 /api）· *:8090（直连）· ws://*:8090 / wss://*:8090
-           （WebSocket 属独立方案，*:8090 不覆盖；当前未使用，预留给实时推送）
-           · <%= PB_CONNECT_SRC %>（构建期按 PUBLIC_PB_URL 追加，留空即空串。必须由构建期
-           产出：*:8090 只覆盖 8090 端口，而 PUBLIC_PB_URL 常写成 https://host，实测被拦死）
-         img-src：图片通道的唯一防线 —— JS 侧只 patch 了 fetch/XHR/sendBeacon，
-           `new Image().src = …` 绕开它们（实测该通道确实出网）。界面不渲染 <img>，
-           同源 favicon 由 'self' 覆盖，预览走 <video>+blob:，收紧不损伤功能。
-         覆盖范围与仍敞开的三条通道（<script src> / <link rel=stylesheet> / <iframe src>）
-         见 RUN.md「遥测拦截：三层（内联脚本 / 运行期模块 / CSP）」。 -->
+    <!-- CSP 六条指令，逐条都是实测功能必需（证据见 RUN.md「遥测拦截：三层」）：
+         connect-src：'self'（网关同源）· *:8090（直连）· ws/wss://*:8090（预留实时推送）
+           · <%= PB_CONNECT_SRC %>（构建期按 PUBLIC_PB_URL 追加，留空即空串）
+         img-src：图片通道唯一防线（JS 只 patch fetch/XHR/sendBeacon，`new Image().src` 能绕开）
+         script-src：'unsafe-inline' 必需（否则内联遥测层整层失效）；'wasm-unsafe-eval' 必需
+           （否则人脸模型编译 CompileError）—— 两者都实测过
+         style-src 'self' · frame-src 'none' · worker-src blob: data:（省掉 worker-src 会回落
+           到 script-src 的 'self'，blob Worker 被连坐）；不写 default-src（会接管 script-src）
+         已知敞口：*:8090 在 https 页面上等于「任意主机:8090」。 -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="connect-src 'self' *:8090 ws://*:8090 wss://*:8090<%= PB_CONNECT_SRC %>; img-src 'self' data: blob: *:8090<%= PB_CONNECT_SRC %>"
+      content="connect-src 'self' *:8090 ws://*:8090 wss://*:8090<%= PB_CONNECT_SRC %>; img-src 'self' data: blob: *:8090<%= PB_CONNECT_SRC %>; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self'; frame-src 'none'; worker-src blob: data:"
     />
 
     <script>
@@ -136,10 +135,13 @@
         // 尾点（FQDN 绝对形式 googleapis.com.）也要拦：new URL() 保留尾点，
         // 旧正则漏掉它，实测能放行到真实网络。
         var BLOCKED = /(^|\.)googleapis\.com\.?$/i
+        // 与 src/lib/block-telemetry.ts 的 hostOf 逐字同口径：字符串 → .url 字符串 → String()。
+        // 不能只读 .url：URL 对象没有 .url（是 .href），cross-realm 的 URL 连 instanceof 都过不了，
+        // 只读 .url 会把目标读成空主机而放行（W23-C 实测 R22-07）。
         var isBlocked = function (u) {
           try {
-            var h = new URL(typeof u === 'string' ? u : u && u.url ? u.url : String(u), location.href).hostname
-            return BLOCKED.test(h)
+            var raw = typeof u === 'string' ? u : u && typeof u.url === 'string' ? u.url : String(u)
+            return BLOCKED.test(new URL(raw, location.href).hostname)
           } catch (e) {
             return false
           }
@@ -161,48 +163,10 @@
           return isBlocked(i) ? Promise.resolve(empty()) : of.call(window, i, init)
         }
         window.fetch = patchedFetch
-        var oo = XMLHttpRequest.prototype.open
-        var os = XMLHttpRequest.prototype.send
-        var blocked = new WeakSet()
-        var patchedOpen = function (m, u) {
-          // 必须成对：同一个 XHR 可以反复 open，只 add 不 delete 会让复用的对象被一直拦着，
-          // 连真正要发的请求也不发（还伪造 200 '{}'）。与 block-telemetry.ts 保持一致。
-          if (isBlocked(u)) blocked.add(this)
-          else blocked.delete(this)
-          return oo.apply(this, arguments)
-        }
-        XMLHttpRequest.prototype.open = patchedOpen
-        var patchedSend = function () {
-          if (blocked.has(this)) {
-            // 模拟一次【完整且成功】的响应，与 src/lib/block-telemetry.ts 保持一致：
-            // 只补事件而不设 readyState/status/responseText 的话，调用方读到 status=0 会判为失败。
-            var self = this
-            // abort() 之后不得再派发假事件（调用方会在 abort 里清状态，之后收到 load 会当成成功）
-            var aborted = false
-            var prevAbort = this.abort
-            this.abort = function () {
-              aborted = true
-              return prevAbort.apply(this, arguments)
-            }
-            setTimeout(function () {
-              if (aborted) return
-              var def = function (k, v) {
-                Object.defineProperty(self, k, { value: v, configurable: true })
-              }
-              def('readyState', 4)
-              def('status', 200)
-              def('statusText', 'OK')
-              def('responseText', '{}')
-              def('response', '{}')
-              self.dispatchEvent(new Event('readystatechange'))
-              self.dispatchEvent(new Event('load'))
-              self.dispatchEvent(new Event('loadend'))
-            }, 0)
-            return
-          }
-          return os.apply(this, arguments)
-        }
-        XMLHttpRequest.prototype.send = patchedSend
+        // 内联层**不再补 XHR**（R23-P4）。理由：运行期模块层（src/lib/block-telemetry.ts）
+        // 在正常构建里必然后加载并覆盖这两个原型方法，本层实现不可达；而作为第二实现它还带
+        // 两处规范缺陷 —— 假事件用 Event 而非 ProgressEvent、被拦请求永不进入 timeout 分支。
+        // XHR 通道现由运行期层 + CSP connect-src（不含 googleapis 主机）两层覆盖。
         var patchedBeacon
         if (navigator.sendBeacon) {
           // 不能 bind：bind 造出新函数对象，撤层时按身份还原必然失败
@@ -219,13 +183,17 @@
             // 调用方以为撤了、补丁却仍生效 —— 所以这里显式告警，不静默。
             var restored = 0
             if (window.fetch === patchedFetch) { window.fetch = of; restored++ }
-            if (XMLHttpRequest.prototype.open === patchedOpen) { XMLHttpRequest.prototype.open = oo; restored++ }
-            if (XMLHttpRequest.prototype.send === patchedSend) { XMLHttpRequest.prototype.send = os; restored++ }
             if (patchedBeacon && navigator.sendBeacon === patchedBeacon) { navigator.sendBeacon = ob; restored++ }
-            var expected = patchedBeacon ? 4 : 3
+            var expected = patchedBeacon ? 2 : 1
+            // 与 block-telemetry.ts 同口径：还原不足 = 顺序不对（告警）；还原够但模块层还压在上面
+            // = 网络尚未放开（只 debug，先撤内联层属正常流程中间态）。
+            var fellBack = window.fetch !== patchedFetch &&
+              !/\[native code\]/.test(Function.prototype.toString.call(window.fetch))
             if (restored < expected) {
               console.warn('[telemetry] 撤层时本层不在顶层：' + expected + ' 个补丁点只还原了 ' + restored +
                 ' 个。撤层必须后装先撤（先撤模块层再撤内联层），否则本层补丁会残留。')
+            } else if (fellBack) {
+              console.debug('[telemetry] 本层已撤，但 window.fetch 仍不是原生实现（模块层还压在上面）—— 网络尚未放开。')
             }
           },
         }

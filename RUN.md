@@ -238,6 +238,12 @@ blendshape 值飙升 → 用户越转头越被判「请睁开眼睛」→ **侧�
 两层**共用同一份 90 秒总预算**（`src/lib/pb.ts` 的 `UPLOAD_BUDGET_MS`）：内层每次请求的超时取
 `min(25s, 剩余预算)`，退避等待也计预算，预算耗尽即停 —— 所以最坏等待有硬上界，
 不会出现「界面一直停在上传中」而用户无从取消的情况。
+
+> **口径更正（R23REV-N5）**：上界管的是**墙钟**，不是**请求次数**。内外两层是相乘关系
+> （3 × 3 = 最坏 9 次尝试），只要每次尝试都很快（如立刻被拒的 4xx/5xx），9 次会在预算内跑完。
+> 因此「最多 3 次重试」这种说法只在**单层**成立；跨层只能说「共用一份预算，预算耗尽即停」
+> （`src/lib/pb.ts:194-199` 用调用方传入的 `deadline` 判定，且单次超时也被夹到剩余预算内）。
+> 这不是 R23 引入的行为，只是 R23 把它抽成 `src/lib/upload-batch.ts` 之后才被复核席量清楚。
 自动重试全部失败后，界面才出现**「重试上传」按钮**（`v-if="submitFailed"` → `retrySubmit()`，
 整批重发，已采集的文件仍在内存里；不给入口的话用户只能刷新页面，而刷新会丢掉本次全部采集）。
 另有一个**「重试」按钮**（`v-if="retryable"` → `retry()`）用于「连续多帧识别不到人脸」时重新开始。
@@ -341,8 +347,9 @@ blendshape 值飙升 → 用户越转头越被判「请睁开眼睛」→ **侧�
 
 MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，域名形如
 `odml.pa.googleapis.com/v1/log`。**本项目处理人脸数据，不允许任何数据外发**，已拦截 ——
-准确口径是：**连接类 API（fetch / XHR / sendBeacon / WS / SSE）与图片通道已关**；
-`<script src>`、`<link rel=stylesheet>`、`<iframe src>` 三条仍敞开（已登记，见
+准确口径是：**连接类 API（fetch / XHR / sendBeacon / WS / SSE）、图片、`<script src>`、
+`<link rel=stylesheet>`、`<iframe src>` 与同源脚本 Worker 的创建全部已关**（第 48 轮实测：
+44 个判定相位全过）；唯一登记的敞口是 `connect-src` 里的 `*:8090`（见
 「遥测拦截：三层（内联脚本 / 运行期模块 / CSP）」一节）。
 
 拦截分两层，互为保险：
@@ -449,13 +456,20 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 > | 各层解压后之和 | `docker history` 的 `Size` 逐层求和 | 48,136,900 字节 |
 > | 容器内整棵根文件系统 | `docker run --rm --entrypoint sh … -c 'du -sb /'` | 85,863,301 字节 |
 > | 容器内产物目录 | `… -c 'du -sb /public'` | 27,430,235 字节 |
-> | 宿主 `dist` 文件字节和 | `find dist -type f -exec stat -f %z {} + \| awk '{s+=$1} END{print s}'` | 27,429,645 字节 |
+> | 宿主 `dist` 文件字节和 | `find dist -type f -exec stat -f %z {} + \| awk '{s+=$1} END{print s}'` | 27,429,186 字节（2026-10-08 复读） |
 >
 > 注意 `docker image inspect .Size`（18.6MB）竟然**小于**镜像内 `/public`（27.4MB）—— 机制未查证，此处只作口径事实登记，不据此下结论。
 > 产物文件数：**13 个**（宿主 `dist` 与镜像内 `/public` 一致）。历史上写的「12 个文件」是 R20-F7 之前的读数 ——
 > 第 13 个是 `THIRD-PARTY-NOTICES.md`（17,084 字节），由提交 `55f576b` 引入并经 `rsbuild.config.ts` 的 `output.copy` 拷进产物。
-> 产物有两种口径，同一份产物差 590 字节：`find /public -type f -exec cat {} + | wc -c` = **27,429,645**（文件字节和）、
-> `du -sb /public` = **27,430,235**（`du` 把目录项自身也算进去：13 个文件 + 1 个目录）。
+> 产物有两种口径，同一份产物差 590 字节：`find /public -type f -exec cat {} + | wc -c` = 文件字节和、
+> `du -sb /public` = 文件字节和 **+ 13 个文件 + 1 个目录**的目录项自身开销。
+> **字节和是快照，不是断言**：任何源码改动都会让它变（R22 精简 `index.html` 头部注释后，本项比原读数少 459 字节）。
+> 真正钉住产物的是 `dist/SHA256SUMS`（13 个文件的逐文件 sha256）与 `npm run verify:size` 的阈值判据 ——
+> 复核时用那两者，不要拿这里的数字当期望值。
+> **体积判据是棘轮，不是「与历史版本比较」**（R23REV-N11 已登记为已知取舍）：`verify:size` 的基线
+> 就是上一次通过时的实测快照，两者精确相等是设计使然。代价是**任何改动源码的轮次都必须重锚**
+> （R23 一轮重锚了 3 次），重锚要逐条写明增量来源；收益是任何净增长都必须有人显式过一遍并归因。
+> 重锚用常驻工具 `$RUN/lib/size-reanchor.mjs --root <工程根>`（先看不带 `--write` 的 diff）。
 > 复测命令（可原样复跑））：
 
 ```bash
@@ -469,6 +483,27 @@ docker run --rm --entrypoint sh webees-facedb-web:latest -c 'find /public -type 
 CSP 里还会追加 `https://pb.example.com wss://pb.example.com`。因此**任何「产物逐文件 sha256 清单」类基线都必须写明它的构建环境前提**：
 仓库 `.env`（被 `.gitignore` 忽略，当前 `PUBLIC_PB_URL=` 为空）一旦被本地填值，清单类判据会**整体变红**而不是报「环境不同」。
 `scripts/check-dist-size-budget.mjs` 对此的处理是：**检测到 `PUBLIC_PB_URL` 非空即判未判定（exit 2），绝不判通过**。
+
+**⚠️ 构建目录里的 `node_modules` 必须是真实目录，不能是符号链接**（R23 实测，运行根 `evidence/R23-verify-ci-clean.log`）：
+同一棵树、同一条 `npm run build`，只把 `node_modules` 从真实目录换成指向它的软链，
+产物就从 `index.3034178f9f.js` / `lib-vue.8351304052.js` / `m.79c0ab86b6.js`
+变成 `index.59ab2f4658.js` / `lib-vue.41bac71c26.js` / `c.283e6ba8c2.js`（在同一软链目录内**可复现**，
+但与真实目录构建的结果不可比）。**两组名字都是 R23 当时的读数，会随源码变动**（收口期改了 `CaptureView.vue` /
+`i18n.ts` / `pb.ts` 之后，真实目录构建的入口 chunk 先变成 `index.b0621d6a09.js`，随后因判据自身改动又变成
+`index.ebc8a68402.js`）——
+要点是「同源可比、跨源不可比」，不是这三个名字本身。意义有两层：一是要隔离副本时用 `cp -al`（硬链副本 = 真实目录）或 `cp -R`，
+**别用 `ln -s`**；二是软链里跑 `npm ci` / `install` / `prune` 会穿透软链把工程根的依赖树重实化
+（R23 事故 01：`node_modules/.bin` 被削到 6 项、`vue-tsc` 软链消失）。
+`scripts/check-dist-size-budget.mjs` 对此的处理同样**判未判定（exit 2），绝不判通过**，并有对应变异体 `m6-symlink-nm`。
+
+**产物必须与源码同源（R23 第四次重锚补的前提）**：判据此前只钉「产物长什么样」，不钉「产物是不是这份源码
+构建的」。收口期我拿一份**陈旧 `dist`** 重锚了入口 chunk 名 ⇒ 本地 `verify:size` 16/16 全绿、**CI 一跑就红**
+（同一个提交在干净检出里重建得到另一个 chunk 名）。修法是把喂给打包器的源码输入（`index.html` +
+`package.json` + `src/**`，共 16 个文件）的 sha256 记进判据的 `SOURCE_FINGERPRINT`，启动时重算、不一致即
+**未判定（exit 2）**；变异体 `m8a-src-copied-control`（原样复制 src，必须仍绿）与 `m8b-src-drift`（改一行
+src 不改产物，必须未判定）成对证明这道前提有判别力。**含义**：任何改完源码没重新构建就重锚的读数都不可信
+——重锚前先 `rm -rf dist && npm run build`。这条前提反过来也说明「本地绿」不构成收敛证据，**必须在干净检出
+（或 CI）上复跑才算数**。
 
 
 **关键认识**：`dist` 只有 27.4MB（13 个文件），**镜像的大头从来不是产物，而是「托管它的服务器」**。
@@ -861,16 +896,18 @@ if (vw <= 0 || f.faceWidthPx < vw * MIN_FACE_RATIO) return no('hintTooFar')
 
 | 层 | 位置 | 拦什么 | 覆盖范围 |
 |---|---|---|---|
-| ① 内联拦截 | `index.html` 里的内联脚本 | 加载期的 fetch / XHR / sendBeacon | 主线程（早于任何模块执行） |
-| ② **CSP** | `index.html` 的 `meta` | 连接类 API（fetch / XHR / WS / SSE / beacon）与 `<img src>`；`<script src>` / `<link rel=stylesheet>` / `<iframe src>` **不拦** | 主线程 + `blob:`/`data:` Worker；**不含同源脚本 Worker**（见下） |
+| ① 内联拦截 | `index.html` 里的内联脚本 | 加载期的 fetch / sendBeacon（**R23 起不再补 XHR**，见「遥测拦截：三层」一节） | 主线程（早于任何模块执行） |
+| ② **CSP** | `index.html` 的 `meta` | 连接类 API（fetch / XHR / WS / SSE / beacon）、`<img src>`、`<script src>`、`<link rel=stylesheet>`、`<iframe src>`、同源脚本 Worker 的创建 | 主线程 + `blob:`/`data:` Worker |
 | ③ JS 补丁 | `src/lib/block-telemetry.ts` | 运行期的 fetch / XHR / sendBeacon | 主线程 |
 
-**② 的边界（第 47 轮实测，此前这一格写错了）**：meta CSP 拦得住主线程，也拦得住
-`blob:` 脚本创建的 Worker（worker 继承创建者的策略）；但**同源脚本 Worker 完全不受它约束** ——
+**② 的边界（第 47 轮实测，第 48 轮部分关闭）**：meta CSP 拦得住主线程，也拦得住
+`blob:` 脚本创建的 Worker（worker 继承创建者的策略）；同源脚本 Worker 的作用域**不受本文档 CSP 约束** ——
 worker 作用域的策略来自 worker 脚本自己的响应头，而本仓库与容器都没有 HTTP 头形式的 CSP，
-于是 `new Worker('/w.js')` 里的 fetch 连非 8090 端口都放行（实测 `fetch-ok(200)` 且外部计数服务器
-收到请求；`blob:` 对照被拦、去 CSP 的阴性对照全部放行）。将来若要让 Worker 承载外发，只有两条路：
-用 `blob:` 脚本，或给 worker 脚本加 CSP 响应头。
+于是 `new Worker('/w.js')` 里的 fetch 连非 8090 端口都放行（第 47 轮实测 `fetch-ok(200)` 且外部计数服务器
+收到请求；`blob:` 对照被拦、去 CSP 的阴性对照全部放行）。**第 48 轮补上了 creation 这一手**：
+加上 `worker-src blob: data:` 后，从同源脚本 URL 创建 Worker 本身被拦（服务器命中 1 → 0），
+`blob:`/`data:` Worker 仍可用。残留：worker 脚本若真被加载起来，其内部网络访问仍只受它自己的响应头约束 ——
+将来若要让 Worker 承载外发，只有两条路：用 `blob:` 脚本，或给 worker 脚本加 CSP 响应头。
 
 **顺带纠正一句**：本工程**没有任何 Worker 创建**（`src/`、`index.html`、容器内 bundle 三处
 `new Worker` 均 0 处命中），所以「MediaPipe 的 wasm loader 在 Worker 里发请求」不成立；
@@ -956,11 +993,22 @@ s = s.replaceAll('{' + k + '}', String(v))          // ❌
 
 ### ② 静态：键的定义与引用是否闭合
 
+**口径（R23 更正）**：以下读数取**全部引用形态**（15 种：`t('k')` / `t("k")` / 反引号模板 /
+`hints.set` / `setNow` / verdict 实参 / 对象属性 `hintKey` / 键名映射表的值 / 键名数组元素 /
+`ref<MessageKey>('k')` 初值 / `createHints` 实参 / 比较读 / `type` 联合成员 / 动态拼接 …）
+＋**反向逐键分类**（对每个已定义键找出全部出现并强制归类，未归类数必须为 0）。
+旧读数「23 个不同键」只扫 `t('k')` 单引号字面量，既不覆盖上列形态也不查死键，**已作废**。
+
 ```
-中文键 68   英文键 68   ← 完全对称
+中文键 70   英文键 70   ← 完全对称
 仅中文有：无      仅英文有：无
-所有被引用的键（23 个不同键）都有定义
+所有被引用的键（70 个不同键）都有定义   ← 拦住拼错的键
+所有定义的键（70 个）都被引用           ← 拦住死键（无人引用的词条）
 ```
+
+**两个方向都要写**：只写「被引用的都有定义」拦不住死键 —— 死键不会被任何分支触发，
+动态扫描永远看不到它。反向扫出死键后必须**删键**（并删除 zh/en 两侧），
+否则下次读数里它仍会以「已定义未被引用」出现。零样本（扫不到任何文件/键）**判未判定**，不得当通过。
 
 **为什么两项都要做**：动态扫描只能看到「当前显示出来的文案」。
 若某个分支用了拼错或不存在的键，**只有那个分支被触发时才暴露**，
@@ -973,7 +1021,8 @@ s = s.replaceAll('{' + k + '}', String(v))          // ❌
 ### 可复跑
 
 - `audit-capture-states-zh.mjs`：动态扫描各状态
-- `audit-i18n-keys.mjs`：静态核对键的闭合与对称（已加入 selfcheck）
+- `check-i18n-dead-keys.mjs`：全引用形态 + 反向逐键分类（查死键与双向闭合，零样本判未判定）
+- `check-i18n-keys.mjs`：键的对称与重复（不含死键判定）
 
 ## 后台汉化覆盖率（第 71 轮实测）
 
@@ -1395,16 +1444,33 @@ rm -rf dist && npm run build && ls dist/static/js/index.*.js
 
 **教训（R14-X5 实测）**：**运行中的容器不等于源码重建产物**。当时宿主机是 arm64，含最新修复的 `webees-facedb-web:latest` 实测为 amd64/linux 无法运行，容器仍在跑 2026-10-06 19:55 的 arm64 备份镜像，当时 3000 端口实供 `index.7211a9f260.js`（不含 `linkTooLong` 闸门、无 `\p{Cc}` 过滤）——**前端源码已修、线上仍是旧行为**。故指纹比对必须取**容器实供产物**。
 
-**已修复并复核（2026-10-07 07:52 重建，11:00 复核）**：`docker compose build web`（宿主 arm64，未覆盖 platform）重建镜像 `webees-facedb-web:latest`（arch=arm64/linux，id `d18adec39ded`），`docker compose up -d web` 重建容器后实测：
+> **历史读数不可追认（R23-W23-E 实测）**：上面那个 `index.7211a9f260.js` 是当时的事实，但**已经取不回来了** ——
+> 该路径现在命中 SPA 回退、返回的是 `index.html`（不是 JS 产物，也不报 404）。凡写进文档的「某次实供 bundle 名/hash」
+> 都会随时间变成不可复核的字符串；因此下文一律改用「命令 + 产物特征」表示，不再以历史 hash 作为判据。
 
-| 项 | 修复前 | 修复后（复核读数） |
+**已修复并复核（2026-10-07 07:52 重建，11:00 复核；2026-10-08 复读）**：`docker compose build web`（宿主 arm64，未覆盖 platform）重建镜像 `webees-facedb-web:latest`（arch=arm64/linux），`docker compose up -d web` 重建容器后实测：
+
+| 项 | 修复前 | 修复后 |
 |---|---|---|
-| 实供 bundle | `/static/js/index.7211a9f260.js` | `/static/js/index.d522b5dd29.js`（34621 字节） |
-| `linkTooLong` 闸门 | 无 | 有（grep 命中 1） |
-| `\p{Cc}` 控制符过滤 | 无（仍是旧的 `\u0000-\u001f` 字面量） | 有（grep 命中 1；旧形态命中 0） |
+| `linkTooLong` 闸门 | 无 | 有（命中 1） |
+| `\p{Cc}` 控制符过滤 | 无（仍是旧的 `\u0000-\u001f` 字面量） | 有（命中 1；旧形态命中 0） |
+| 三层遥测拦截 | 无（`__facedbBlockInline` / `__facedbBlockModule` 命中 0） | 有（两个标记各命中 ≥1） |
 | 容器健康 | healthy | healthy |
 
-复核方法：直接取容器实供的 bundle 并 grep（`curl -s http://127.0.0.1:3000/static/js/<bundle>.js`），不看源码重建产物。回滚标签 `webees-facedb-web:rollback-r13` 指向修复前那份镜像。
+**这张表刻意不写 bundle 文件名与字节数**：它们是**每次构建都变的快照**，写进文档必然漂移（R23-W23-E 实测：文档曾写 `index.d522b5dd29.js` / 34621 字节，实际实供 `index.28c716185e.js` / 35854 字节；镜像 id `d18adec39ded` 也已换成 `ea6eb8244d73`，created 2026-10-07T16:39:49Z）。**可复核的判据是「命令 + 产物特征」，不是「某个 hash」**：
+
+```bash
+# 1. 取容器实供的 bundle 名（不要猜名字，见下方警告）
+B=$(curl -s http://127.0.0.1:3000/ | grep -o 'static/js/index\.[a-f0-9]*\.js' | head -1)
+# 2. 逐条断言产物特征（每项都必须 ≥1；三项全 0 说明容器在跑过期构建）
+curl -s "http://127.0.0.1:3000/$B" | grep -c 'linkTooLong'
+curl -s "http://127.0.0.1:3000/$B" | grep -c 'facedbBlockModule'
+curl -s http://127.0.0.1:3000/ | grep -c 'facedbBlockInline'
+```
+
+**警告（R23-W23-E 实测的高危机制）**：`:3000` 有 **SPA 回退** —— 请求任意**不存在**的路径（含 `deadbeef00.js`）都回 `200 text/html`（index.html 的 10357 字节）。因此「`curl` 拿到 200」**不能**证明该 bundle 存在；把 bundle 名写错时会静默拿到 index.html 并让 grep 全 0，看起来像「闸门没进产物」。必须先从首页解析出真实文件名（上面的第 1 步），或校验 `content-type` 含 `javascript`。
+
+回滚标签 `webees-facedb-web:rollback-r13` 指向修复前那份镜像。
 
 **注**：纯注释改动不影响产物 hash（注释在构建时被剥离），
 所以 hash 相同不代表源码逐字节相同，但能保证**运行时行为**一致 —— 这正是要防的。
@@ -1491,9 +1557,29 @@ MediaPipe（TFLite Tasks）会向 `odml.pa.googleapis.com` 上报使用数据。
 
 | 层 | 位置 | 覆盖范围 |
 |---|---|---|
-| 内联 JS patch | `index.html` 的 `<script>`（解析期即生效） | 仅主线程的 fetch / XHR / sendBeacon |
-| 运行期 JS patch | `src/lib/block-telemetry.ts` | 同上，但装/撤更细（可被后续代码撤销） |
-| **CSP** | `index.html` 的 `<meta http-equiv="Content-Security-Policy">` | **主线程 + `blob:`/`data:` Worker 的连接类 API**（fetch / XHR / WS / SSE / beacon） |
+| 内联 JS patch | `index.html` 的 `<script>`（解析期即生效） | 主线程的 fetch / sendBeacon（**R23 起不再补 XHR**，理由见下） |
+| 运行期 JS patch | `src/lib/block-telemetry.ts` | 主线程的 fetch / XHR / sendBeacon，装/撤更细（可被后续代码撤销） |
+| **CSP** | `index.html` 的 `<meta http-equiv="Content-Security-Policy">` | **连接类 API（fetch / XHR / WS / SSE / beacon）+ 图片 + `<script src>` / `<link rel=stylesheet>` / `<iframe src>` / 同源脚本 Worker 的创建** |
+
+**R23 的两处改动（都带判据）**：
+
+- **内联层删掉 XHR 补丁**（R23-P4）：运行期层在正常构建里必然后加载并覆盖
+  `XMLHttpRequest.prototype.open/send`，内联层那份实现**不可达**（实测 `sendIsInlinePatch=false`）；
+  而它作为第二实现还带着两处规范缺陷 —— 假事件用 `Event` 而非 `ProgressEvent`、被拦请求永不进入
+  `timeout` 分支。XHR 通道现由运行期层 + CSP `connect-src`（不含 googleapis 主机）两层覆盖。
+  判据 `lib/r17-beacon-identity-verify.mjs` 的 A2 现按「内联层改写 2/4 个补丁点」断言。
+- **取值口径修 cross-realm**（R23-P7，即 R22-07）：两层原先按 `instanceof URL` 取目标，而
+  cross-realm 的 URL 过不了本 realm 的 `instanceof`、且 URL 没有 `.url`（是 `.href`）⇒ 目标读成空主机、
+  请求放行。**实测：撤掉内联层、只留运行期层时，cross-realm 形态真的出网（服务器命中 1，响应体
+  `{"ok":true,"counted":true}`）**；两层俱在时被内联层兜住，所以此前看不见。现两层统一为
+  「字符串 → `.url` 字符串 → `String()`」（`String()` 能把 cross-realm URL 正确串化），四个输入形态
+  （string / 同 realm URL / cross-realm URL / Request）全部 0 命中。残留已登记：非法 RequestInfo 会串成
+  `"[object …]"` 落到页面自身主机而不被拦，但原生 fetch/XHR 对非法输入本身抛 `TypeError`，走不到网络。
+- **撤层返回值带「底下还有一层」信号**（R23-P3）：单独撤运行期层后 `window.fetch` 会回落到内联层补丁
+  （不是原生），而旧实现只在还原数不足时告警 ⇒ 调用方可能以为网络已放开。现在 `uninstall()` 返回
+  `{ restored, expected, fellBackToOtherPatch }`；`fellBackToOtherPatch === true` 表示撤完本层后
+  `window.fetch` 仍非原生（正常构建里就是内联层还在），此时网络并未放开。该情形只打 `console.debug`、
+  **不当告警** —— 按文档「先撤模块层、再撤内联层」撤时中间那一刻必然如此，告警会变成噪声。
 
 ### ⚠️ 为什么 CSP 不可省略
 
@@ -1522,16 +1608,20 @@ CSP 是浏览器内核级约束，与调用方用什么 API 无关，比 patch �
 任何 Worker（全仓 grep 0 命中），故该差异当前不构成敞口；将来若要让 Worker 承载外发，只有两条路：
 用 `blob:` 脚本，或给 worker 脚本加 CSP 响应头。
 
-### 这条 CSP 的范围被刻意压到最小
+### 这条 CSP 被实测压到「最小可关闭集」（第 48 轮）
 
 ```html
 <meta http-equiv="Content-Security-Policy"
       content="connect-src 'self' *:8090 ws://*:8090 wss://*:8090<%= PB_CONNECT_SRC %>;
-               img-src 'self' data: blob: *:8090<%= PB_CONNECT_SRC %>" />
+               img-src 'self' data: blob: *:8090<%= PB_CONNECT_SRC %>;
+               script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval';
+               style-src 'self'; frame-src 'none'; worker-src blob: data:" />
 ```
 
-- **不写 `default-src`** —— 因此对脚本、样式、字体**没有任何限制**（`default-src` 会接管
-  `script-src`，可能拦掉内联防线本身与 wasm 加载）
+逐条都是实测功能必需（去掉哪条、哪条通道重新出网、哪个功能坏掉，都有服务器侧命中计数）：
+
+- **不写 `default-src`** —— 它会接管 `script-src`，可能拦掉内联防线本身与 wasm 加载；上面六条
+  指令是**逐条显式**的，没有隐式回落的维度
 - `'self'` —— 经网关访问时的同源 `/api`
 - `*:8090` —— 直连访问时的 `<主机>:8090`
 - `ws://*:8090` / `wss://*:8090` —— WebSocket 属独立方案，`*:8090` 不覆盖它（当前未使用，
@@ -1539,24 +1629,50 @@ CSP 是浏览器内核级约束，与调用方用什么 API 无关，比 patch �
 - `<%= PB_CONNECT_SRC %>` —— 构建期按 `PUBLIC_PB_URL` 追加的额外源（见 `rsbuild.config.ts`）
 - `img-src` —— 图片通道的唯一防线（见下）。界面不渲染任何 `<img>`，同源 favicon 由 `'self'` 覆盖，
   摄像头预览走 `<video>` + `blob:`，故收紧不损伤功能
+- `script-src 'unsafe-inline'` —— **必需**：去掉后 `__facedbBlockInline` 整层消失（内联遥测层
+  静默退化为两层），控制台报 `script-src-elem` / `inline` 违规
+- `script-src 'wasm-unsafe-eval'` —— **必需**：MediaPipe 要编译 wasm，去掉后 `CompileError:
+  … 'unsafe-eval' is not an allowed source of script`，端到端表现为「人脸模型加载失败」且
+  `video.srcObject` 始终为空
+- `style-src 'self'` —— 同源样式表 rules=58、根节点计算背景色非透明；加 `'unsafe-inline'` 零收益
+- `frame-src 'none'` —— 关掉 `<iframe src>` 通道（当前无跨源嵌入需求）
+- `worker-src blob: data:` —— 关掉「同源脚本 Worker」通道：**不能省**，省掉会回落到 `script-src`
+  的 `'self'`，于是 `blob:` Worker 被连坐拦掉；而写上它就同时挡住了从同源脚本 URL 创建 Worker
+  （该路径的策略取自 worker 脚本自身的响应头，不继承本文档 CSP，只有 creation 这一手能挡）
 
 **唯一需要注意的**：若用 `PUBLIC_PB_URL` 指向别的地址，必须同步放行，否则会被 CSP 挡住。
 
-### 仍敞开的三条通道（已知敞口，第 47 轮实测）
+> **这些「必需」是怎么来的（第 48 轮复核席追问，R23REV-N12）**：上表每一条都来自真 Chrome 的
+> 三臂判定（现状 / 加上四条指令 / 逐条撤掉后看服务器侧命中计数与功能面读数），原始读数在
+> `evidence/W23-I-*.log` 与 `findings/W23-I.json`，**不是只靠推理得出的**。但其中 `style-src 'self'`
+> 与 `worker-src blob: data:` 两条的「不能省」只有**撤掉即报红**这一侧的证据（去掉后通道命中回 1、
+> 或 blob Worker 被连坐），没有「换个更窄的取值也成立」的探索 ⇒ 它们是「当前最小可行值」而不是
+> 「已证明的最小值」。要收紧这两条得再开一轮取证。
 
-JS 的两层 patch 只管 `fetch` / `XHR` / `sendBeacon`，CSP 又只声明了 `connect-src` 与 `img-src`，
-于是下列三条**在实测中确实出网**（三层齐备页与生产页都有服务器命中）：
+### 通道状态（第 48 轮实测：四条已关，新增一条已知敞口）
 
-| 通道 | 状态 | 为什么不能现在关 |
+第 47 轮时只有 `connect-src` 与 `img-src` 两条指令，于是 `<script src>` / `<link rel=stylesheet>` /
+`<iframe src>` 三条**在实测中确实出网**。第 48 轮用真 Chrome 做了三臂判定（现状 / 加上四条指令 /
+逐条撤掉），44 个判定相位全过，四条通道全部关到服务器命中 0：
+
+| 通道 | 状态 | 关它的指令 |
 |---|---|---|
-| `<img src>` | ✅ 已由 `img-src` 关闭 | ——（加这一条是 1 行改动、零功能影响） |
-| `<script src>` | ❌ 敞开 | 要关必须写 `script-src`，会连带管住内联防线与 wasm 加载，风险大于收益 |
-| `<link rel=stylesheet>` | ❌ 敞开 | 同上（`style-src` 会管住内联样式） |
-| `<iframe src>` | ❌ 敞开 | `frame-src` 可关，但当前无跨源嵌入需求，未做 |
+| `<img src>` | ✅ 已关（第 47 轮） | `img-src 'self' data: blob: *:8090…` |
+| `<script src>` | ✅ 已关（第 48 轮） | `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'` |
+| `<link rel=stylesheet>` | ✅ 已关（第 48 轮） | `style-src 'self'` |
+| `<iframe src>` | ✅ 已关（第 48 轮） | `frame-src 'none'` |
+| 同源脚本 Worker | ✅ 已关（第 48 轮，关在**创建**这一步） | `worker-src blob: data:` |
+| 任意主机 `:8090`（https 页面） | ⚠️ **敞开（新登记）** | `connect-src` 的 `*:8090` 只匹配页面自身 scheme，https 页面上即「任意主机:8090」 |
 
-也就是说：**「任何外发都必须拦住」这句话只对连接类 API + 图片成立**，其余三条通道是已登记的敞口。
-仓库自检里有一条断言盯着 `img-src` 是否还在、`default-src` 是否没被引入、以及 `src/` 里是否
-新出现 `<img>`（出现了就要同步本文档与 CSP）。
+最后一条的实测读数：https 页面上 `https://exfil.<测试域>:8090/...` 命中 1、status=200、CSP 违规 0
+（两层 JS 补丁只按 googleapis 主机名判定）；`:8091` 阴性对照被 `connect-src` 拦。
+**保留的理由**：LAN 部署时页面主机 ≠ PB 主机，`'self'` 覆盖不到 `<主机>:8090`；https 生产下同源
+PB 已由 `'self'` 覆盖，故这条只对「其它主机的 8090」有意义。要彻底关掉就把 `*:8090` 换成部署时的
+具体主机名 —— 属于部署参数，登记为已知敞口。
+
+也就是说：**「任何外发都必须拦住」这句话对连接类 API、图片、脚本、样式、框架与 Worker 创建都成立**，
+唯一例外是上面登记的 `*:8090`。仓库自检里有一组断言盯着六条指令是否都在、`default-src` 是否没被引入、
+以及源码里是否新出现 `<img>`（出现了就要同步本文档与 CSP）。
 
 ### 已实测不受影响
 
