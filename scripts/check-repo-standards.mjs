@@ -1058,10 +1058,13 @@ add({ id: 'S34', covers: ['scripts/typecheck-guard.mjs', 'scripts/typecheck-guar
     if (!/没有给出可用的版本号/.test(g)) miss.push('缺 `vue-tsc --version` 行为前提（能报版本才算装上）')
     if (!/可执行文件真实性：/.test(g)) miss.push('缺成立时的可执行文件真实性读数行')
     if (!/shellish/.test(g) || !/isJs/.test(g)) miss.push('缺「shell shebang / 不是 JS」两条静态判据')
+    // R26 / W26E-14：入口解析不出来时必须判未判定，不许静默跳过（删掉一个 package.json 就能让整段护栏消失）。
+    if (!/无法解析 vue-tsc 的入口/.test(g)) miss.push('入口解析失败这一支必须明确判「无法验证」（不许静默跳过真实性检查）')
+    if (!/本轮无法验证/.test(g)) miss.push('入口解析失败时缺「本轮无法验证 ⇒ 不构成结论」的口径行')
   }
   if (b === null) miss.push('缺 scripts/typecheck-guard-selftest.mjs')
   else {
-    for (const s of ['s1 真 vue-tsc', 's2 shell 桩', 's3 node 空转桩', 's4 像真件但不判别', 's5 真仓库的 vue-tsc 本体未被本电池改动']) {
+    for (const s of ['s1 真 vue-tsc', 's2 shell 桩', 's3 node 空转桩', 's4 像真件但不判别', 's6 入口读不到', 's7 真仓库的 vue-tsc 本体未被本电池改动']) {
       if (!b.includes(s)) miss.push(`自检电池缺场景：${s}`)
     }
     if (!/mkdtempSync\(path\.join\(tmpdir\(\)/.test(b)) miss.push('自检电池必须每场景用 mkdtemp 建独立临时树')
@@ -1077,7 +1080,7 @@ add({ id: 'S34', covers: ['scripts/typecheck-guard.mjs', 'scripts/typecheck-guar
   if (!/"verify:types-selftest": "node scripts\/typecheck-guard-selftest\.mjs"/.test(pkg)) miss.push('package.json 缺 verify:types-selftest')
   if (!/verify:types && npm run verify:types-selftest && npm run typecheck/.test(pkg)) miss.push('verify:ci 里 verify:types-selftest 必须紧挨 verify:types（与 CI 同集同序）')
   if (/verify:all[^"]*verify:types-selftest/.test(pkg)) miss.push('verify:types-selftest 不许塞进 verify:all（本地捷径只跑非 dist 子集）')
-  return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : '真实性前提（静态 shell/JS + --version 行为 + bin 声明解析）+ TCG_ROOT 覆盖 + 电池 5 场景 + 临时树隔离（不软链整个 node_modules / PATH 指向本树）+ npm script + CI 独立步骤 全部在位' }
+  return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : '真实性前提（静态 shell/JS + --version 行为 + bin 声明解析）+ TCG_ROOT 覆盖 + 电池 6 场景（含入口读不到）+ 临时树隔离（不软链整个 node_modules / PATH 指向本树）+ npm script + CI 独立步骤 全部在位' }
 } })
 
 add({ id: 'S35', covers: ['scripts/verify-repo.mjs'], name: '迁移语法检查把「node --check 跑不起来」判未判定，不许记成迁移的语法错误（且判据自检里有对应的反向断言）', run() {
@@ -1097,8 +1100,14 @@ add({ id: 'S35', covers: ['scripts/verify-repo.mjs'], name: '迁移语法检查�
     if (!/M29 package\.json 是非法 JSON/.test(v)) miss.push('自检缺 M29 场景（非法 package.json）')
     if (!/expectAbsent: \['全部迁移可被 node 解析'\]/.test(v)) miss.push('M29 缺 expectAbsent 反向断言（不许把环境问题记成被测缺陷）')
     if (!/const absentOk = absent\.every/.test(v)) miss.push('自检 harness 缺 expectAbsent 判定')
+    // R26 / W26E-15、E-16：只钉「调用点在」挡不住「机制被掏空」—— 把 notExecuted 体内的计数或
+    // 「样本为 0 ⇒ 不构成通过」的映射摘掉，调用点那行字面量照样在，S35 原先仍判 [OK]。
+    if (!/if \(byDesign\) skippedByDesign\+\+\n\s*else undetermined\+\+/.test(v)) miss.push('notExecuted 体内必须把「样本为 0」计入 undetermined（与环境所限分开计数）')
+    if (!/results\.push\(\{ name, ok: null, detail: why, byDesign \}\)/.test(v)) miss.push('未执行项必须以 ok: null 入表（不许记成 true）')
+    if (!/if \(undetermined > 0\) \{/.test(v)) miss.push('缺「有样本为 0 的未执行项 ⇒ 不构成通过」的判定分支')
+    if (!/覆盖面不完整，本次不构成通过/.test(v)) miss.push('缺「覆盖面不完整，本次不构成通过」的收口文案')
   }
-  return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : '前提探针 + Invalid package config 分类 + 未判定文案 + notExecuted 路径 + 自检 M29 与 expectAbsent 反向断言 全部在位' }
+  return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : '前提探针 + Invalid package config 分类 + 未判定文案 + notExecuted 路径与体内计数（样本为 0 ⇒ 不构成通过）+ 自检 M29 与 expectAbsent 反向断言 全部在位' }
 } })
 
 for (const c of CHECKS) {

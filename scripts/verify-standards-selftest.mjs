@@ -367,6 +367,14 @@ const M = [
     }) },
   { id: 'M75', target: 'scripts/verify-repo.mjs', expect: 'S28', desc: 'M15 原子改错文件（跨源 url() 注入到别的样式文件，前提锁看不到）',
     apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace("put('src/style.css'", "put('src/style2.css'")) },
+  { id: 'M76', target: 'scripts/typecheck-guard.mjs', expect: 'S34', desc: '入口解析失败回归「静默跳过」（删掉一个 package.json 就让真实性护栏整段消失）',
+    apply: () => mutate('scripts/typecheck-guard.mjs', (t) => t.replace(/\n\} else \{\n[\s\S]*?process\.exit\(2\)\n\}\n/, '\n}\n')) },
+  { id: 'M77', target: 'scripts/typecheck-guard-selftest.mjs', expect: 'S34', desc: '电池丢掉「入口读不到 ⇒ 判无法验证」这一场景（机制在、行为无证据）',
+    apply: () => mutate('scripts/typecheck-guard-selftest.mjs', (t) => t.replace(/s6 入口读不到/gi, 's6 入口场景')) },
+  { id: 'M78', target: 'scripts/verify-repo.mjs', expect: 'S35', desc: 'notExecuted 不再把「样本为 0」计入 undetermined（调用点字面量还在，机制被掏空）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace('  if (byDesign) skippedByDesign++\n  else undetermined++', '  if (byDesign) skippedByDesign++')) },
+  { id: 'M79', target: 'scripts/verify-repo.mjs', expect: 'S35', desc: '摘掉「有样本为 0 的未执行项 ⇒ 不构成通过」的判定分支（**锚点非唯一**：该串在文件里有两处，必须全局替换，否则只改第一处、S35 照样绿 —— R24REV-N3 同族）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace(/if \(undetermined > 0\) \{/g, 'if (false) {')) },
 ]
 
 let caught = 0

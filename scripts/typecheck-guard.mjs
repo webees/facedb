@@ -89,6 +89,13 @@ if (vueTscBin) {
     process.exit(2)
   }
   console.log(`  ✅ 可执行文件真实性：${path.relative(ROOT, vueTscBin)} ${st.size} 字节、${vout.split('\n')[0].trim()}`)
+} else {
+  // R26 / W26E-14：这条分支以前是**静默跳过**真实性检查的（`if (vueTscBin) { … }`，else 什么都不做）
+  // ⇒ 只要让 `node_modules/vue-tsc/package.json` 读不到，整段护栏就消失，判据照样往下跑。
+  // 「读不到 ≠ 通过」：解析不出入口就本轮不构成结论（exit 2），与另外两支同一口径。
+  console.log('  ❌ 无法解析 vue-tsc 的入口（`node_modules/vue-tsc/package.json` 读不到或 `bin` 字段缺失）')
+  console.log('      ⇒ 可执行文件的真实性**本轮无法验证**，本次不构成结论（不得诊断成「仓库本体有类型错误」）')
+  process.exit(2)
 }
 
 // ── tsconfig 的真实解析面（R22-05b）──────────────────────────────────────────

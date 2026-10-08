@@ -2323,6 +2323,21 @@ mkdir -p /tmp/migdown && docker run --rm -i \
 再 `migrate up` 又能变回 `""`（双向可逆，实测通过）。
 
 
+## 浏览器安全边界（R26 实测：CORS / CSRF / CSP，真 Chrome + CDP）
+
+| 面 | 实测读数（都带阴性对照） | 结论 / 处置 |
+|---|---|---|
+| CORS 默认 | PB 默认回 `Access-Control-Allow-Origin: *`（CDP 原始响应头读到）；跨源 health `200`、列表 `200`、带 `Authorization` 的 GET **先预检 `204`** 再 `200`、跨源**匿名 POST 建记录 `200`** | 默认全开。`--origins=…` 收紧后同样十项请求**全部失败**（`MissingAllowOriginHeader`）⇒ 开关存在、默认不用 |
+| 跨源带凭据 | PB **从不发** `Access-Control-Allow-Credentials`（两种配置 × 4 个 Origin × {GET, 预检} 共 16 组，出现 **0** 次）；带 `credentials: 'include'` 的跨源请求恒失败（`WildcardOriginNotAllowed`） | 跨源**带**凭据读不成立；能成立的是匿名可读的那些（见上一节的文件端点） |
+| CSRF | 认证端点回 **JSON token、无 `Set-Cookie`**，浏览器 cookie 存储为空；前端唯一出网点 `src/lib/pb.ts:232` 不带 headers/credentials；全仓 grep `Authorization`/`localStorage` 只命中 `src/lib/audio.ts:25` 的 `facedb.muted` | **CSRF 不成立**（前端根本不持有凭据） |
+| CSP `connect-src *:8090` | **https 文档**上是「任意主机 :8090」的真实通道（fetch/POST 到 `https://127.0.0.1:8090` 成功、服务器侧计数 8 次命中；`:8099` 与 `http:8091` 被拦）；**http 文档**上它反而拦掉 `https:8090`；换成显式 `https://127.0.0.1:8090` 读数完全相同 | `*` **不跨方案、只跨主机名**。保留该表达式是为了 LAN 部署（页面主机 ≠ PB 主机，`'self'` 覆盖不到）；登记为**已知敞口**，要升到 P1 需要攻击者在 `:8090` 上有浏览器认可的 TLS 证书 |
+| 判据陷阱 | `<iframe>` 被 `frame-src` 拦后 **`onload` 仍触发**；被拦的 `sendBeacon` **仍返回 `true`** | 浏览器侧不能靠「成功回调」判拦截；可靠判据只有「CSP 违规原文 + 服务器侧命中计数 + 阴性对照」三条一起 |
+| 运行中的 `:3000` | 服务的仍是**旧产物**（CSP 只有 `connect-src` 一条，`last-modified` 2026-10-07 06:32:45），R23 的六指令没进线上 | 针对 `:3000` 做浏览器级结论时**先确认它服务的是哪个构建**；重部署属部署方操作，本仓库不改编排 |
+
+处置建议（**本仓库不改** `docker-compose.yml`：它是外部在途文件）：部署方若要收紧跨源面，可在启动参数里加
+`--origins=<页面源>`；但真正让「任意网站跨源读走人脸原图」失效的是 **R26 的文件字段 `protected` 迁移**，
+CORS 只是那条链上的一环。
+
 ## ⚠️ 汉化流程会抹掉非汉化补丁（必读）
 
 **汉化流程的第一步是 `git checkout -- ui/src`**（见下节 `rebuild-and-deploy-v2.sh`），
