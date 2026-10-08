@@ -2401,7 +2401,7 @@ docker compose build pocketbase && docker compose up -d --force-recreate pocketb
 
 ```bash
 npm run verify            # 仓库自检：资源指纹 / 迁移不变量 / 文案键对称 / 二进制指纹 / 关键常量
-npm run verify:selfcheck  # 变异自检：证明上面每一项断言真的有判别力（1 个阴性对照 + 6 个变异）
+npm run verify:selfcheck  # 变异自检：证明上面每一项断言真的有判别力（1 个阴性对照 + 32 个变异）
 npm run verify:hygiene    # 配置卫生：.gitattributes / .editorconfig 的零命中规则与哈希资产保护
 npm run verify:hygiene-selftest  # 上面这条的零样本与健壮性自检（9 场景 + 2 阴性对照）
 npm run typecheck         # vue-tsc --noEmit
@@ -2412,12 +2412,18 @@ npm run build             # 生产构建
 读取真实来源（清单、迁移文件、源码）而**不在脚本里复刻实现**；样本为零一律不判通过；
 二进制本体不入库时该项明确记为「未执行」而不是静默通过。
 
-**R25 的两处判据改动（都带变异自检）**
+**R25 的三处判据改动（都带变异自检）**
 
 | 判据 | 改前 | 改后 |
 |---|---|---|
 | `scripts/publish-leak-scan.mjs` | 前 8 KB 有 NUL 就**整份跳过**：含凭据的文件 `P0 命中 0 处`、exit 0（首字节 NUL 或 UTF-16 保存的 `.env` 都能绕过） | 二进制改用 `latin1` **逐字节扫**，只跑凭据类规则（`SECRET-ASSIGN`/`BEARER`/`PRIVATEKEY`/`SSH-KEY`/`SUPERUSER-PW`）；定位类规则（IP/域名/本机路径/邮箱/私网）对二进制不适用，且**报告行写明这一点**，不许让「干净」被读成「所有规则都扫过」 |
 | `scripts/check-repo-config-hygiene.mjs` | 四条断言在**样本为 0** 时退化成空真命题（`.gitattributes` 只剩注释 ⇒「零命中 0 条均已标注」✅；`public/SHA256SUMS` 0 字节 ⇒「0 项全部一致」✅），退出码只有 `fail === 0 ? 0 : 1` | 每条断言各自有「样本为 0 ⇒ 未判定」分支；读不到的配置（缺失 / 是目录 / 权限 000 / 超过 8 MiB）判未判定且**不裸栈**；退出码三态：失败 1 / 有未判定 2 / 通过 0 |
+| `scripts/typecheck-guard.mjs` | 只证明「有样本 + 真跑 + 有判别力」。`node_modules` 里的 `vue-tsc` 入口被换成桩时（17 字节 `#!/bin/sh` + `exit 0`），`npx vue-tsc --noEmit` 恒 exit 0 且零输出 ⇒ 只能给出「无判别力」这条含糊结论，与「仓库本体有类型错误」难以区分 | 新增**可执行文件真实性前提**：按 vue-tsc 自己的 `package.json` bin 声明解析入口，要求是 JS（不是 shell 桩）且 `vue-tsc --version` 真的报出 `Version x.y.z`；命中判**未判定 exit 2**，写明「可执行文件被桩替换」，与「检查器逻辑不判别」分开。自检电池 `scripts/typecheck-guard-selftest.mjs`（5 场景：真件 / shell 桩 / 空转桩 / 像真件但不判别 / 真仓库未被改动）接进 CI |
+
+**:warning: 不许往共享 `node_modules` 里放桩**：第三行来自本轮实测事故 —— `node_modules/vue-tsc/bin/vue-tsc.js`
+被写成 17 字节的 shell 桩，而本项目的工作树用 `cp -al node_modules`（硬链接）建，一份被写穿就污染
+全部工作树，`npm run typecheck` 与 CI 的类型检查步骤**整段空转**且看起来是绿的。要造「命令不可用」
+的现场，请用**假 PATH**（`PATH=/nonexistent …`）或临时树，不要改共享依赖树里的文件。
 
 **:warning: 与工作房运行根的关系**：更强的审计判据（文档契约、判定器四关、边界电池等）
 依赖工作房运行根下的脚本与一次性 PocketBase 实例，不在本仓库内；每次修复的完整证据索引

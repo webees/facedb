@@ -276,6 +276,23 @@ const M = [
     apply: () => mutate('scripts/check-repo-config-hygiene.mjs', (t) => t.replace('process.exit(fail > 0 ? 1 : un > 0 ? 2 : 0)', 'process.exit(fail === 0 ? 0 : 1)')) },
   { id: 'M50', target: 'package.json', expect: 'S33', desc: '摘掉 verify:hygiene-selftest 接线（自检从此不进 CI）',
     apply: () => mutate('package.json', (t) => t.replace('    "verify:hygiene-selftest": "node scripts/check-repo-config-hygiene-selftest.mjs",\n', '')) },
+  // ── R25：本判据自己的两条空真命题守卫（W25E-03/04）─────────────────────
+  // 这两条的变异体只能锚**源码断言**（S33）：S1 的样本来自 README、S24 的样本来自磁盘枚举，
+  // 单文件变异造不出「样本为 0」的现场；而守卫一旦被摘掉，零样本就会退回 ✅ 空真命题。
+  { id: 'M51', target: 'scripts/check-repo-standards.mjs', expect: 'S33', desc: '摘掉 S1 的「README 里 0 个相对链接 ⇒ 不得判通过」守卫',
+    apply: () => mutate('scripts/check-repo-standards.mjs', (t) => t.replace(/^  if \(links\.length === 0\) return \{ ok: false, detail: 'README 里没有任何相对链接[^\n]*\n/m, '')) },
+  { id: 'M52', target: 'scripts/check-repo-standards.mjs', expect: 'S33', desc: '摘掉 S24 的「受管来源为空 ⇒ 不得判通过」守卫',
+    apply: () => mutate('scripts/check-repo-standards.mjs', (t) => t.replace(/^  if \(emptySources\.length\) \{\n(?:.*\n)*?  \}\n/m, '')) },
+  // 【R25-INCIDENT-02】类型检查判据的可执行文件真实性前提：摘掉它，「vue-tsc 被换成桩」就会
+  // 退化成「无判别力」一条含糊结论（甚至被误读成仓库有类型错误）。
+  { id: 'M53', target: 'scripts/typecheck-guard.mjs', expect: 'S34', desc: '摘掉「可执行文件被桩替换」整支静态判据',
+    apply: () => mutate('scripts/typecheck-guard.mjs', (t) => t.replace(/  const head = st && st\.isFile\(\) \? readFileSync\(vueTscBin, 'utf8'\)\.slice\(0, 400\) : ''\n  const isJs = [^\n]*\n  const shellish = [^\n]*\n  if \(!st \|\| !st\.isFile\(\)[^\n]*\{\n(?:.*\n)*?  \}\n/m, '  const head = \'\'\n  const isJs = true\n  const shellish = false\n')) },
+  { id: 'M54', target: 'scripts/typecheck-guard.mjs', expect: 'S34', desc: '摘掉 `vue-tsc --version` 行为前提（只留静态判据）',
+    apply: () => mutate('scripts/typecheck-guard.mjs', (t) => t.replace(/  const v = spawnSync\('npx', \['vue-tsc', '--version'\][^\n]*\n(?:.*\n)*?    process\.exit\(2\)\n  \}\n/m, '')) },
+  { id: 'M55', target: 'scripts/typecheck-guard.mjs', expect: 'S34', desc: '摘掉 TCG_ROOT 覆盖通道（自检电池无法造桩现场）',
+    apply: () => mutate('scripts/typecheck-guard.mjs', (t) => t.replace('process.env.TCG_ROOT || ', '')) },
+  { id: 'M56', target: 'scripts/typecheck-guard-selftest.mjs', expect: 'S34', desc: '把整个 node_modules 软链过去（桩会写穿到真仓库）',
+    apply: () => mutate('scripts/typecheck-guard-selftest.mjs', (t) => t.replace(/  for \(const name of readdirSync\(NODE_MODULES\)\) \{\n(?:.*\n)*?  \}\n  \/\/ 只有 vue-tsc 是实体拷贝[^\n]*\n  cpSync\([^\n]*\n/m, "  symlinkSync(NODE_MODULES, path.join(nm, 'node_modules'), 'dir')\n")) },
 ]
 
 let caught = 0

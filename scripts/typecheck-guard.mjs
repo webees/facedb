@@ -23,7 +23,8 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-const ROOT = path.join(import.meta.dirname, '..')
+// TCG_ROOT 可覆盖被测树（自检电池用它造「桩被放进 node_modules」的现场，而绝不碰真仓库）。
+const ROOT = process.env.TCG_ROOT || path.join(import.meta.dirname, '..')
 const MIN_ARG = process.argv.find((a) => a.startsWith('--min=')) || '--min=10'
 const MIN_FILES = Number(MIN_ARG.slice(6))
 // NaN 参与比较恒为 false —— 不校验就等于没有下限。
@@ -42,6 +43,52 @@ const NODE_MODULES = path.join(ROOT, 'node_modules')
 if (!statSync(NODE_MODULES, { throwIfNoEntry: false })) {
   console.log('  ❌ 未安装依赖（node_modules 不存在）—— 类型检查无法执行，本次不构成结论')
   process.exit(2)
+}
+
+// ── ①a 可执行文件真实性（R25-INCIDENT-02）─────────────────────────────────
+// 与 ①（零样本）不是同一回事：零样本是「没有可检查内容」，这里是「检查器根本不在」。
+// 实测事故：`node_modules/vue-tsc/bin/vue-tsc.js` 被写成 **17 字节**的 `#!/bin/sh\nexit 0\n`
+// ⇒ `npx vue-tsc --noEmit` 走 shebang，恒 exit 0 且零输出；仓库里注入真类型错误也不报。
+// 若只看 ②（真跑 exit 0）与 ③（阳性对照），前者会假绿；③ 虽能判「无判别力」，但把
+// 「二进制被换成桩」与「检查器逻辑不判别」混成一条结论。这里先把桩这一支单独判出来。
+// 检查两件事：静态（按 vue-tsc 自己的 package.json bin 声明找到入口，必须是**引用得到东西**的
+// JS，不能是 shell 桩或空壳）+ 行为（`vue-tsc --version` 必须真的给出 `Version x.y.z`）。
+// 注意下限只能取很小的值：真 vue-tsc 的入口本身就是 50 字节的转发壳
+// （`#!/usr/bin/env node` + `require('../index.js').run()`）—— 判桩靠「shell shebang /
+// 没有任何 require|import / 过小到装不下转发语句」，不靠体积阈值。
+const MIN_BIN_BYTES = Number(process.env.TCG_MIN_BIN_BYTES || 24)
+const vueTscBin = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(ROOT, 'node_modules', 'vue-tsc', 'package.json'), 'utf8'))
+    const rel = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin && pkg.bin['vue-tsc']
+    return rel ? path.join(ROOT, 'node_modules', 'vue-tsc', rel) : null
+  } catch {
+    return null
+  }
+})()
+if (vueTscBin) {
+  const st = statSync(vueTscBin, { throwIfNoEntry: false })
+  const head = st && st.isFile() ? readFileSync(vueTscBin, 'utf8').slice(0, 400) : ''
+  const isJs = /require\s*\(|\bimport\s|\bmodule\.exports\b/.test(head)
+  const shellish = /^#!\s*[^\n]*\/(sh|bash|zsh|dash)\b/.test(head)
+  if (!st || !st.isFile() || st.size < MIN_BIN_BYTES || shellish || !isJs) {
+    console.log('  ⚠️  vue-tsc 的可执行文件不像是 vue-tsc 本体（疑似被替换成了桩）')
+    console.log(`      入口：${vueTscBin}`)
+    console.log(`      大小：${st && st.isFile() ? st.size : '（不是普通文件 / 读不到）'} 字节（下限 ${MIN_BIN_BYTES}）`)
+    console.log(`      前 120 字节：${JSON.stringify(head.slice(0, 120))}`)
+    console.log('  ❌ 类型检查器不在（可执行文件被桩替换）—— 本次不构成结论（不得诊断成「仓库本体有类型错误」）')
+    process.exit(2)
+  }
+  const v = spawnSync('npx', ['vue-tsc', '--version'], { cwd: ROOT, encoding: 'utf8', timeout: 120000 })
+  const vout = ((v.stdout || '') + (v.stderr || '')).trim()
+  if (v.status !== 0 || !/Version\s+\d+\.\d+/.test(vout)) {
+    console.log('  ⚠️  vue-tsc --version 没有给出可用的版本号（命令被桩替换 / 装坏 / 不在 PATH）')
+    console.log(`      入口：${vueTscBin}`)
+    console.log(`      exit=${v.status === null ? 'null' : v.status} 输出：${JSON.stringify(vout.slice(0, 200))}`)
+    console.log('  ❌ 类型检查器不在（命令不产生版本信息）—— 本次不构成结论（不得诊断成「仓库本体有类型错误」）')
+    process.exit(2)
+  }
+  console.log(`  ✅ 可执行文件真实性：${path.relative(ROOT, vueTscBin)} ${st.size} 字节、${vout.split('\n')[0].trim()}`)
 }
 
 // ── tsconfig 的真实解析面（R22-05b）──────────────────────────────────────────

@@ -46,6 +46,12 @@ jobs:
       - name: 类型检查（样本数 + 阳性对照，防零样本假通过）
         run: npm run verify:types
 
+      # R25-INCIDENT-02：`node_modules/vue-tsc/bin/vue-tsc.js` 曾被写成 17 字节的 shell 桩，
+      # 于是 `npx vue-tsc --noEmit` 恒 exit 0 零输出（类型检查整段空转）。该自检把
+      # 「可执行文件被桩替换」与「检查器逻辑不判别」两支分开钉住，并确认真仓库未被改动。
+      - name: 类型检查判据的自检（真件成立 / shell 桩 / 空转桩 / 像真件但不判别 / 真仓库未被改动）
+        run: npm run verify:types-selftest
+
       - name: 类型检查（原始命令，便于对照报错输出）
         run: npm run typecheck
 
@@ -80,12 +86,12 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
-      - name: 判据自身的变异自检（52 个变异体必须全部被抓到，且未变异的副本全绿）
+      - name: 判据自身的变异自检（58 个变异体必须全部被抓到，且未变异的副本全绿）
         run: npm run verify:standards-selftest
 
       # 仓库结构面与 CSP 面的判据（verify-repo.mjs）此前**从未在 CI 里自检** ——
-      # 它的 30 个变异体只在本地跑，判据被无声削弱时 CI 仍然全绿（R22 实测发现）。
-      - name: 仓库判据的变异自检（30 个变异体/零样本/越界场景必须全部符合预期）
+      # 它的 33 个变异体只在本地跑，判据被无声削弱时 CI 仍然全绿（R22 实测发现）。
+      - name: 仓库判据的变异自检（33 个变异体/零样本/越界场景必须全部符合预期）
         run: npm run verify:selfcheck
 
       - name: 第三方许可判据的变异自检（9 个变异体 + 缺 dist 必须判未判定）

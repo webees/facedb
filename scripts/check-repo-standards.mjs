@@ -81,6 +81,10 @@ add({ id: 'S1', covers: ['README.md'], name: 'README 的相对链接都指向真
   const t = read('README.md')
   const links = [...t.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)].map((m) => m[1]).filter((u) => !/^(https?:|mailto:|#)/.test(u))
   const dead = links.filter((u) => { const p = u.split('#')[0]; return p && !has(p) })
+  // 【R25 / W25E-04（P3）】零样本纪律：README 里一个相对链接都没有时，`links.filter(...)` 恒为空
+  // ⇒ 打出 `[OK] S1 | … | 0 个相对链接全部可达` 的空真命题（W25-E 实测）。与 S3 的写法一致：
+  // 样本为 0 判**不通过**（本判据的 ck 只有两态，没有第三种「未判定」；口径见 S3 同一行）。
+  if (links.length === 0) return { ok: false, detail: 'README 里没有任何相对链接 —— 没有样本，覆盖面不完整，不得判通过' }
   return { ok: dead.length === 0, detail: dead.length ? '死链：' + dead.join('、') : `${links.length} 个相对链接全部可达` }
 } })
 
@@ -481,6 +485,14 @@ add({ id: 'S24', covers: [], name: '仓库根与 .github 下的每个受管文�
   const wfOwner = new Set((CHECKS.find((c) => c.id === 'S15')?.covers || []).filter((v) => !v.includes('*')))
   for (const f of watched) {
     if (/^\.github\/workflows\/.+\.ya?ml$/.test(f) && !wfOwner.has(f)) missing.push(`${f}（未被 S15 逐个检查，只是被别的断言覆盖）`)
+  }
+  // 【R25 / W25E-03（P2）】零样本纪律：三个受管来源全空时 `missing` 恒为空 ⇒ 打出
+  // `[OK] S24 | … | 0 个受管文件全部有归属` 的空真命题（W25-E 实测：受管面为空 ⇒ 通过 5、失败 0、exit 0）。
+  // 逐来源点名，避免「只有一个来源被掏空」也被算成有样本。
+  const emptySources = [['.github', onDisk('.github')], ['根文档', rootDocs], ['scripts', onDisk('scripts')]]
+    .filter(([, arr]) => arr.length === 0).map(([n]) => n)
+  if (emptySources.length) {
+    return { ok: false, detail: `受管来源为空：${emptySources.join('、')} —— 没有样本，覆盖面不完整，不得判通过` }
   }
   return { ok: missing.length === 0, detail: missing.length ? '没有任何断言覆盖：' + missing.join('、') : `${watched.length} 个受管文件全部有归属` }
 } })
@@ -936,11 +948,57 @@ add({ id: 'S33', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/chec
   const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
   if (ci === '') miss.push('缺 .github/workflows/ci.yml')
   else if (!ciHasStep(ci, 'verify:hygiene-selftest')) miss.push('CI 缺 verify:hygiene-selftest 独立步骤')
+  // 【R25 / W25E-03、W25E-04（P2/P3）】本判据自己的两条空真命题守卫：S1（README 里 0 个相对链接）
+  // 与 S24（受管来源为空）在样本为 0 时都曾打出 ✅。守卫必须留在源码里，否则修复会被静默回退。
+  const rs = read('scripts/check-repo-standards.mjs')
+  if (!/if \(links\.length === 0\) return \{ ok: false/.test(rs)) miss.push('S1 缺「没有相对链接 ⇒ 不得判通过」守卫')
+  if (!/if \(emptySources\.length\)/.test(rs)) miss.push('S24 缺「受管来源为空 ⇒ 不得判通过」守卫')
   const pkg = has('package.json') ? read('package.json') : ''
   if (!/"verify:hygiene-selftest": "node scripts\/check-repo-config-hygiene-selftest\.mjs"/.test(pkg)) miss.push('package.json 缺 verify:hygiene-selftest')
   if (!/verify:publish-selftest && npm run verify:hygiene-selftest"/.test(pkg)) miss.push('verify:ci 未包含 verify:hygiene-selftest')
   if (/verify:all[^"]*verify:hygiene-selftest/.test(pkg)) miss.push('verify:hygiene-selftest 不许塞进 verify:all（本地捷径只跑非 dist 子集）')
   return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : '零样本四分支 + 前提 + 读文本守卫 + 三态退出码 + 电池（独立临时仓库/覆盖通道/阴性对照/裸栈断言）+ npm script + CI 独立步骤 全部在位' }
+} })
+
+// 【R25-INCIDENT-02（P1）】共享 node_modules 里的 `vue-tsc` 入口曾被写成 17 字节的
+// `#!/bin/sh\nexit 0\n` 桩 ⇒ `npx vue-tsc --noEmit` 恒 exit 0 零输出，`npm run typecheck`
+// 与 CI 的类型检查步骤整段空转。`verify:types` 的阳性对照当时判出了「不构成结论」，但把
+// 「二进制被换成桩」与「检查器逻辑不判别」混成一条结论 —— 这里把该支钉住：判据必须有
+// 可执行文件真实性前提（静态 + `--version` 行为），自检电池必须把两支分别验到。
+add({ id: 'S34', covers: ['scripts/typecheck-guard.mjs', 'scripts/typecheck-guard-selftest.mjs', 'package.json', '.github/workflows/ci.yml'], name: '类型检查判据能识别「可执行文件被桩替换」（与「不判别」分开判），且自检电池与接线在位', run() {
+  const miss = []
+  const g = has('scripts/typecheck-guard.mjs') ? read('scripts/typecheck-guard.mjs') : null
+  const b = has('scripts/typecheck-guard-selftest.mjs') ? read('scripts/typecheck-guard-selftest.mjs') : null
+  if (g === null) miss.push('缺 scripts/typecheck-guard.mjs')
+  else {
+    if (!/process\.env\.TCG_ROOT \|\|/.test(g)) miss.push('判据缺 TCG_ROOT 覆盖通道（自检电池靠它造桩现场）')
+    // 下限必须很小：真 vue-tsc 的入口本身就是 50 字节的转发壳，阈值放到 200 会把真件判成桩。
+    if (!/const MIN_BIN_BYTES = Number\(process\.env\.TCG_MIN_BIN_BYTES \|\| 24\)/.test(g)) miss.push('缺可执行文件真实性下限（且必须是小值：真入口只有 50 字节）')
+    if (!/vue-tsc', 'package\.json'/.test(g)) miss.push('可执行文件入口必须按 vue-tsc 自己的 package.json bin 声明解析')
+    if (!/可执行文件被桩替换/.test(g)) miss.push('缺「可执行文件被桩替换」这一支的结论行')
+    if (!/没有给出可用的版本号/.test(g)) miss.push('缺 `vue-tsc --version` 行为前提（能报版本才算装上）')
+    if (!/可执行文件真实性：/.test(g)) miss.push('缺成立时的可执行文件真实性读数行')
+    if (!/shellish/.test(g) || !/isJs/.test(g)) miss.push('缺「shell shebang / 不是 JS」两条静态判据')
+  }
+  if (b === null) miss.push('缺 scripts/typecheck-guard-selftest.mjs')
+  else {
+    for (const s of ['s1 真 vue-tsc', 's2 shell 桩', 's3 node 空转桩', 's4 像真件但不判别', 's5 真仓库的 vue-tsc 本体未被本电池改动']) {
+      if (!b.includes(s)) miss.push(`自检电池缺场景：${s}`)
+    }
+    if (!/mkdtempSync\(path\.join\(tmpdir\(\)/.test(b)) miss.push('自检电池必须每场景用 mkdtemp 建独立临时树')
+    // 临时树的 node_modules 必须是真目录：做成整目录软链会让桩写穿到真仓库（事故成因）。
+    if (!/name === 'vue-tsc' \|\| name === '\.bin'\) continue/.test(b)) miss.push('自检电池不许把整个 node_modules 软链过去（会写穿到真仓库）')
+    if (!/path\.delimiter/.test(b) || !/node_modules', '\.bin'/.test(b)) miss.push('自检电池必须把临时树的 .bin 放 PATH 最前（否则 npx 解析到真仓库，场景静默失效）')
+    if (!/process\.exit\(ok \? 0 : 1\)/.test(b)) miss.push('自检电池失败必须 exit 1')
+  }
+  const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
+  if (ci === '') miss.push('缺 .github/workflows/ci.yml')
+  else if (!ciHasStep(ci, 'verify:types-selftest')) miss.push('CI 缺 verify:types-selftest 独立步骤')
+  const pkg = has('package.json') ? read('package.json') : ''
+  if (!/"verify:types-selftest": "node scripts\/typecheck-guard-selftest\.mjs"/.test(pkg)) miss.push('package.json 缺 verify:types-selftest')
+  if (!/verify:types && npm run verify:types-selftest && npm run typecheck/.test(pkg)) miss.push('verify:ci 里 verify:types-selftest 必须紧挨 verify:types（与 CI 同集同序）')
+  if (/verify:all[^"]*verify:types-selftest/.test(pkg)) miss.push('verify:types-selftest 不许塞进 verify:all（本地捷径只跑非 dist 子集）')
+  return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : '真实性前提（静态 shell/JS + --version 行为 + bin 声明解析）+ TCG_ROOT 覆盖 + 电池 5 场景 + 临时树隔离（不软链整个 node_modules / PATH 指向本树）+ npm script + CI 独立步骤 全部在位' }
 } })
 
 for (const c of CHECKS) {
