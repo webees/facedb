@@ -614,11 +614,21 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
     if (g.includes(SSH_HDR)) miss.push('闸门源码里出现完整 OPENSSH 私钥头字面量（会自阻断）')
   }
   if (m) {
-    // 电池的覆盖面：15 阳性 + 2 阴性 + 未判定语义（读不到 / 扫描面为空）+ 提示区 + 自扫
-    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'm14', 'm15', 'n1 ', 'n2 ', 'u1 ', 'u2 ', 'i1 ', 's1 自扫真实仓库']) {
+    // 电池的覆盖面：17 阳性 + 3 阴性 + 未判定语义（读不到 / 扫描面为空）+ 提示区 + 自扫
+    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'm14', 'm15', 'm16', 'm17', 'n1 ', 'n2 ', 'n3 ', 'u1 ', 'u2 ', 'i1 ', 's1 自扫真实仓库']) {
       if (!m.includes(k)) miss.push(`电池缺场景 ${k.trim()}`)
     }
+    // R25 / W25E-01（P1）：二进制**不许整份跳过** —— 旧形态「前 8KB 有 NUL 就 continue」实测放行含 ghp_ 的文件。
+    // 断言的是「判二进制之后仍然扫」：解码用 latin1，且凭据类规则集存在、定位类规则被显式排除（口径可见）。
+    if (!/isBinary \? 'latin1' : 'utf8'/.test(g)) miss.push('闸门没有对二进制内容按 latin1 解码后照扫（W25E-01 回归：二进制整份跳过会放行凭据）')
+    if (!/const BINARY_RULES = new Set\(/.test(g)) miss.push('闸门缺 BINARY_RULES（二进制适用规则集）—— 二进制内容会退回整份跳过')
+    // 断言必须钉在**报告行那个表达式**上：只查「文件里有没有这句话」会被 BINARY_RULES 上方那段说明注释满足
+    //（M47 实测：把报告里的括号说明删掉，S27 照样绿 —— 又是「注释满足断言」那一族，本轮第 5 次）。
+    if (!/binaryScanned \+ ' 个（已扫凭据类规则，定位类规则不适用）/.test(g)) miss.push('闸门的扫描面报告没有写明「二进制已扫凭据类规则、定位类规则不适用」—— 读者会把干净误读成全规则扫过')
+    if (/if \(isBinary\) \{\s*\n\s*skippedBinary\+\+/.test(g)) miss.push('闸门退回「二进制整份跳过」的旧形态（W25E-01）')
     if (!/process\.exit\(1\)/.test(m)) miss.push('电池失败时不 exit 1（会把失败读成通过）')
+    // LEAK_SCAN 覆盖通道：把旧版闸门喂进同一套电池，才能证明 m16/m17 有判别力（R25 的成对读数就靠它）
+    if (!/process\.env\.LEAK_SCAN \|\|/.test(m)) miss.push('电池缺 LEAK_SCAN 覆盖通道（无法把旧版闸门喂进同一套用例做成对读数）')
     // R23REV-N6：闸门必须对「扫描面为空」判未判定（零样本不得判通过），且该分支不许只剩 exit 0
     if (!/files\.length === 0/.test(g) || !/扫描面为空/.test(g)) miss.push('闸门对空扫描面没有判未判定（R23REV-N6 回归）')
     // R23REV-N8：SECRET-ASSIGN 的前导边界不许退回 `\b`（下划线前缀键名会整类漏检）
@@ -641,7 +651,7 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
   const pr = prHit.path ? read(prHit.path) : ''
   if (prHit.path && (!/verify:publish/.test(pr) || !/阻断/.test(pr))) miss.push('PR 模板没有写明发布卫生闸门的真实阻断线')
   if (!/P1/.test(ci.split('\n').find((l) => /name: 发布卫生闸门/.test(l)) || '')) miss.push('CI 步骤名没有写明阻断线（P0/P1）')
-  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（禁扩展名白名单回退）· 未判定 exit 2（读不到 / 扫描面为空）· 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 15+2+2+1 场景 · npm/CI 接线 · 文档口径一致' }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制且**二进制内容照扫凭据类规则**（禁扩展名白名单回退 / 禁整份跳过）· 未判定 exit 2（读不到 / 扫描面为空）· 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 17+3+2+1 场景 · npm/CI 接线 · 文档口径一致' }
 } })
 
 // ── S28 仓库判据的变异自检接线与判别力（R22） ──────────────────────────
@@ -893,6 +903,44 @@ add({ id: 'S32', covers: ['scripts/verify-repo.mjs', 'scripts/check-dist-size-bu
     ok: miss.length === 0,
     detail: miss.length ? '缺：' + miss.join('、') : '三处落点均按次唯一（mkdtemp / 快照）+ 采样自洽守卫在位（verify-repo 的 .verify-selfcheck、许可自检的 /tmp 固定路径、体积判据的 N4 单独 statSync 都不会再回来）',
   }
+} })
+
+add({ id: 'S33', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/check-repo-config-hygiene-selftest.mjs', 'package.json', '.github/workflows/ci.yml'], name: '配置卫生判据不许退化成空真命题（零样本判未判定、退出码三态、读不到不裸栈），且自检接进 CI', run() {
+  const miss = []
+  const hy = has('scripts/check-repo-config-hygiene.mjs') ? read('scripts/check-repo-config-hygiene.mjs') : null
+  const st = has('scripts/check-repo-config-hygiene-selftest.mjs') ? read('scripts/check-repo-config-hygiene-selftest.mjs') : null
+  if (hy === null) miss.push('缺 scripts/check-repo-config-hygiene.mjs')
+  else {
+    // 零样本：四条断言各自都要有「样本为 0 ⇒ unk」的分支，不许只剩 ck(ok=true)
+    if (!/const unk = \(label, detail = ''\) => \{/.test(hy)) miss.push('缺未判定计数器 unk()')
+    if (!/else if \(gaRules\.length === 0\) unk\('A1/.test(hy)) miss.push('A1 缺「规则数 0 ⇒ 未判定」分支')
+    if (!/else if \(sections\.length === 0\) unk\('A2/.test(hy)) miss.push('A2 缺「段落数 0 ⇒ 未判定」分支')
+    if (!/else if \(textish\.length === 0\) unk\('A3/.test(hy)) miss.push('A3 缺「文本类 0 个 ⇒ 未判定」分支')
+    if (!/else if \(sums\.length === 0\) unk\('A5/.test(hy)) miss.push('A5 缺「登记项 0 个 ⇒ 未判定」分支')
+    if (!/const trackedOk = /.test(hy)) miss.push('缺 trackedOk 前提（列不出已跟踪文件时 A1/A2 不许判「全部零命中」）')
+    // 健壮性：读文本要经守卫，不许裸 readFileSync 配置
+    if (!/const readText = \(abs\) => \{/.test(hy)) miss.push('缺 readText 守卫')
+    if (/readFileSync\(gaPath|readFileSync\(ecPath|readFileSync\(sumsPath/.test(hy)) miss.push('配置文件仍被裸 readFileSync 读')
+    // 退出码三态 + 汇总行
+    if (!/process\.exit\(fail > 0 \? 1 : un > 0 \? 2 : 0\)/.test(hy)) miss.push('退出码不是三态（失败 1 / 未判定 2 / 通过 0）')
+    if (!/未判定 \$\{un\}/.test(hy)) miss.push('汇总行未打印未判定数')
+  }
+  if (st === null) miss.push('缺 scripts/check-repo-config-hygiene-selftest.mjs')
+  else {
+    if (!/mkdtempSync\(path\.join\(tmpdir\(\), 'facedb-hyg-selftest-'\)\)/.test(st)) miss.push('电池必须为每个场景建独立临时仓库')
+    if (!/HYG_SCAN/.test(st)) miss.push('电池缺 HYG_SCAN 覆盖通道（成对读数用）')
+    if (!/HEAD:scripts\/check-repo-config-hygiene\.mjs/.test(st)) miss.push('电池缺阴性对照（HEAD 版判据喂空样本必须仍假通过）')
+    if (!/noStack/.test(st)) miss.push('电池缺「不许裸栈」断言')
+    if (!/process\.exit\(fail === 0 \? 0 : 1\)/.test(st)) miss.push('电池退出码必须是 fail === 0 ? 0 : 1')
+  }
+  const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
+  if (ci === '') miss.push('缺 .github/workflows/ci.yml')
+  else if (!ciHasStep(ci, 'verify:hygiene-selftest')) miss.push('CI 缺 verify:hygiene-selftest 独立步骤')
+  const pkg = has('package.json') ? read('package.json') : ''
+  if (!/"verify:hygiene-selftest": "node scripts\/check-repo-config-hygiene-selftest\.mjs"/.test(pkg)) miss.push('package.json 缺 verify:hygiene-selftest')
+  if (!/verify:publish-selftest && npm run verify:hygiene-selftest"/.test(pkg)) miss.push('verify:ci 未包含 verify:hygiene-selftest')
+  if (/verify:all[^"]*verify:hygiene-selftest/.test(pkg)) miss.push('verify:hygiene-selftest 不许塞进 verify:all（本地捷径只跑非 dist 子集）')
+  return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : '零样本四分支 + 前提 + 读文本守卫 + 三态退出码 + 电池（独立临时仓库/覆盖通道/阴性对照/裸栈断言）+ npm script + CI 独立步骤 全部在位' }
 } })
 
 for (const c of CHECKS) {

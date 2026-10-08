@@ -2402,6 +2402,8 @@ docker compose build pocketbase && docker compose up -d --force-recreate pocketb
 ```bash
 npm run verify            # 仓库自检：资源指纹 / 迁移不变量 / 文案键对称 / 二进制指纹 / 关键常量
 npm run verify:selfcheck  # 变异自检：证明上面每一项断言真的有判别力（1 个阴性对照 + 6 个变异）
+npm run verify:hygiene    # 配置卫生：.gitattributes / .editorconfig 的零命中规则与哈希资产保护
+npm run verify:hygiene-selftest  # 上面这条的零样本与健壮性自检（9 场景 + 2 阴性对照）
 npm run typecheck         # vue-tsc --noEmit
 npm run build             # 生产构建
 ```
@@ -2409,6 +2411,13 @@ npm run build             # 生产构建
 `scripts/verify-repo.mjs` 是**可被 CI 复现的那部分**审计断言：它只依赖 Node 内置模块，
 读取真实来源（清单、迁移文件、源码）而**不在脚本里复刻实现**；样本为零一律不判通过；
 二进制本体不入库时该项明确记为「未执行」而不是静默通过。
+
+**R25 的两处判据改动（都带变异自检）**
+
+| 判据 | 改前 | 改后 |
+|---|---|---|
+| `scripts/publish-leak-scan.mjs` | 前 8 KB 有 NUL 就**整份跳过**：含凭据的文件 `P0 命中 0 处`、exit 0（首字节 NUL 或 UTF-16 保存的 `.env` 都能绕过） | 二进制改用 `latin1` **逐字节扫**，只跑凭据类规则（`SECRET-ASSIGN`/`BEARER`/`PRIVATEKEY`/`SSH-KEY`/`SUPERUSER-PW`）；定位类规则（IP/域名/本机路径/邮箱/私网）对二进制不适用，且**报告行写明这一点**，不许让「干净」被读成「所有规则都扫过」 |
+| `scripts/check-repo-config-hygiene.mjs` | 四条断言在**样本为 0** 时退化成空真命题（`.gitattributes` 只剩注释 ⇒「零命中 0 条均已标注」✅；`public/SHA256SUMS` 0 字节 ⇒「0 项全部一致」✅），退出码只有 `fail === 0 ? 0 : 1` | 每条断言各自有「样本为 0 ⇒ 未判定」分支；读不到的配置（缺失 / 是目录 / 权限 000 / 超过 8 MiB）判未判定且**不裸栈**；退出码三态：失败 1 / 有未判定 2 / 通过 0 |
 
 **:warning: 与工作房运行根的关系**：更强的审计判据（文档契约、判定器四关、边界电池等）
 依赖工作房运行根下的脚本与一次性 PocketBase 实例，不在本仓库内；每次修复的完整证据索引

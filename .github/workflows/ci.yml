@@ -80,7 +80,7 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
-      - name: 判据自身的变异自检（46 个变异体必须全部被抓到，且未变异的副本全绿）
+      - name: 判据自身的变异自检（52 个变异体必须全部被抓到，且未变异的副本全绿）
         run: npm run verify:standards-selftest
 
       # 仓库结构面与 CSP 面的判据（verify-repo.mjs）此前**从未在 CI 里自检** ——
@@ -101,5 +101,10 @@ jobs:
 
       # 13 个阳性形态（.bak 令牌 / .pem 私钥 / 新式令牌前缀 / 超大文本 / OpenSSH 私钥 / 跟踪的 .env / 公网 IP / Tailscale / 媒体）
       # 必须全部被抓；2 组阴性对照必须零误报；「索引有而工作区缺失」必须判未判定（exit 2）；闸门自扫不得自阻断
-      - name: 发布卫生闸门的变异自检（13 阳性 + 2 阴性 + 未判定语义 + 自扫）
+      - name: 发布卫生闸门的变异自检（17 阳性（含两个二进制旁路形态）+ 3 阴性 + 未判定语义 + 自扫）
         run: npm run verify:publish-selftest
+
+      # 每个场景建独立临时 git 仓库：空样本（.gitattributes 只剩注释 / public/SHA256SUMS 0 字节）必须判未判定，
+      # 读不到的配置（缺失 / 是目录 / 权限 000 / 不是 git 仓库）必须 exit 2 且不裸栈；阴性对照证明修复前确实假通过
+      - name: 配置卫生判据的零样本与健壮性自检（9 场景 + 2 阴性对照）
+        run: npm run verify:hygiene-selftest

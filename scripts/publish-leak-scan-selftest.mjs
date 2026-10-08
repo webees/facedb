@@ -15,7 +15,10 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 const HERE = path.resolve(import.meta.dirname)
-const SCANNER = path.join(HERE, 'publish-leak-scan.mjs')
+// LEAK_SCAN 覆盖：把「旧版闸门」喂进同一套电池，就能证明每个变异体有判别力（R25 的 m16/m17 就是这么证的：
+// `git show HEAD:scripts/publish-leak-scan.mjs > /tmp/old.mjs` + `LEAK_SCAN=/tmp/old.mjs npm run verify:publish-selftest`
+// ⇒ 两个二进制旁路形态必须报红）。
+const SCANNER = process.env.LEAK_SCAN || path.join(HERE, 'publish-leak-scan.mjs')
 const WORK = mkdtempSync(path.join(tmpdir(), 'leak-selftest-'))
 
 function makeRepo(files, { ignore = [], removeAfterAdd = [], copyScanner = true } = {}) {
@@ -73,6 +76,8 @@ const RSA_KEY = ['-----BEGIN ' + 'RSA PRIVATE KEY-----', 'MIIEowIBAAKCAQEA' + 'x
 const OPENSSH_KEY = ['-----BEGIN ' + 'OPENSSH PRIVATE KEY-----', 'b3BlbnNzaC1rZXktdjEA' + 'AAAABG5vbmU' + 'AAAAE', '-----END ' + 'OPENSSH PRIVATE KEY-----'].join('\n') + '\n'
 // 泄漏形态一律运行时拼装：源码里不出现可被闸门命中的完整字面量（否则电池自己会被阻断）
 const IP_PUBLIC = [113, 20, 8, 27].join('.')
+// 运行时拼装的假 GitHub 令牌：源码里不出现完整字面量，否则闸门会把电池自己报成 P0（自阻断，已踩三次）。
+const GH = 'ghp_' + 'A'.repeat(30)
 const IP_TAILNET = [100, 101, 102, 103].join('.')
 const IP_PRIVATE = [[10, 1, 2, 3].join('.'), [192, 168, 0, 1].join('.'), [172, 16, 5, 5].join('.')].join(' ')
 
@@ -94,6 +99,24 @@ const CASES = [
   // R23REV-N8：旧版用 `\b` 作前导边界，而 `_` 是单词字符 ⇒ 带下划线前缀的键名整类漏检（实测 0 命中）。
   { name: 'm14 带下划线前缀的凭据键名（db_password=…，旧版 \\b 漏检）', files: { 'src/db.ts': 'const db_password = "' + 'hunter2xyz' + '"\n' }, expect: { code: 1, hit: ['SECRET-ASSIGN', 1] } },
   { name: 'm15 AWS_SECRET_ACCESS_KEY=…（下划线前缀 + 大写键）', files: { '.env.prod': 'AWS_SECRET_ACCESS_KEY=' + 'wJalrXUtnFEMIK7MDENGbPxRfiCY' + '\n' }, expect: { code: 1, hit: ['SECRET-ASSIGN', 1] } },
+  // ── R25 / W25E-01（P1）：二进制旁路。旧形态「前 8KB 有 NUL 就整份跳过」实测 exit 0 放行。
+  {
+    name: 'm16 首字节 NUL 的文件里的令牌（旧版整份跳过 ⇒ 放行）',
+    files: { 'keys/b3.env.tmp': Buffer.concat([Buffer.from([0]), Buffer.from('token=' + GH + '\n')]) },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
+  {
+    name: 'm17 第 100 字节 NUL、令牌在第 9000 字节之后（旧版整份跳过 ⇒ 放行）',
+    files: {
+      'keys/b2.txt': (() => {
+        const b = Buffer.alloc(9048, 0x61) // 'a' 填充
+        b[100] = 0
+        Buffer.from('token=' + GH + '\n').copy(b, 9000)
+        return b
+      })(),
+    },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
   // ── 阴性：干净仓库必须 exit 0 且相关规则 0 命中 ───────────────────────
   {
     name: 'n1 干净仓库（版本串 10.13.0 / 私网 / 回环 / 普通代码）',
@@ -108,6 +131,20 @@ const CASES = [
     name: 'n2 放行私网/回环/文档网段，不误报 P1',
     files: { 'notes.md': IP_PRIVATE + ' 127.0.0.1 169.254.1.1\n' },
     expect: { code: 0, hit: ['PUBLIC-IP', 0], zeroAlso: ['TAILNET'], alsoHit: { 'PRIVATE-IP': 3 } },
+  },
+  // n3（R25）：二进制内容**不是**「不扫」，但定位类规则对二进制不适用 —— 这是刻意的精度取舍，
+  // 用断言把它钉住：将来若有人对二进制打开定位类规则，这条会红，提醒同步报告口径与文档。
+  {
+    name: 'n3 二进制（含 NUL 与像 IP/本机路径的字节）无令牌 ⇒ exit 0，且定位类规则不适用',
+    files: {
+      'assets/blob.bin': (() => {
+        const b = Buffer.alloc(4096, 0x61)
+        b[3] = 0
+        Buffer.from(' ' + IP_PRIVATE + ' /Users/' + 'someuser' + '/x\n').copy(b, 100)
+        return b
+      })(),
+    },
+    expect: { code: 0, hit: ['BEARER', 0], zeroAlso: ['SECRET-ASSIGN', 'PUBLIC-IP', 'PRIVATE-IP', 'LOCAL-PATH'] },
   },
   // ── 未判定语义：读不到 ≠ 干净 ────────────────────────────────────────
   {
@@ -189,4 +226,4 @@ if (failures.length) {
   for (const f of failures) console.log(`    - ${f.name}：${f.problems.join('；')}`)
   process.exit(1)
 }
-console.log('  ✅ 全部通过：15 个阳性形态全部被抓、2 组阴性对照零误报、未判定语义（读不到 / 扫描面为空）与提示区成立、自扫不阻断')
+console.log('  ✅ 全部通过：17 个阳性形态全部被抓（含 R25 的两个二进制旁路形态）、3 组阴性对照零误报、未判定语义（读不到 / 扫描面为空）与提示区成立、自扫不阻断')

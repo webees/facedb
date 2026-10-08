@@ -253,6 +253,29 @@ const M = [
     apply: () => mutate('scripts/verify-standards-selftest.mjs', (t) => t.replace(/^(    if \(pidAlive\(pid\)\) continue)/m, '    // $1')) },
   { id: 'M44', target: 'scripts/verify-standards-selftest.mjs', expect: 'S31', desc: '反转副本前缀过滤（只清扫不该扫的、放过真残留）',
     apply: () => mutate('scripts/verify-standards-selftest.mjs', (t) => t.replace(/^    if \(!base\.startsWith\(WT_PREFIX\)\) continue$/m, '    if (base.startsWith(WT_PREFIX)) continue')) },
+  // 【R25 / W25E-01（P1）】发布卫生闸门的二进制旁路：旧形态「前 8KB 有 NUL 就整份跳过」会放行含凭据的文件。
+  // 三个变异体分别打「解码方式」「适用规则集」「报告口径」—— 少任何一条都会让修复被静默回退或让读数误导读者。
+  { id: 'M45', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '二进制内容退回整份跳过（W25E-01：含 ghp_ 的文件 exit 0 放行）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(
+      "  const src = buf.toString(isBinary ? 'latin1' : 'utf8')\n  if (isBinary) binaryScanned++\n  else scanned++",
+      "  if (isBinary) {\n    skippedBinary++\n    continue\n  }\n  const src = buf.toString('utf8')\n  scanned++")) },
+  { id: 'M46', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '摘掉 BINARY_RULES 适用集（二进制会退回跑全部规则或全部不跑）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace('const BINARY_RULES = new Set(', 'const UNUSED_BINARY_RULES = new Set(')) },
+  { id: 'M47', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '扫描面报告不再写明「二进制已扫凭据类规则」（读者会把干净误读成全规则扫过）',
+    // 该短语在文件里出现 2 次（1 处说明注释 + 1 处报告行）⇒ 锚点必须带 `binaryScanned +` 才能唯一命中报告行。
+    // 裸字符串替换会改中注释、报告行照旧，变异体于是「未生效」（本轮第 5 次同族坑：断言/变异被注释满足）。
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(/binaryScanned \+ ' 个（已扫凭据类规则，定位类规则不适用）/, "binaryScanned + ' 个'")) },
+
+  // 【R25 / W25E-02（P2）】配置卫生判据的空真命题：样本为 0 时四条断言各自退化成 ✅（`零命中 0 条均已标注`、
+  // `0 项全部一致`），整体 `通过 5，失败 0`、exit 0；且退出码只有 `fail === 0 ? 0 : 1`，表达不了「没构成结论」。
+  // 三个变异体分别打「零样本分支」「退出码三态」「自检接线」—— 少任何一条都会让修复被静默回退。
+  { id: 'M48', target: 'scripts/check-repo-config-hygiene.mjs', expect: 'S33', desc: 'A3 摘掉「文本类 0 个 ⇒ 未判定」分支（空样本退回空真命题 ✅）',
+    // 锚点必须带 `else if (` 前缀：裸 `textish.length === 0` 在别处也出现（注释里），裸替换会改中注释、分支照旧。
+    apply: () => mutate('scripts/check-repo-config-hygiene.mjs', (t) => t.replace(/else if \(textish\.length === 0\) unk\('A3/, "else if (false) unk('A3")) },
+  { id: 'M49', target: 'scripts/check-repo-config-hygiene.mjs', expect: 'S33', desc: '退出码退回两态（fail === 0 ? 0 : 1），未判定无法表达',
+    apply: () => mutate('scripts/check-repo-config-hygiene.mjs', (t) => t.replace('process.exit(fail > 0 ? 1 : un > 0 ? 2 : 0)', 'process.exit(fail === 0 ? 0 : 1)')) },
+  { id: 'M50', target: 'package.json', expect: 'S33', desc: '摘掉 verify:hygiene-selftest 接线（自检从此不进 CI）',
+    apply: () => mutate('package.json', (t) => t.replace('    "verify:hygiene-selftest": "node scripts/check-repo-config-hygiene-selftest.mjs",\n', '')) },
 ]
 
 let caught = 0
