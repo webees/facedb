@@ -7,18 +7,20 @@ import { judge, POSE_KEY, roiStats, STABLE_FRAMES, type Pose } from '../lib/qual
 import {
   BURST,
   BURST_GAP_MS,
-  extFor,
   grabImage,
   stamp,
   MIN_SEGMENT_MS,
   poseRecordingElapsed,
   startPoseRecording,
   stopPoseRecording,
+  takeSegmentDropped,
   teardownRecorder,
 } from '../lib/capture'
-import { uploadSession, UPLOAD_BUDGET_MS, type CaptureMeta, type CaptureResult, type PendingFile } from '../lib/pb'
+import { UPLOAD_BUDGET_MS, type CaptureMeta, type CaptureResult, type PendingFile } from '../lib/pb'
+import { runUploadBatch, drainWhileBusy } from '../lib/upload-batch'
+import { buildPoseFiles } from '../lib/batch-files'
 import { primeAudio, resumeAudio, sfx } from '../lib/audio'
-import { t, type MessageKey } from '../lib/i18n'
+import { t } from '../lib/i18n'
 
 const props = defineProps<{ sessionId: string }>()
 const emit = defineEmits<{ done: [results: CaptureResult[]] }>()
@@ -41,8 +43,6 @@ const overlayEl = ref<HTMLCanvasElement>()
 const cameras = ref<MediaDeviceInfo[]>([])
 const camId = ref('')
 const idx = ref(startIdx > 0 ? startIdx : 0)
-const hintKey = ref<MessageKey>('loadingModel')
-const hintParams = ref<Record<string, string | number>>({})
 const ok = ref(false)
 const busy = ref(false)
 const recording = ref(false)
@@ -56,6 +56,12 @@ const uploadError = ref('')
 // 修复前该分支只写调试日志、保持「上传中…」，用户既不知道失败也没有入口，
 // 而文件只在内存 pendingFiles 里，刷新即全部丢失。
 const submitFailed = ref(false)
+// 「本次一个可上传的文件都没有」（整批文件都被判过小丢弃 / 录制结果为空）。
+// 与 submitFailed 分开的原因：它既不是网络问题、也不是「传了一半失败」，
+// 重发同一批文件永远不会成功 —— 唯一的有效动作是重新采集，
+// 所以它换「录制为空」类文案（hintEmptyBatch）并给出重试（重新采集）入口，
+// 而不是报「上传失败，请检查网络」把用户引去检查网络（W23B-05）。
+const emptyBatch = ref(false)
 // 一次识别 = 一条记录：各采集点的文件先缓存在内存，最后一步完成后一次性提交。
 // 不在每步提交是因为 captures 的 updateRule 只允许登录用户更新，匿名 PATCH 会被拒；
 // 而末次 POST 只需 createRule，且提交是原子的（不会留下「半条记录」）。
@@ -64,10 +70,6 @@ const submitFailed = ref(false)
 // 用 reactive 而不是 ref：所有读写点（push / length / 传给 uploadSession）保持原样，
 // 改动只有这一行。
 const pendingFiles = reactive<PendingFile[]>([])
-/** 把本步产物放进待提交队列 */
-function stash(blob: Blob, filename: string, kind: 'image' | 'video', pose: string, meta: CaptureMeta): void {
-  pendingFiles.push({ pose, blob, filename, kind, meta })
-}
 // 连续无法识别的次数；达到 MAX_FAILS 时给出「重新开始」入口
 const fails = ref(0)
 const results = reactive<CaptureResult[]>([])
@@ -80,7 +82,8 @@ const pose = computed(() => POSES[idx.value])
 // 断流后也必须给出入口（R15-F3）：fails 只在 shoot() 的 catch 里自增，而 camLost 时
 // loop() 直接跳过 shoot()，于是 fails 永远到不了 MAX_FAILS，「重新识别」按钮永不出现。
 // 而提示让用户「刷新页面」——刷新会丢掉内存里本次全部已采集文件。
-const retryable = computed(() => fails.value >= MAX_FAILS || camLost.value)
+// emptyBatch 同样并入：队列为空时唯一的出路是重新采集，入口必须可见（W23B-05）。
+const retryable = computed(() => fails.value >= MAX_FAILS || camLost.value || emptyBatch.value)
 const hint = computed(() => t(hints.key.value, hints.params.value))
 // 需要转头时，在椭圆外侧给出方向箭头（复用提示状态，不额外判断几何）
 const turnDir = computed<'left' | 'right' | null>(() =>
@@ -334,22 +337,6 @@ async function shoot(): Promise<void> {
       }
       dbg('本步连拍', shots.length, '张：', shots.map((x) => x.filename).join(', '))
     }
-    const meta: CaptureMeta = {
-      yaw: Number(frame.yaw.toFixed(1)),
-      pitch: Number(frame.pitch.toFixed(1)),
-      roll: Number(frame.roll.toFixed(1)),
-      faceWidthPx: Math.round(frame.faceWidthPx),
-      blurVariance: Number(stats.blur.toFixed(2)),
-      brightness: Number(stats.brightness.toFixed(2)),
-      qualityScore: Number(qualityScore().toFixed(3)),
-      capturedAt: Date.now(),
-      deviceInfo: navigator.userAgent,
-      videoWidth: el.videoWidth,
-      videoHeight: el.videoHeight,
-      // 录制状态随本采集点的每个文件落库：录制器没起来时置 false，
-      // 后台据此区分「录制失败」与「这一步没有视频」。
-      segmentOk: !segmentFailed.value,
-    }
     // 拍到就立刻切到下一步，上传放到后台队列。
     // 之前是 await 上传完再 advance，用户转到目标角度后还要额外等 0.5~1s 才进入下一步，
     // 这就是「向左转要等一两秒」的主要来源。
@@ -369,35 +356,58 @@ async function shoot(): Promise<void> {
     // —— 秒过的用户最多多等不到 1.2 秒，却能保证每段视频都可用。
     const elapsed = poseRecordingElapsed()
     if (elapsed < MIN_SEGMENT_MS) await new Promise((r) => setTimeout(r, MIN_SEGMENT_MS - elapsed))
-    const poseVideo = await stopPoseRecording()
-    dbg('本段录制收尾:', step, poseVideo ? poseVideo.blob.size + ' 字节' : '(为空)')
-    const kind: 'image' | 'video' = isVideo ? 'video' : 'image'
-    // 视频步不产生独立文件（整段视频在收尾时统一取出），只有照片步需要入队
-    const batch = isVideo ? [] : shots
-    for (const x of batch) {
-      stash(x.blob, x.filename, kind, step, meta)
+    // 取段失败不得连坐本采集点的照片：段收尾出错（录制器异常、或 iOS WKWebView 上
+    // stop() 被接受但 onstop 永不触发后超时）只应表现为「本步没有视频」，而不是把整批照片丢掉。
+    let poseVideo: { blob: Blob; mime: string } | null = null
+    let segmentErrored = false
+    try {
+      poseVideo = await stopPoseRecording()
+    } catch (e) {
+      segmentErrored = true
+      dbg('本段录制收尾出错，按「本步没有视频」处理：', e)
     }
-    // 本采集点的视频段与照片一起入队（文件名带 pose，便于后台分辨）
-    if (poseVideo) {
-      // 文件名先取成变量：results 与 pendingFiles 必须用同一个名字。
-      const vidName = `${step}_video_${stamp()}.${extFor(poseVideo.mime)}`
-      pendingFiles.push({
-        pose: step,
-        blob: poseVideo.blob,
-        filename: vidName,
-        kind: 'video',
-        meta,
-      })
-      // results 是「本次采集产出的结果清单」，视频段同样是结果的一部分。
-      // 早先只在连拍分支写 results（照片），于是 emit payload 恒为 10 条而真实上传 16 个文件
-      // （缺的 6 个正是各采集点的 *_video_*.webm），与 CaptureResult[] 的声明自相矛盾。
-      results.push({ pose: step, filename: vidName })
+    // 段是否因体积过小被丢弃：必须在这里取 —— 段的收尾（含「过小 → 不保留」的判定）
+    // 就发生在 stopPoseRecording() 内部，早于它读只会读到上一采集点的旧事实。
+    // 读后即复位；复位时机与「跨采集点不串味」写在 capture.ts 的 takeSegmentDropped 注释里。
+    const segmentDropped = takeSegmentDropped()
+    dbg(
+      '本段录制收尾:',
+      step,
+      poseVideo ? poseVideo.blob.size + ' 字节' : '(为空)',
+      segmentDropped ? '（段被丢弃：本采集点没有可用视频）' : '',
+    )
+    // meta 必须在这里构造（而不是赶在连拍结束时就构造）：segmentOk 要回答的是
+    // 「这一段到底有没有留下可用视频」，而这件事只有 stopPoseRecording() 跑完才成定局（W23B-06）。
+    const meta: CaptureMeta = {
+      yaw: Number(frame.yaw.toFixed(1)),
+      pitch: Number(frame.pitch.toFixed(1)),
+      roll: Number(frame.roll.toFixed(1)),
+      faceWidthPx: Math.round(frame.faceWidthPx),
+      blurVariance: Number(stats.blur.toFixed(2)),
+      brightness: Number(stats.brightness.toFixed(2)),
+      qualityScore: Number(qualityScore().toFixed(3)),
+      capturedAt: Date.now(),
+      deviceInfo: navigator.userAgent,
+      videoWidth: el.videoWidth,
+      videoHeight: el.videoHeight,
+      // 录制状态随本采集点的每个文件落库，两种情况都置 false：
+      //   ① 录制器没起来（segmentFailed）；
+      //   ② 段收到了但被判过小丢弃、本采集点一段都没有（segmentDropped）——
+      //      此前这条路径没有任何对外信号，落库侧只看到「video 为空」，
+      //      与「用户这一步本来就没拍视频」完全同形。
+      segmentOk: !segmentFailed.value && !segmentDropped && !segmentErrored,
     }
+    // 照片与视频段一起入队（装配在 src/lib/batch-files.ts，两侧文件名同源）
+    const pose = buildPoseFiles({ step, shots, poseVideo, meta, stamp })
+    for (const f of pose.files) pendingFiles.push(f)
+    // results 是「本次采集产出的结果清单」，视频段同样是结果的一部分。
+    if (pose.videoResult) results.push(pose.videoResult)
 
     if (isLastStep) {
       // 最后一步：等整批文件真正提交完成，成功后才切到完成页。
       // 不先 advance()——否则「识别完成」会在上传还没结束时显示，用户可能提前离开。
-      await submit()
+      // 传 true：队列此刻已定（本步文件刚入队），不必再去等自己收尾（否则会等满 drain 上限）。
+      await submit(true)
       return
     }
     advance()
@@ -440,58 +450,62 @@ function advance(): void {
 /** 自动重试次数与间隔：用户无需任何操作，失败就自己再试。 */
 const SUBMIT_TRIES = 3
 const SUBMIT_BACKOFF_MS = 1200
+/** 等「正在飞的 shoot()」收尾：20ms × 60 = 1.2s 上限（语义与理由见 upload-batch.ts） */
+const DRAIN_TRIES = 60
+const DRAIN_MS = 20
 
-async function submit(): Promise<void> {
+async function submit(fromShoot = false): Promise<void> {
   submitting.value = true
   uploading.value = true
   uploadError.value = ''
   submitFailed.value = false
-  // 「上传中…」与 uploading（驱动旋转动画）必须与「真的开始上传」同一时刻出现。
-  // 此前这行提示提前到了 shoot() 里用户刚达标的那一刻，收尾阶段就已经显示「上传中」，
-  // 收尾一旦卡住，界面便永久停在这个文案上 —— 用户以为在上传，其实什么都没发出去。
-  hints.set('hintUploading')
-  dbg('开始提交，文件数:', pendingFiles.length)
-
+  emptyBatch.value = false
   try {
-    // 整批提交（含下面所有轮次与内层重试）共用一个截止时刻：
-    // 不共享的话最坏耗时 = 外层 3 轮 × 内层 3 次 × 25s 单次上限 + 退避 ≈ 237.6s，
-    // 期间没有任何进度反馈，用户只能干等。
-    const deadline = Date.now() + UPLOAD_BUDGET_MS
-    for (let attempt = 1; attempt <= SUBMIT_TRIES; attempt++) {
-      // 组件已卸载：后台继续重试既没有意义，也会在已卸载组件上发事件
-      if (disposed) return
-      // 预算已耗尽：不再发起新一轮，直接进入失败态（否则总耗时突破预算，失败态永远到不了）
-      if (Date.now() >= deadline) {
-        if (!uploadError.value) uploadError.value = t('uploadFailed')
-        break
-      }
-      try {
-        await uploadSession(props.sessionId, pendingFiles, deadline)
-        dbg('提交成功（第 ' + attempt + ' 次尝试）')
-        sfx.done()
-        cleanup()
-        // 已卸载时不再对外发事件（emit 到已卸载组件会命中 Vue 的开发期告警）
-        if (!disposed) emit('done', [...results])
-        return
-      } catch (e) {
-        uploadError.value = e instanceof Error ? e.message : String(e)
-        dbg('第 ' + attempt + ' 次提交失败：', uploadError.value)
-        if (attempt < SUBMIT_TRIES) {
-          // 间隔递增：1.2s、2.4s。退避同样计入预算，剩余时间不够就直接进失败态，
-          // 不让用户多等一个注定超时的间隔。
-          const wait = SUBMIT_BACKOFF_MS * attempt
-          if (Date.now() + wait >= deadline) break
-          await new Promise((r) => setTimeout(r, wait))
-        }
-      }
+    // 提交入口先判「有没有可上传的文件」（W23B-05）：整批文件都被判过小丢弃时队列为空，
+    // 进网络重试循环毫无意义，界面还会报「上传失败，请检查网络」把用户引向错误方向。
+    // 这里直接给「录制为空」类提示（emptyBatch 已并入 retryable），**一个网络请求都不发**。
+    // 从 shoot() 内部调用（最后一步）时队列已定，不必等；从按钮调用时必须先等（理由见 upload-batch.ts）
+    if (!fromShoot) await drainWhileBusy(() => busy.value, DRAIN_TRIES, DRAIN_MS)
+    if (pendingFiles.length === 0) {
+      emptyBatch.value = true
+      uploadError.value = t('emptyRecording')
+      dbg('提交中止：待提交文件数为 0，无文件可上传，跳过网络重试（不发出任何请求）')
+      hints.setNow('hintEmptyBatch')
+      sfx.warn()
+      return
     }
+    // 「上传中…」与 uploading（驱动旋转动画）必须与「真的开始上传」同一时刻出现。
+    // 此前这行提示提前到了 shoot() 里用户刚达标的那一刻，收尾阶段就已经显示「上传中」，
+    // 收尾一旦卡住，界面便永久停在这个文案上 —— 用户以为在上传，其实什么都没发出去。
+    hints.set('hintUploading')
+    dbg('开始提交，文件数:', pendingFiles.length)
+
+    // 轮次 / 退避 / 预算的编排在 src/lib/upload-batch.ts（策略与界面状态解耦，可单独驱动）
+    const run = await runUploadBatch(
+      pendingFiles,
+      props.sessionId,
+      { tries: SUBMIT_TRIES, backoffMs: SUBMIT_BACKOFF_MS, budgetMs: UPLOAD_BUDGET_MS },
+      { isDisposed: () => disposed, onAttemptFail: (n, m) => dbg('第 ' + n + ' 次提交失败：', m) },
+    )
+    if (run.ok) {
+      dbg('提交成功（第 ' + run.attempts + ' 次尝试）')
+      sfx.done()
+      cleanup()
+      // 已卸载时不再对外发事件（emit 到已卸载组件会命中 Vue 的开发期告警）
+      if (!disposed) emit('done', [...results])
+      return
+    }
+    // 组件已卸载：不发事件也不改界面状态
+    if (run.reason === 'disposed') return
+    // 预算耗尽但一次都没发出去时没有技术消息，退回本地化文案
+    uploadError.value = run.error || t('uploadFailed')
     // 全部尝试都失败：切成明确的失败态并给出重试入口。
     // 不能只停动画 —— 文案仍是「上传中…」时用户会一直等下去，
     // 而本次采集的文件只在内存里，刷新页面就全丢了。
     submitFailed.value = true
     hints.set('hintUploadFailed')
     sfx.warn()
-    dbg('提交最终失败：', uploadError.value)
+    dbg('提交最终失败：', uploadError.value, '（原因：', run.reason, '）')
   } finally {
     // 任何出口（成功切页、提交失败、预算耗尽、内部抛错）都必须复位这两个状态，
     // 否则旋转动画会一直转，观感上就是「永远在上传」。
@@ -509,6 +523,9 @@ async function retrySubmit(): Promise<void> {
 async function retry(): Promise<void> {
   // 用于「连续多帧无法识别」时的重新开始（上传失败走 retrySubmit）
   fails.value = 0
+  // 队列为空时点「重试」= 重新采集：必须先清掉 emptyBatch，否则 shoot() 的
+  // retryable 守卫会把后续每一次达标都挡回去（用户点了却什么都不再发生）。
+  emptyBatch.value = false
   resetHold()
   // 设备可能已断开：此时直接设「请{pose}」会让用户以为一切正常，而画面其实是静止的。
   // 先尝试重新取流；成功则 camLost 会被 startCamera 清掉，失败则保留断开提示。
@@ -570,9 +587,10 @@ function loop(): void {
   // 设备断开后不再用逐帧判定覆盖提示：画面已静止，判定结果没有意义。
   // 失败提示的冷却期内同样不覆盖，否则「失败」会被立刻盖成「正在拍摄」。
   // 提交失败后也不能被覆盖：否则「上传失败…」3 帧后就被「保持不动」盖掉，
-  // 用户看不到失败也不知道可以重试；录制段创建失败同理。
+  // 用户看不到失败也不知道可以重试；录制段创建失败同理；
+  // 「本次没录到可上传的文件」同样是一条终态提示，被姿态提示盖掉就等于没告诉用户（W23B-05）。
   const inFailHold = Date.now() - failAt.value < FAIL_HINT_HOLD_MS
-  if (!recording.value && !submitting.value && !camLost.value && !inFailHold && !segmentFailed.value && !submitFailed.value)
+  if (!recording.value && !submitting.value && !camLost.value && !inFailHold && !segmentFailed.value && !submitFailed.value && !emptyBatch.value)
     hints.set(verdict.hintKey)
   if (!camLost.value && tickHold(verdict.pass)) void shoot()
 }

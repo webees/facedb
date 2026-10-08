@@ -42,6 +42,10 @@ const M = {
     // 提交重试全部失败后的终态文案。此前失败后界面仍停留在「上传中…」，
     // 用户既不知道失败、也没有可点的入口（已采文件只在内存，刷新即丢）。
     hintUploadFailed: '上传失败，请检查网络后点下方「重新提交」',
+    // 「本次一个可上传的文件都没有」的终态（W23B-05）：整批文件都因体积过小被丢弃时，
+    // 真实原因是一段都没录上，不是网络。用网络文案会把用户引去检查网络，
+    // 且掩盖了唯一有效的动作 —— 重新采集。文案里点名下方那个按钮，与 retry 的标签一致。
+    hintEmptyBatch: '本次没录到可上传的文件，请点下方「重试」重新采集',
     // 不要在这里再加「请」：pose* 系列文案本身已带祈使语气（「请正对镜头」等），
     // 加了会拼成「请请正对镜头」。
     hintCameraOn: '{pose}',
@@ -87,6 +91,10 @@ const M = {
     debugFilesUnit: '个文件',
     metricRoll: '头部倾斜',
     emptyRecording: '录制结果为空',
+    // 网络层失败（请求根本没到服务端：DNS 失败 / 连接被拒 / 断网 / CORS 预检失败）。
+    // 浏览器原文是「Failed to fetch」「Load failed」这类，对用户没有可操作性（W23B-08）；
+    // 这里给出「是什么 + 怎么办」。原始错误仍在控制台，诊断信息不丢。
+    uploadNetworkFailed: '网络不可达或连接被拒，请检查网络后重试',
     // 采集过程内部的异常（取帧失败等）。技术细节不进界面 —— 否则切到英文时会中英混杂，
     // 且内部错误对用户没有可操作性。细节见控制台（?debug=1）。
     captureFailed: '采集出错，请保持姿态',
@@ -126,6 +134,7 @@ const M = {
     hintFinalizing: 'Processing, please wait…',
     hintUploading: 'Uploading…',
     hintUploadFailed: 'Upload failed. Please check your network and tap "Retry upload" below',
+    hintEmptyBatch: 'No uploadable files were captured this time. Tap "Retry" below to capture again',
     hintCameraOn: '{pose}',
 
     cameraDenied: 'Camera permission denied. Please allow camera access and refresh the page',
@@ -163,6 +172,7 @@ const M = {
     debugFilesUnit: 'files',
     metricRoll: 'Roll',
     emptyRecording: 'Empty recording',
+    uploadNetworkFailed: 'Network unreachable or connection refused. Check your connection and retry',
     captureFailed: 'Capture error, please hold your pose',
   },
 } as const

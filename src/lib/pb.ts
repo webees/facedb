@@ -60,10 +60,15 @@ export const UPLOAD_BUDGET_MS = 90000
 // 若后端不在同一主机、或需要固定地址，用 PUBLIC_PB_URL 显式覆盖（构建期注入）。
 //
 // 尾部斜杠必须去掉：PUBLIC_PB_URL 很容易被写成 "https://pb.example.com/"，
-// 不归一化就会拼出 "https://pb.example.com//api/collections/..."。实测 PocketBase 对双斜杠回 301，
-// 而 fetch 规范规定 301/302 重定向**把 POST 降级为 GET 并丢弃请求体** —— 重定向后的 GET 命中
-// 列表接口、回 200 + 空列表，于是 res.ok 为真、"上传成功"、库里一条记录都没有。
-// 实测后果：10 张照片 + 1 段视频整批静默丢失，界面显示成功。
+// 不归一化就会拼出 "https://pb.example.com//api/collections/..."。
+// 【R23 更正】此前这里写的是「PocketBase 对双斜杠回 301 → fetch 把 POST 降级成 GET →
+// 重定向后的 GET 回 200 空列表」，实测不是这样：双斜杠的 POST 回 **307** +
+// `Location: /api/collections/...`（去重斜杠后的同一路径），fetch 默认跟随；跟随后的那次请求
+// 不再被服务端当作合法上传（实测落到 400、库里零写入），而单斜杠的同一份 multipart 正常入库。
+// 机制上注意：307/308 按规范**保留方法与请求体**，降级成 GET 的是 301/302/303 —— 所以
+// 「301 降级」这套解释对本案不成立；真正要紧的是下面这行把尾部斜杠去掉。
+// 两种解释下后果相同：10 张照片 + 1 段视频整批静默丢失，界面显示成功。
+// 判据 lib/r11-f2-pburl-verify.mjs 已改钉可观测事实（3xx 重定向 + 库零写入），不钉状态码。
 const rawBase = (import.meta.env.PUBLIC_PB_URL || '').trim()
 const PB_BASE = rawBase
   ? rawBase.replace(/\/+$/, '') // 显式覆盖：去尾部斜杠
@@ -77,6 +82,23 @@ const API = `${PB_BASE}/api/collections/captures/records`
 
 /** 4xx（字段校验失败等数据问题）重试没有意义，用独立类型标记后直接抛出。 */
 class PermanentError extends Error {}
+
+/**
+ * 网络层失败：请求根本没到服务端（DNS 失败 / 连接被拒 / 断网 / CORS 预检失败）。
+ * 为什么需要它：fetch 在这些情况下抛的是 TypeError，原文是「Failed to fetch」（Chrome）、
+ * 「Load failed」（Safari）、「fetch failed」（Node/undici），对用户没有可操作性（W23B-08）。
+ *
+ * 为什么必须同时命中 TypeError 与措辞（只认 TypeError 不够）：
+ * 代码自身抛出的 TypeError（如 Cannot read properties of undefined）也会是 TypeError，
+ * 把它说成「网络不可达」会把排查方向彻底带偏 —— 而这里恰好是 catch 的兜底分支。
+ * 注意这条分支只管「网络层」，响应层面的 4xx/5xx 在别处分类，不会走到这里。
+ */
+function isNetworkError(e: unknown): boolean {
+  if (!(e instanceof TypeError)) return false
+  return /failed to fetch|fetch failed|load failed|networkerror|network error|network request failed|connection (refused|reset|closed)|err_connection/i.test(
+    e.message,
+  )
+}
 
 // 关于重试与重复记录（已知取舍，非疏漏）：
 // 5xx 会重试 3 次。若服务端其实已写入、只是响应在途中丢失，重试会再写一条，
@@ -208,6 +230,12 @@ async function post(build: () => FormData, what: string, deadline: number): Prom
       lastErr = new Error(msg)
     } catch (e) {
       if (e instanceof PermanentError) throw e
+      const netErr = isNetworkError(e)
+      if (netErr) {
+        // 原始错误必须先落到控制台：换成可读文案后 message 里就没有浏览器原文了，
+        // 排查时看不出到底是 DNS、连接被拒还是 CORS 预检失败（W23B-08）。
+        console.warn('[upload] 网络层错误（原始信息，供排查）：', e)
+      }
       // AbortError 的技术消息（"The operation was aborted"）对用户与排查都没有信息量，
       // 换成「第 N 次尝试在 X 秒内无响应」，与网络错误区分开。
       // 中止有两种来源，文案必须分开：① 单次超时到点（定时器）；② 后台宽限期满（visibilitychange）。
@@ -216,6 +244,11 @@ async function post(build: () => FormData, what: string, deadline: number): Prom
       // 这条消息，写「转入后台」会让人以为失败是自己切出去造成的，也看不出「可以直接重试」。
       // 已完成的请求不受影响：请求结束时 inflightCtl 已被清空，abort 不会落到它身上；
       // 即便落到，AbortController.abort() 对已 settle 的 fetch 也没有任何副作用。
+      // 网络层失败同样换成本地化文案（只换文案，不换分类：它仍按普通错误走退避重试）。
+      // 文案在这里单独求值、用字符串拼接而不是写进模板字面量的插值里：
+      // 死键判据（lib/check-i18n-dead-keys.mjs）会把模板字面量内部整体屏蔽成字符串，
+      // 写在插值里的键引用扫不到，该键会被误判成「已定义未被引用」。
+      const netMsg = netErr ? t('uploadNetworkFailed') : ''
       lastErr =
         e instanceof DOMException && e.name === 'AbortError'
           ? new Error(
@@ -223,7 +256,9 @@ async function post(build: () => FormData, what: string, deadline: number): Prom
                 ? `${what}: 连接中断，第 ${attempt + 1} 次尝试已中止（可重试）`
                 : `${what}: 第 ${attempt + 1} 次尝试 ${Math.round(slice / 1000)}s 内无响应，已中止`,
             )
-          : e
+          : netErr
+            ? new Error(what + ': ' + netMsg)
+            : e
     } finally {
       clearTimeout(timer)
       // 只清自己那一个：若下一次尝试已经接手，不能把它也清掉

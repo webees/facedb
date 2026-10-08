@@ -83,6 +83,37 @@ const MIN_SEGMENT_BYTES = 60 * 1024
 
 /** 已收好的段：只保留最后一段（用户达标时的姿态最有价值，且体积恒定） */
 let lastSegment: { blob: Blob; mime: string } | null = null
+
+/**
+ * 「本采集点收到的段被判过小丢弃、丢掉之后一段都没有」这一事实（W23B-06）。
+ * 为什么必须有：collectSegment 的丢弃分支此前只写一行 console.debug —— 对外零信号，
+ * 于是调用方的 segmentOk 只看「录制器有没有起来」，段被丢弃时仍是 true，
+ * 落库侧便无法区分「录制失败」与「这一步没有视频」。
+ *
+ * 谁在读：CaptureView 的 shoot()，在 stopPoseRecording() 之后立刻 takeSegmentDropped() 取一次，
+ *         折算进 meta.segmentOk。
+ * 何时复位：① takeSegmentDropped() 读取时立即复位（take/consume 语义）；
+ *           ② startPoseRecording()（新采集点 / 新流）与 teardownRecorder() 里复位。
+ * 跨采集点会不会串味：不会。每个采集点开始时清零、读取即消费，
+ *           上一个采集点的丢弃不可能被下一个采集点读到（判据 C20 专门量这一条）。
+ * 注意只用于「丢掉之后一段都没有」：同一采集点若已有保留段（如 8 秒上限切开的前半段），
+ * 尾段被丢弃不影响本采集点仍有视频，此时不置真；反过来，若先丢了一段、之后又保住了
+ * 一段（8 秒上限续录的那段正常），置起的标记会被撤回 —— 判据 C22/C23 专门量这两条。
+ */
+let segmentDropped = false
+
+/**
+ * 取走「本采集点的段被判过小丢弃」这一事实（读后即复位）。
+ * 为什么是 take 而不是读属性：读属性要调用方自己记得复位，漏一次就把上一个采集点的失败
+ * 带到下一个采集点 —— 而 segmentOk 的存在意义正是防这类错配。
+ * @returns true = 本采集点至今没有可用视频段（收到的段为空，或被判过小丢弃）
+ */
+export function takeSegmentDropped(): boolean {
+  const v = segmentDropped
+  segmentDropped = false
+  return v
+}
+
 /** 正在进行的收尾操作；用于串行化，避免并发调用读到尚未赋值的 lastSegment */
 let finalizing: Promise<void> | null = null
 /**
@@ -161,14 +192,23 @@ function collectSegment(src: Blob[], fromEpoch: number): void {
   const seg = buildBlob(src)
   if (seg && seg.blob.size >= MIN_SEGMENT_BYTES) {
     lastSegment = seg // 只留最新一段
+    // 本采集点已经有可用段了：把此前可能置起的「一段都没有」撤回。
+    // 同一采集点内可能收多次段（8 秒上限到点会先收一段再续录），
+    // 若前一段因过小被丢弃、后一段正常保留，本采集点是有视频的，不能报成没有。
+    segmentDropped = false
     console.debug('[seg] 收段 ' + Math.round(seg.blob.size / 1024) + ' KB（保留为最终结果）')
   } else if (seg) {
-    // 刚开就被切掉的尾段：不覆盖已有的有效段
+    // 刚开就被切掉的尾段：不覆盖已有的有效段。
+    // lastSegment 非空 = 同一采集点已有有效段（例如 8 秒上限切开的前半段），本采集点仍有视频，
+    // 不能因为这一小段被丢弃就把整批标成「没有视频」；只有「丢掉之后一段都没有」才算没有。
+    if (lastSegment === null) segmentDropped = true
     console.debug(
       '[seg] 尾段仅 ' + Math.round(seg.blob.size / 1024) + ' KB，过小，保留上一段' +
         (lastSegment ? '（' + Math.round(lastSegment.blob.size / 1024) + ' KB）' : '（无）'),
     )
   } else {
+    // 一个字节都没收到：本采集点同样没有可用视频段（与「过小丢弃」是同一后果）
+    if (lastSegment === null) segmentDropped = true
     console.debug('[seg] 收段为空')
   }
 }
@@ -422,6 +462,7 @@ export function startPoseRecording(stream: MediaStream, pose: string): boolean {
     void finalize()
   }
   lastSegment = null // 新采集点：丢弃上一采集点的内容
+  segmentDropped = false // 新采集点：上一个采集点的「段被丢弃」事实不得串味到这一段
   epoch++ // 新代次：上一段任何迟到的回写从此被丢弃，不会再冒充本采集点的视频
   return begin(stream, pose)
 }
@@ -472,6 +513,9 @@ export function teardownRecorder(): void {
   rec = null
   recStream = null
   currentPose = null
+  // 拆卸后不得留下「段被丢弃」的陈旧事实：组件重新挂载会新建采集点，
+  // 若这里不清，上一次会话的丢弃会被新会话的第一次 take 读到。
+  segmentDropped = false
   // 登记表里的每一个都要停：模块级 rec 只覆盖最新那一个（R13-F10）
   for (const other of [...liveRecorders]) {
     if (other === r) continue
