@@ -1001,6 +1001,27 @@ add({ id: 'S34', covers: ['scripts/typecheck-guard.mjs', 'scripts/typecheck-guar
   return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : '真实性前提（静态 shell/JS + --version 行为 + bin 声明解析）+ TCG_ROOT 覆盖 + 电池 5 场景 + 临时树隔离（不软链整个 node_modules / PATH 指向本树）+ npm script + CI 独立步骤 全部在位' }
 } })
 
+add({ id: 'S35', covers: ['scripts/verify-repo.mjs'], name: '迁移语法检查把「node --check 跑不起来」判未判定，不许记成迁移的语法错误（且判据自检里有对应的反向断言）', run() {
+  const miss = []
+  const v = has('scripts/verify-repo.mjs') ? read('scripts/verify-repo.mjs') : null
+  if (v === null) miss.push('缺 scripts/verify-repo.mjs')
+  else {
+    // 前提探针：证明 --check 本身可用（tmpdir 里的已知合法文件）。
+    if (!/facedb-nodecheck-probe-/.test(v)) miss.push('缺前提探针（对已知合法文件跑 node --check）')
+    // 逐文件失败要分类：Invalid package config 是环境/配置问题，不是迁移的语法错误。
+    // 断言锚在**代码行**而不是短语：本文件上方注释里也写着这句话（裸 includes 会被注释满足 ——
+    // 本项目已复现五次的「断言被自己文件里的说明文字满足」，M57 首次跑就是这么漏的）。
+    if (!/if \(\/Invalid package config\/i\.test\(err\)\) \{ envBad\+\+/.test(v)) miss.push('缺 Invalid package config 分类（package.json 非法 JSON 会让每个迁移都被记成语法错误）')
+    if (!/个迁移的 node --check 因环境\/配置失败（不是迁移的语法错误）/.test(v)) miss.push('缺「因环境/配置失败」的未判定文案')
+    if (!/notExecuted\('全部迁移可被 node 解析'/.test(v)) miss.push('跑不起来时必须走 notExecuted（判未判定），不许 check(false)')
+    // 反向断言：自检里必须有 M29 且带 expectAbsent（只查「该红的红了」看不见多出来的假红）。
+    if (!/M29 package\.json 是非法 JSON/.test(v)) miss.push('自检缺 M29 场景（非法 package.json）')
+    if (!/expectAbsent: \['全部迁移可被 node 解析'\]/.test(v)) miss.push('M29 缺 expectAbsent 反向断言（不许把环境问题记成被测缺陷）')
+    if (!/const absentOk = absent\.every/.test(v)) miss.push('自检 harness 缺 expectAbsent 判定')
+  }
+  return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : '前提探针 + Invalid package config 分类 + 未判定文案 + notExecuted 路径 + 自检 M29 与 expectAbsent 反向断言 全部在位' }
+} })
+
 for (const c of CHECKS) {
   let r
   try { r = c.run() } catch (e) { r = { ok: false, detail: '断言抛错：' + e.message } }

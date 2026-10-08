@@ -293,6 +293,11 @@ const M = [
     apply: () => mutate('scripts/typecheck-guard.mjs', (t) => t.replace('process.env.TCG_ROOT || ', '')) },
   { id: 'M56', target: 'scripts/typecheck-guard-selftest.mjs', expect: 'S34', desc: '把整个 node_modules 软链过去（桩会写穿到真仓库）',
     apply: () => mutate('scripts/typecheck-guard-selftest.mjs', (t) => t.replace(/  for \(const name of readdirSync\(NODE_MODULES\)\) \{\n(?:.*\n)*?  \}\n  \/\/ 只有 vue-tsc 是实体拷贝[^\n]*\n  cpSync\([^\n]*\n/m, "  symlinkSync(NODE_MODULES, path.join(nm, 'node_modules'), 'dir')\n")) },
+  // R25 / W25E-05：两条都打「迁移语法检查把环境问题记成迁移缺陷」的修复（S35 的判别力）。
+  { id: 'M57', target: 'scripts/verify-repo.mjs', expect: 'S35', desc: '摘掉 Invalid package config 分类（环境问题重新变成「迁移语法错误」）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace(/      if \(\/Invalid package config\/i\.test\(err\)\) \{ envBad\+\+; envMsg = err\.split\('\\n'\)\[0\]; continue \}\n/, '')) },
+  { id: 'M58', target: 'scripts/verify-repo.mjs', expect: 'S35', desc: 'M29 摘掉 expectAbsent 反向断言（多出来的假红不再被看见）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace(/, expectAbsent: \['全部迁移可被 node 解析'\]/, '')) },
 ]
 
 let caught = 0
