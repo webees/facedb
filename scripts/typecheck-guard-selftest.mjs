@@ -122,11 +122,23 @@ const check = (tag, ok, detail) => cases.push({ tag, ok, detail })
   check('s4 像真件但不判别 ⇒ 判「无判别力」（两支不混）', r.code === 2 && hit, `exit=${r.code} 命中=${hit}`)
 }
 
-// ── s5 阴性对照：临时树必须没碰真仓库的 vue-tsc ────────────────────────────
+// ── s6 入口解析不出来（`node_modules/vue-tsc/package.json` 读不到）⇒ 判「无法验证」且 exit 2 ──
+// R26 / W26E-14：修复前这一段是**静默跳过**的（`if (vueTscBin) { … }`，没有 else），
+// 于是删掉一个 package.json 就能让「可执行文件真实性」整段护栏消失。零样本不得判通过。
+{
+  const dir = makeTree('noentry')
+  rmSync(path.join(dir, 'node_modules', 'vue-tsc', 'package.json'), { force: true })
+  const r = runGuard(dir)
+  const hit = /无法解析 vue-tsc 的入口/.test(r.out) && /无法验证/.test(r.out)
+  const noStack = !/^\s+at .*\(.*:\d+:\d+\)$/m.test(r.out)
+  check('s6 入口读不到 ⇒ 判「无法验证」且 exit 2（不许静默跳过）', r.code === 2 && hit && noStack, `exit=${r.code} 命中=${hit} 裸栈=${!noStack}`)
+}
+
+// ── s7 阴性对照：临时树必须没碰真仓库的 vue-tsc ────────────────────────────
 {
   const real = readFileSync(path.join(NODE_MODULES, 'vue-tsc', 'bin', 'vue-tsc.js'), 'utf8')
   const intact = /require\(/.test(real) && !/^#!\/bin\/sh/.test(real) && real.length > 30
-  check('s5 真仓库的 vue-tsc 本体未被本电池改动', intact, `字节=${real.length}`)
+  check('s7 真仓库的 vue-tsc 本体未被本电池改动', intact, `字节=${real.length}`)
 }
 
 if (!keep) for (const d of trees) rmSync(d, { recursive: true, force: true })

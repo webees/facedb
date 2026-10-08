@@ -1949,6 +1949,21 @@ sqlite3 'file:<data.db>?mode=ro' \
 理由：只依赖 sqlite 自身输出、不随 PocketBase 版本漂移、任何人可一行复现。
 用别的口径（例如全量 `.dump`）得到的值**不得与它直接比较**。
 
+**⑤ 回退方向会重建一个「开放自助注册」的 `users`，而且回退态留不住。**（R26 实测，两条独立路径互证）
+
+- `1791217910_deleted_users.js` 的 down 按「up 之前的样子」重建 PB 自带的 auth 集合 `users`，其中包括
+  **`createRule = ""`（任何人都能自助注册）**；同一支 down 的 `listRule/viewRule/updateRule = "id = @request.auth.id"`
+  只挡住「读别人的用户记录」，挡不住注册本身。而 `captures` 的 `listRule/viewRule` 是 `@request.auth.id != ""`
+  ⇒ **回退态一旦真在对外服务，任何自注册账号都能 list/view 全部采集记录**。
+- 结论：**回退不是安全的降级路径**。要降级请用数据目录备份，不要把迁移往回跑；回退只用于本地排障。
+- 而且这个回退态**在正常部署形态下根本留不住**：只要 `pb_migrations` 还挂着，`serve` 启动时会重新应用迁移，
+  `users` 立刻又被删掉（实测：`migrate down 9` 后宿主 sqlite 读「集合 captures users · 迁移行数 18」，
+  起一次 `serve` 后变回「集合 captures · 迁移行数 27」）。**`--automigrate=false` 挡不住它** ——
+  在 PocketBase 里该参数管的是 Admin UI 自动生成迁移，不是启动时应用已有迁移。
+- 另外三条实测：`migrate down 9` 会把 `captures` 的**记录一起丢掉**（表被重建，行数 1 → 0）；zh 构建
+  **不支持** `migrate history`（打印 `不支持的命令: "history"`）；对**运行中**的实例执行
+  `superuser upsert/update` 不生效（库内哈希已更新、登录仍 400），必须 `docker restart` 之后才认。
+
 **结论**：**改动 schema 后，不能只验证本地 —— 必须另起一个空库重放一次全部迁移**
 （下面这条命令即可）。
 
@@ -1969,7 +1984,7 @@ mkdir -p /tmp/migcheck && docker run --rm \
 
 | 坑 | 实测表现 | 正确做法 |
 |---|---|---|
-| `migrate up <n>` 的 `<n>` 不生效 | `migrate up 1` 一次应用了**全部 19 条工程迁移**（`pb_migrations/*.js` 共 19 个），打印 19 行 `Applied` | 要「只应用前 k 条」的中间态，只能把前 k 个迁移文件拷进暂存目录再对全新数据目录 up（**前缀暂存法**） |
+| `migrate up <n>` 的 `<n>` 不生效 | `migrate up 1` 一次应用了**全部工程迁移**（测量时为 19 个 `pb_migrations/*.js`，打印 19 行 `Applied`；R26 起工程迁移共 **21 个**，同一个坑不变） | 要「只应用前 k 条」的中间态，只能把前 k 个迁移文件拷进暂存目录再对全新数据目录 up（**前缀暂存法**） |
 | `migrate down` 没有 stdin 时**退出码仍是 0** | 只打印 `The command has been cancelled`，零 schema 变化，却看着像成功 | 判成功必须 grep 输出里的 `Reverted <文件名>`，不能只看退出码 |
 | down 体抛错时**退出码仍是 0** | PB 打印 `Error` 行但继续执行后续迁移，退出码 0 | 同上：判失败必须 grep `Error`，CI 只判退出码会漏掉回滚失败 |
 
@@ -1983,7 +1998,7 @@ mkdir -p /tmp/migcheck && docker run --rm \
 | 紧接着再 `down 1` | **还是它**，且 `_migrations` 行数**不再变化**（纯空操作） |
 | `down 2` | `[1640988000_aux_init.go, 1778828400_normalize_indexes.go]` |
 | `down 16` / `down 17` | 分别删掉 16/17 行，但 `Reverted` 只打印 15/16 行（差 1） |
-| 空库全量 `up`（27 行）后 `down 1` | **正常**：回退最新一条 `1791281100_restrict_session_id_control_chars.js` |
+| 空库全量 `up`（测量时 27 行；R26 起 29 行）后 `down 1` | **正常**：回退最新一条（测量当时是 `1791281100_restrict_session_id_control_chars.js`；R26 起最新是 `1791281300_bound_capture_note_and_meta.js`） |
 | 空目录直接 `down 1` | **正常**：回退 `1778828400_normalize_indexes.go` |
 
 → 异常**只在既有生产库上**出现。能同时解释全部观测的唯一模型：走链顺序是「`1640988000_aux_init.go` 排第一，其余按 `applied` 降序；`_migrations` 里**文件已不存在**的行被静默跳过（不报错、不删记录、也不占 N）」。
@@ -2234,6 +2249,56 @@ R18-E2 实测（`down 1` 后读表）：`users` 重建为 `fields=10 id=_pb_user
 
 ⚠️ 这意味着**知道地址的人即可上传文件**。请只在受控内网部署。
 
+### 文件端点不看 viewRule（R26 实测修复）
+
+`/api/files/<集合>/<记录 id>/<文件名>` **不检查 `viewRule`**：同一个记录，匿名 `GET /api/collections/captures/records/<id>`
+是 `404`，而匿名取文件却成功。第 52 轮的实测读数（`photos.protected` 翻转成对）：
+
+| 请求 | `protected: false`（修复前） | `protected: true`（修复后） |
+|---|---|---|
+| 匿名 `GET /api/files/captures/<id>/<file>` | **200 `image/jpeg` 160 B**（= 原图字节数） | `404` |
+| 匿名 `GET …?thumb=600x0` | **200 `image/jpeg` 6369 B**（缩略图同样可取） | `404` |
+| 匿名 `POST /api/collections/captures/records` | 200（本来就要公开） | **200（不受影响）** |
+
+修复是 `pb_migrations/1791281200_protect_capture_files.js`：把 `photos` 与 `video` 两个 file 字段置
+`protected: true`（down 还原 `false`）。**受保护之后取文件要带 file token**（集合的 `fileToken` 或对应记录权限），
+后台（Admin UI）自带，前端本来也不取 —— 全仓 grep `api/files` / `photoUrl` 是 0 命中，所以这项收紧对功能面零影响。
+
+判据：`<运行根>/lib/r26-file-exposure-verify.mjs` 共 **15 项**（A/B/C 三组查暴露面，D/E 两组查下面的输入上限），
+两臂成对 —— BASE 臂（基线提交的
+`pb_migrations`）匿名直链**必须成功**（否则说明装置没造出暴露现场，判未判定），FIXED 臂**必须 404**；
+另用「把 `listRule` 置空后匿名能读出」证明 `200 + 空集` 是规则拒绝而不是空表。阴性对照见
+`evidence/R26-LEAD-file-exposure-mutant.log`（去掉修复迁移即报红，失败项恰为两条文件直链）。
+
+### 两个「匿名可写却没有上限」的字段（R26 收窄）
+
+`captures` 的 `createRule` 是公开的，而 schema 里有两个字段原先**完全没有上限**（夹具实测）：
+
+| 字段 | 修复前 | 修复后（`pb_migrations/1791281300_bound_capture_note_and_meta.js`） | 依据 |
+|---|---|---|---|
+| `note`（text） | `max = 0`（= 不限制） | `max = 2000`（字符） | 本项目代码从不写它（全仓 `src/` 只有无关的 `noteSegmentDrop`），是后台手工字段 |
+| `meta`（json） | `maxSize = 0`（= 不限制） | `maxSize = 65536`（字节） | 前端 `src/lib/pb.ts` 构造的真实 meta 实测 **3006 B**（16 个文件的 perFile + 顶层设备信息）⇒ 64 KB ≈ 21 倍余量 |
+
+成对读数（`<运行根>/lib/r26-file-exposure-verify.mjs` 的 D 组与 E 组，同一 URL、同一装置）：
+
+| 请求（匿名 POST） | 基线（无本迁移） | 工作区（有本迁移） |
+|---|---|---|
+| `note` = 5000 字符 | **200**（落库） | **400** `validation_max_text_constraint：不能超过 2000 个字符` |
+| `meta` = 100 KB | **200**（落库） | **400** |
+| `note` 100 字符 + 真实结构 meta（3006 B） | 200 | **200（不受影响）** |
+
+⚠️ **边界（不要读成「meta 已经安全」）**：`maxSize` 管的是**序列化字节数**，管不了**嵌套深度** ——
+`[[[[…]]]]` 这种 200 层嵌套远小于 64 KB 仍能落库。深度限制在 PocketBase 的 schema 里无法表达，
+属本轮**未覆盖面**（登记在 `findings/W26-LEAD.json`），只关了「大小放大」这一条。
+
+### 三条「规则之外」的取舍（R26 明确登记，不是缺陷）
+
+| 事实 | 影响 | 取舍 |
+|---|---|---|
+| `captures` 的 `list/view/updateRule` 只判「已认证」，schema 里**没有 owner 字段** | 任何已认证账号能读、也能 PATCH **所有人**的记录 | 本工程是单租户采集端：后端只给运维用。**不要把认证账号发给采集端**，也不要在同一实例上开多租户 |
+| 知道别人的 `session_id` 就能**匿名追加**记录（`createRule` 必须公开） | 可向别人的编号下塞入伪造记录 | 采集端本来就是匿名公开写入；编号不是凭据，别把它当访问控制 |
+| 匿名 list 被规则拒绝时返回 **HTTP 200 + `totalItems: 0`**，与「库里本来就没有」**同形** | 用「200 且空列表」当权限结论是**弱断言** | 判据必须配成对读数（授权身份能读出 / 规则置空后能读出），见 `r26-file-exposure-verify.mjs` 的 C1–C2 |
+
 需要恢复登录时：用 `pocketbase migrate down` 回退 `1791152276_open_capture_access.js` 与
 `1791152718_employee_optional.js`（**两个迁移文件必须还在 `pb_migrations/` 里**）。
 
@@ -2257,6 +2322,21 @@ mkdir -p /tmp/migdown && docker run --rm -i \
 回退后 `captures.createRule` 与 `employees.listRule/viewRule` 都从 `""` 变回 `@request.auth.id != ""`，
 再 `migrate up` 又能变回 `""`（双向可逆，实测通过）。
 
+
+## 浏览器安全边界（R26 实测：CORS / CSRF / CSP，真 Chrome + CDP）
+
+| 面 | 实测读数（都带阴性对照） | 结论 / 处置 |
+|---|---|---|
+| CORS 默认 | PB 默认回 `Access-Control-Allow-Origin: *`（CDP 原始响应头读到）；跨源 health `200`、列表 `200`、带 `Authorization` 的 GET **先预检 `204`** 再 `200`、跨源**匿名 POST 建记录 `200`** | 默认全开。`--origins=…` 收紧后同样十项请求**全部失败**（`MissingAllowOriginHeader`）⇒ 开关存在、默认不用 |
+| 跨源带凭据 | PB **从不发** `Access-Control-Allow-Credentials`（两种配置 × 4 个 Origin × {GET, 预检} 共 16 组，出现 **0** 次）；带 `credentials: 'include'` 的跨源请求恒失败（`WildcardOriginNotAllowed`） | 跨源**带**凭据读不成立；能成立的是匿名可读的那些（见上一节的文件端点） |
+| CSRF | 认证端点回 **JSON token、无 `Set-Cookie`**，浏览器 cookie 存储为空；前端唯一出网点 `src/lib/pb.ts:232` 不带 headers/credentials；全仓 grep `Authorization`/`localStorage` 只命中 `src/lib/audio.ts:25` 的 `facedb.muted` | **CSRF 不成立**（前端根本不持有凭据） |
+| CSP `connect-src *:8090` | **https 文档**上是「任意主机 :8090」的真实通道（fetch/POST 到 `https://127.0.0.1:8090` 成功、服务器侧计数 8 次命中；`:8099` 与 `http:8091` 被拦）；**http 文档**上它反而拦掉 `https:8090`；换成显式 `https://127.0.0.1:8090` 读数完全相同 | `*` **不跨方案、只跨主机名**。保留该表达式是为了 LAN 部署（页面主机 ≠ PB 主机，`'self'` 覆盖不到）；登记为**已知敞口**，要升到 P1 需要攻击者在 `:8090` 上有浏览器认可的 TLS 证书 |
+| 判据陷阱 | `<iframe>` 被 `frame-src` 拦后 **`onload` 仍触发**；被拦的 `sendBeacon` **仍返回 `true`** | 浏览器侧不能靠「成功回调」判拦截；可靠判据只有「CSP 违规原文 + 服务器侧命中计数 + 阴性对照」三条一起 |
+| 运行中的 `:3000` | 服务的仍是**旧产物**（CSP 只有 `connect-src` 一条，`last-modified` 2026-10-07 06:32:45），R23 的六指令没进线上 | 针对 `:3000` 做浏览器级结论时**先确认它服务的是哪个构建**；重部署属部署方操作，本仓库不改编排 |
+
+处置建议（**本仓库不改** `docker-compose.yml`：它是外部在途文件）：部署方若要收紧跨源面，可在启动参数里加
+`--origins=<页面源>`；但真正让「任意网站跨源读走人脸原图」失效的是 **R26 的文件字段 `protected` 迁移**，
+CORS 只是那条链上的一环。
 
 ## ⚠️ 汉化流程会抹掉非汉化补丁（必读）
 
@@ -2459,8 +2539,51 @@ npm run build             # 生产构建
 | 闸门只扫**一种文本解读** | UTF-16LE 保存的 `.env` 里每个字符后面跟着 NUL（`g\0h\0p\0_\0…`），`latin1` 视图下凭据正则整类匹配不到 ⇒ 新旧两侧都 `exit 0` 放行。**「判成二进制」只解决「要不要扫」，不解决「按哪种解读扫」** | 对 NUL 占比高的文件**再加一个 UTF-16LE 视图**（`nulCount * 4 >= head.length`），两个视图都跑规则、命中按 `(规则, 文件, 文本)` 去重，报告行写明「其中 N 个额外按 UTF-16LE 解码后复扫」；电池加 `m18`（UTF-16LE 的 `.env` 必须被抓），S27 断言视图存在，M61 守住 |
 | 零样本时同一断言行 ✅ 与 ⚠️ 并存 | `check-repo-config-hygiene.mjs` 的 A5 原先**无条件** `ck()`（先记一次 ✅ 再记一次 ⚠️）⇒ 读不到 / 登记项 0 个时通过计数被垫高（退出码仍正确为 2，但读数骗人） | A5 改三态**互斥**（读不到 ⇒ 未判定 / 登记项 0 ⇒ 未判定 / 否则才 `ck`）；电池 `h3` 加 `notHas: ['✅ public/SHA256SUMS 登记的每项都与磁盘一致']`；S33 断言 ck 落在 `else` 分支里，M62 守住 |
 
-**:warning: 阴性对照的基线：冻结快照，不许现取 `git` 历史**（R25 收口期 PR #29 首跑实测）
-`scripts/check-repo-config-hygiene-selftest.mjs` 的阴性对照需要「修复前那版判据」。它先后试过两种取法，
+**R26 的发布闸门重写（v3）与「结构断言之外还必须有一条行为探针」**
+
+R26 的安全面取证（独立席位）把所有「凭据文件换个解读方式就整类漏检」的形态列全了，闸门据此重写为
+**多解读视图**：不再只有「UTF-8 或 latin1」这一种读法。
+
+| 漏检形态（改前） | 读到的现象 | v3 的补法 |
+|---|---|---|
+| 只有 UTF-16LE 一个额外视图 | UTF-16**BE** 保存的 `.env` → `命中 0 处`、`exit 0` | `utf16le` / `utf16be` 都试（`Buffer` 不认 `'utf16be'`，解码是手写的），并**逐视图记 `decoded`** |
+| 视图生成条件看「前 8 KB 的 NUL 密度」 | 前半纯 ASCII、后半才是 UTF-16 的文件根本不生成视图 | 门控改看**整份文件**有没有 NUL（`buf.includes(0)`） |
+| 视图按字节 0 对齐 | 奇数长度前缀让整段错位一个字节，同一文件多一个字节就从「抓到」变「漏检」 | 对齐 `[0, 1]` 两种都试（视图名带 `@1`） |
+| 不认 UTF-32 | UTF-32LE/BE 保存的凭据 `命中 0 处` | NUL 占比 ≥ 3/4 时加 `utf32le`/`utf32be`（`Buffer` 不认 `utf32le`，手写 `readUInt32LE/BE`） |
+| 非 UTF-8 就只当二进制乱扫 | GBK/Shift-JIS/Big5 里的**全角令牌**漏检 | 非合法 UTF-8 时试 `gbk`/`shift_jis`/`big5`（视图名 `legacy:<enc>`） |
+| 不解压 | gzip 后的 `.env`、zip(deflate) 里的 `.env` 整类漏检 | 按魔数解压（gzip / zip）并递归复扫；**识别出压缩魔数却解不开 ⇒ 未判定 exit 2**（读不到 ≠ 干净） |
+| 零宽字符 / 无 NFKC | `ghp_\u200bAAAA…`、`ｇｈｐ＿AAAA…` 整类失配 | 归一化：`\r\n?`→`\n`、剥 `[\u200B-\u200D\u2060\uFEFF]`、`.normalize('NFKC')` |
+| 令牌被换行拆开 | `token=ghp_⏎AAAA…` 漏检（同一形态的 PEM 私钥却能命中） | 逐行扫之外再对整份视图扫一遍（长随机体的字符类允许 `\n`），并加「单行部分已构成命中就不重复计数」的守卫 |
+| 「二进制」= 只跑凭据类规则 | UTF-16 视图里的公网 IP 之类**定位**类命中被整片丢掉 | 规则适用面按**视图**判：真实解码视图跑全部规则，逐字节 `latin1` 视图只跑凭据类规则（那里随机字节凑出「像 IP / 像路径」的串是常态，跑定位类只会假红） |
+
+- 覆盖面（自检电池 `scripts/publish-leak-scan-selftest.mjs`）：**31 个阳性形态 / 4 组阴性对照 / 3 个未判定场景 / 1 个提示区场景 = 40**。
+  其中 R26 新增 `m19`–`m31`（UTF-16BE、UTF-32LE/BE、窗口盲区、奇数前缀错位、gzip、zip、折行、零宽、NFKC 全角、GBK 双字节全角、裸 CR、UTF-16LE 里的 IP）、`n4`（UTF-16 普通文本 + 合法 gzip 必须零误报）、`u3`（有 zip 魔数但条目不可解 ⇒ exit 2）。
+  `m30`（裸 CR）是**保持型**场景：改前也抓得到，写它是防归一化把这条回归掉。
+- **判别力是成对读出来的**：把 HEAD 版闸门喂进同一套电池（`LEAK_SCAN=<旧文件> npm run verify:publish-selftest`）→ **27/40**，13 项失败恰为 `m19`–`m29`、`m31`、`u3`。每个新场景都是真漏检形态，不是恒真断言。
+- **已知仍不覆盖**（登记为接受，不是缺陷）：GB18030 / Shift-JIS 里的**全角令牌**（载荷是双字节但整份字节仍合法 Latin-1 文本 ⇒ 不进 `legacy:` 视图）；**裸 base64**（无键名无前缀，不加区分地扫会海量假红）；**二进制里的定位类命中**（与精度边界同源）。
+
+**:warning: 结构断言挡不住「摘掉机制、但字面量还在」——必须有行为探针**
+R26 的复核席位逐个证明了一类同族缺口：把 `S27`/`S28`/`S35` 守着的那段**逻辑**摘掉、只留下被断言的那些**字面量**，
+判据仍然 `[OK]`（例如「让 `keepPublicIp` 恒 false」「UTF-16 视图整块不再生成」「删掉 `seen` 去重」）。
+静态断言只能证明「代码里写着这件事」，证明不了「这件事真的在跑」。因此：
+
+- `S27` 末尾加了一条**行为探针**：造一个临时 git 仓库（UTF-16BE 的 `.env` + gzip 里的 `.env`），跑一遍**真闸门**，
+  要求 `exit 1` 且 `BEARER` 恰好命中 **2 处**；探针跑不起来也算红（「不构成结论」不许当通过）。
+- 变异体 `M72`（UTF-16 视图整块不生成）与 `M73`（解压后不再复扫）**只摘机制、不动任何被断言的字面量**：
+  结构断言全绿，只有行为探针会红 —— 它们就是这条缺口的判别力证明。
+- 推广到别处的口径：**结构断言 + 行为探针/电池两层都要有**。静态那层守「写法」，行为那层守「真跑」；
+  电池（`verify:publish-selftest`、`verify:selfcheck`、`verify:size-selftest` …）已接进 CI 的独立步骤，
+  S 检查里对它们的断言是「这些场景必须在电池里」而不是「电池我替你跑了」。
+- **判据自己也会被文本骗（R26REV-2-01/05，P2）**：那条行为探针最初用「取第一行含 `BEARER` 的文本 +
+  不校验格式地抠命中数」，于是**两端都能被一行普通日志骗**：真把 UTF-16 视图关掉、再补一行
+  `⚠️ P0 BEARER … 命中 2 处` 就判绿；机制没动、只加一行 `ℹ️ 规则列表：BEARER` 就判红。
+  现改为只认正式报告行 `/^\s*[✅❌] P\d BEARER\s.*?命中 (\d+) 处.*$/m`（解析不到即红，并把报告行原文打进失败信息）。
+  **口径**：凡从子进程输出里抠读数的断言，必须钉在**稳定的机器可读行**上，不许「找到含关键词的第一行」。
+- **zip 的压缩方法与加密位（R26REV-2-02，P3）**：原先不看 `method` 就把条目拿去 `inflateRaw`，
+  `method=99`（WinZip AES）的载荷被解出来后会被当成「已扫描且干净」。现在只认 `0`（stored）与 `8`（deflate），
+  其余方法或带加密位（general purpose bit 0）一律抛错 ⇒ 走**未判定 exit 2**；电池场景 `u4` 钉住这条。
+
+**:warning: 阴性对照的基线：冻结快照，不许现取 `git` 历史**（R25 收口期 PR #29 首跑实测）`scripts/check-repo-config-hygiene-selftest.mjs` 的阴性对照需要「修复前那版判据」。它先后试过两种取法，
 两种都出过事：
 
 | 取法 | 出的事 |

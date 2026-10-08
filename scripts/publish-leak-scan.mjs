@@ -22,8 +22,22 @@
 // ⑤ **默认阻断线从 P0 抬到 P1**（可用 LEAK_BLOCK_AT 覆盖）：本仓库是 PUBLIC，
 //    公网 IP / Tailscale 网段 / 超管口令命中就该拦在 push 之前，而不是只打印。
 // ⑥ 新增「被忽略的敏感文件」提示区（.env* / *.pem / *.key / id_rsa* / *.p12 / *.jks / credentials*）。
+//
+// ── v3 修复（R26，全部有自检电池 scenarios 覆盖）────────────────────────────────
+// W26-E 的取证结论：v2 的漏检形态**不是「没扫」，而是「只扫了一种解读」**（W26E-01…E-09）：
+// ⑦ UTF-16**BE** 与 UTF-32（LE/BE）里的凭据整类漏检（v2 只加了一个 UTF-16LE 视图）。
+// ⑧ 那个 UTF-16LE 视图的生成条件是「前 8KB 的 NUL 密度」⇒ 前半是纯 ASCII、后半才是
+//    UTF-16LE 的文件，视图根本不生成。
+// ⑨ 该视图按字节 0 对齐 ⇒ 文件只要多一个字节的前缀，整段视图错位、从「抓到」变「漏检」。
+// ⑩ 不按魔数解压：gzip 后的 .env、zip（deflate）内的文本整类漏检。
+// ⑪ 零宽字符插在令牌中间、全角同形字符（NFKC）、POSIX `\r` 行尾、令牌被换行拆开——都能绕过。
+// v3 的做法：**对每份字节构造多个合理解读视图**（utf8 或 latin1、UTF-16LE/BE 各两种对齐、
+// NUL 占比极高时加 UTF-32LE/BE、按魔数解出的 gzip/zip 内容再递归一层），每个视图都跑全部规则；
+// 视图内先做归一化（`\r` → `\n`、剥零宽、NFKC），命中按「文件+行+规则」去重，报告行写明来源视图。
+// 识别出压缩魔数却解不开 ⇒ 记「未判定」→ exit 2（读不到 ≠ 干净），与「索引有而工作区缺失」同纪律。
 import { execFileSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
+import { gunzipSync, inflateRawSync } from 'node:zlib'
 import path from 'node:path'
 
 // 默认扫仓库自身（本文件位于 <仓库>/scripts/ 下）；LEAK_SCAN_ROOT 可指向副本以做判据对照。
@@ -52,24 +66,27 @@ function keepPublicIp(s) {
 }
 
 // 令牌字面量：写成拼接形式，避免本脚本被自己的正则文本命中（R13-F9 的自阻断教训）。
+// 【R26 / W26E-09】长随机体的字符类里**允许换行**（`\\n`）：令牌被折行成
+// `token=ghp_⏎AAAA…` 时，旧写法整类失配（同一形态的 PEM 私钥却能命中）。
+// 换行出现在 20+ 位随机串中间几乎不可能是巧合，所以这个放宽不会带来假红。
 const TOKEN_PATTERNS = [
-  'Bearer\\s+[A-Za-z0-9._-]{12,}',
-  'gh[pousr]_[A-Za-z0-9]{20,}',
-  'github_pat_[A-Za-z0-9_]{22,}',
-  'glpat-[A-Za-z0-9_-]{20,}',
-  'xox[baprs]-[A-Za-z0-9-]{10,}',
-  'AKIA[0-9A-Z]{16}',
-  'ASIA[0-9A-Z]{16}',
-  'sk-[A-Za-z0-9]{20,}',
-  'sk-proj-[A-Za-z0-9_-]{20,}',
-  'sk-ant-[A-Za-z0-9_-]{20,}',
-  'AIza[0-9A-Za-z_-]{35}',
-  'ya29\\.[0-9A-Za-z_-]{20,}',
-  'hf_[A-Za-z0-9]{30,}',
-  'npm_[A-Za-z0-9]{36}',
-  'dckr_pat_[A-Za-z0-9_-]{20,}',
-  'pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{10,}',
-  'SG\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}',
+  'Bearer\\s+[A-Za-z0-9._\\n-]{12,}',
+  'gh[pousr]_[A-Za-z0-9\\n]{20,}',
+  'github_pat_[A-Za-z0-9_\\n]{22,}',
+  'glpat-[A-Za-z0-9_\\n-]{20,}',
+  'xox[baprs]-[A-Za-z0-9\\n-]{10,}',
+  'AKIA[0-9A-Z\\n]{16}',
+  'ASIA[0-9A-Z\\n]{16}',
+  'sk-[A-Za-z0-9\\n]{20,}',
+  'sk-proj-[A-Za-z0-9_\\n-]{20,}',
+  'sk-ant-[A-Za-z0-9_\\n-]{20,}',
+  'AIza[0-9A-Za-z_\\n-]{35}',
+  'ya29\\.[0-9A-Za-z_\\n-]{20,}',
+  'hf_[A-Za-z0-9\\n]{30,}',
+  'npm_[A-Za-z0-9\\n]{36}',
+  'dckr_pat_[A-Za-z0-9_\\n-]{20,}',
+  'pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_\\n-]{10,}',
+  'SG\\.[A-Za-z0-9_\\n-]{20,}\\.[A-Za-z0-9_\\n-]{20,}',
   'eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}',
 ]
 
@@ -116,8 +133,158 @@ const SENSITIVE_IGNORED = /(^|\/)(\.env(\..+)?|\.npmrc|\.netrc|credentials|id_(r
 const hits = {}
 let scanned = 0
 let binaryScanned = 0
-let utf16Scanned = 0 // 额外解码出的 UTF-16LE 视图数（R25REV-N1）
-const voided = [] // 未判定：读不到或超上限 —— 绝不当成「已扫过且干净」
+let multiViewScanned = 0 // 用了不止一个解读视图的文件数（v3 取代 v2 的 utf16Scanned）
+let archiveScanned = 0 // 按魔数解压出内容并复扫的文件数（v3）
+const voided = [] // 未判定：读不到、超上限、或识别出压缩魔数却解不开 —— 绝不当成「已扫过且干净」
+
+// ── v3：一份字节的多个「合理解读视图」──────────────────────────────────────────
+const MAX_INFLATED_BYTES = 8 * 1024 * 1024
+
+/** 归一化：`\r` 也算换行（W26E-08）、剥零宽字符（W26E-06）、NFKC 折叠全角同形字符（W26E-07）。 */
+function normalizeText(s) {
+  return s
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+    .normalize('NFKC')
+}
+
+/** 解码结果像不像文本：NUL 与其它 C0 控制符占比低、可打印占比高。 */
+function plausibleText(s) {
+  if (!s) return false
+  const head = s.slice(0, 8192)
+  let bad = 0
+  for (let i = 0; i < head.length; i++) {
+    const c = head.charCodeAt(i)
+    if (c === 0 || (c < 0x20 && c !== 0x09 && c !== 0x0a)) bad++
+  }
+  return bad / head.length < 0.02
+}
+
+/** 按魔数解压：gzip / zip（逐个 local file header）。解不开由调用方记「未判定」。 */
+function archiveViews(buf) {
+  const out = []
+  if (buf.length > 3 && buf[0] === 0x1f && buf[1] === 0x8b) {
+    const d = gunzipSync(buf, { maxOutputLength: MAX_INFLATED_BYTES })
+    out.push({ name: 'gunzip', text: d.toString('utf8') })
+  } else if (buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04) {
+    let off = 0
+    let n = 0
+    while (off + 30 <= buf.length && buf[off] === 0x50 && buf[off + 1] === 0x4b && buf[off + 2] === 0x03 && buf[off + 3] === 0x04) {
+      const method = buf.readUInt16LE(off + 8)
+      const flags = buf.readUInt16LE(off + 6)
+      const compSize = buf.readUInt32LE(off + 18)
+      const nameLen = buf.readUInt16LE(off + 26)
+      const extraLen = buf.readUInt16LE(off + 28)
+      const dataStart = off + 30 + nameLen + extraLen
+      if (compSize === 0 || dataStart + compSize > buf.length) break // 流式写入（有 data descriptor）→ 放弃，交给调用方记未判定
+      // R26REV-2-02：原先不看 method，任何非 0 的方法都拿去 raw inflate —— `method=99`（WinZip AES）
+      // 的载荷被解出来后会被当成「已扫描且干净」。只认 0（stored）与 8（deflate），其余（含加密位
+      // bit0）一律抛错，让调用方记**未判定**（exit 2），绝不判「扫描过且干净」。
+      if (method !== 0 && method !== 8) throw new Error(`zip 条目用了未支持的压缩方法 ${method}（可能是加密/AES）`)
+      if ((flags & 0x0001) !== 0) throw new Error('zip 条目带加密标志（general purpose bit 0）')
+      const raw = buf.subarray(dataStart, dataStart + compSize)
+      const data = method === 0 ? raw : inflateRawSync(raw, { maxOutputLength: MAX_INFLATED_BYTES })
+      out.push({ name: `unzip:${buf.subarray(off + 30, off + 30 + nameLen).toString('latin1')}`, text: data.toString('utf8') })
+      off = dataStart + compSize
+      if (++n >= 20) break
+    }
+    if (!out.length) throw new Error('zip 里没有可解压的条目（可能是流式写入或加密）')
+  }
+  return out
+}
+
+/** UTF-16BE 解码（手写：`Buffer.swap16()` 遇到奇数长度会抛错，而奇数长度的文本文件很常见）。 */
+function decodeUtf16be(b, off) {
+  let s = ''
+  for (let i = off; i + 1 < b.length; i += 2) s += String.fromCharCode((b[i] << 8) | b[i + 1])
+  return s
+}
+
+/** UTF-32LE/BE 解码（手写：Node 的 Buffer 只认 `utf16le`，`'utf32le'` 会抛 ERR_UNKNOWN_ENCODING）。 */
+function decodeUtf32(b, be) {
+  let s = ''
+  for (let i = 0; i + 3 < b.length; i += 4) s += String.fromCodePoint(be ? b.readUInt32BE(i) : b.readUInt32LE(i))
+  return s
+}
+
+/** 派生视图的解码包一层：任何解码异常都只丢这一个视图，绝不让闸门整份崩掉。 */
+function tryView(fn) {
+  try {
+    const text = fn()
+    return typeof text === 'string' && plausibleText(text) ? text : null
+  } catch {
+    return null
+  }
+}
+
+/** 整份字节是不是合法 UTF-8（不合法才有必要试 GBK / Shift-JIS / Big5 这类传统编码）。 */
+function isValidUtf8(buf) {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buf)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 构造一份字节的所有解读视图。返回 `{ views, archiveError }`（解压失败由调用方记未判定）。
+ *  每个视图带 `textual`：该视图是不是**真实的文本解读**（用于决定「定位类规则」能不能跑）。 */
+function viewsFor(buf, depth = 0) {
+  const views = []
+  // 判「有没有 NUL」必须看**整份文件**：v2 只看前 8KB，于是「前半纯 ASCII、后半才是 UTF-16」
+  // 的文件（W26E-03）根本不会生成 UTF-16 视图。
+  const hasNul = buf.includes(0)
+  const head = buf.subarray(0, 8192)
+  const nulCount = head.filter((b) => b === 0).length
+  const looksBinary = hasNul
+  // ① 主视图：无 NUL 时 UTF-8；有 NUL 时 latin1（逐字节保真，令牌是 ASCII 形态不受影响）
+  const primary = buf.toString(looksBinary ? 'latin1' : 'utf8')
+  views.push({ name: looksBinary ? 'latin1' : 'utf8', text: primary, textual: plausibleText(primary), decoded: false })
+  if (depth > 0) return { views: views.map((v) => ({ ...v, text: normalizeText(v.text) })), archiveError: null }
+  // ② UTF-16：LE/BE × 两种对齐（v2 只试 LE@0，且只在 NUL 密度够高时才试 —— 两个洞）。
+  // 只在**整份文件含 NUL** 时才试：UTF-16 编码里的 ASCII 令牌必然带 NUL，纯 ASCII 文件不可能
+  // 藏着只有 UTF-16 解读才看得见的令牌；这条门控让普通文本文件的扫描成本与 v2 持平。
+  if (hasNul) {
+    for (const [name, decode] of [
+      ['utf16le', (b, off) => b.subarray(off).toString('utf16le')],
+      ['utf16be', decodeUtf16be],
+    ]) {
+      for (const off of [0, 1]) {
+        if (buf.length - off < 8) continue
+        const text = tryView(() => decode(buf, off))
+        if (text) views.push({ name: off ? `${name}@1` : name, text, textual: true, decoded: true })
+      }
+    }
+  }
+  // ③ UTF-32：只在 NUL 占比 ≥ 3/4 时才试（普通文本没必要，且能避免无谓解码）
+  if (nulCount * 4 >= head.length && buf.length >= 8) {
+    for (const [name, be] of [['utf32le', false], ['utf32be', true]]) {
+      const text = tryView(() => decodeUtf32(buf, be))
+      if (text) views.push({ name, text, textual: true, decoded: true })
+    }
+  }
+  // ④ 传统 CJK 编码（W26E-07 的 GB18030 形态）：只在**不是合法 UTF-8** 时才试。
+  // 这条门控让正常 UTF-8 文件零额外成本；GBK/Shift-JIS/Big5 都能被 Node 的 TextDecoder 解。
+  if (!looksBinary && !isValidUtf8(buf)) {
+    for (const enc of ['gbk', 'shift_jis', 'big5']) {
+      const text = tryView(() => new TextDecoder(enc, { fatal: true }).decode(buf))
+      if (text) views.push({ name: `legacy:${enc}`, text, textual: true, decoded: true })
+    }
+  }
+  // ④ 压缩内容（一层）：魔数识别在 archiveViews 里；解不开时返回 archiveError 由调用方记未判定
+  let archiveError = null
+  try {
+    for (const a of archiveViews(buf)) {
+      for (const v of viewsFor(Buffer.from(a.text, 'utf8'), depth + 1).views) {
+        views.push({ ...v, name: `${a.name}→${v.name}` })
+      }
+    }
+  } catch (e) {
+    archiveError = e.message
+  }
+  // 归一化放在最后：压缩内容在上面的递归里已经归一化过
+  return { views: views.map((v) => ({ ...v, text: normalizeText(v.text) })), archiveError }
+}
 
 // 【R25 修复 / W25E-01（P1）】二进制文件**不再整份跳过**。
 // 旧形态：`if (isBinary) { skippedBinary++; …fileOnly…; continue }` —— 只要前 8KB 里有一个 NUL，
@@ -156,17 +323,18 @@ for (const f of files) {
   const isBinary = buf.subarray(0, 8192).includes(0)
   if (isBinary) binaryScanned++
   else scanned++
-  // 【R25 收口 / R25REV-N1（P2）】同一份字节可以有多种文本解读 —— 漏检的常见形态不是「没扫」，
-  // 而是「只扫了一种解读」。UTF-16LE 保存的 .env 里每个字符后面都跟着 NUL（`g\0h\0p\0_\0…`），
-  // latin1 视图下任何凭据正则都匹配不上；旧形态与「只按内容判二进制」的新形态都 exit 0 放行。
-  // 故对 NUL 占比高的文件**再加一个 UTF-16LE 视图**，两个视图都跑规则（命中按视图去重后合并）。
-  const head = buf.subarray(0, 8192)
-  const nulCount = head.filter((b) => b === 0).length
-  const views = [{ name: isBinary ? 'latin1' : 'utf8', text: buf.toString(isBinary ? 'latin1' : 'utf8') }]
-  if (nulCount > 0 && nulCount * 4 >= head.length) {
-    views.push({ name: 'utf16le', text: buf.toString('utf16le') })
-    utf16Scanned++
+  // 【v3 / W26E-01…E-05】一份字节可以有多种文本解读，而漏检最常见的形态**不是「没扫」而是
+  // 「只扫了一种解读」**。v2 只加了一个 UTF-16LE 视图，且它要「前 8KB 的 NUL 密度够高」才生成、
+  // 按字节 0 对齐、也不解压 ⇒ UTF-16BE / UTF-32（整类）、前半 ASCII 后半 UTF-16 的文件、
+  // 奇数长度前缀、gzip/zip 里的文本**全部漏检**（W26-E 逐条实测）。v3 改成一律走 viewsFor()。
+  const { views, archiveError } = viewsFor(buf)
+  if (archiveError) {
+    // 识别出压缩魔数却解不开（加密 zip / 流式写入 / 截断）：读不到内容 ⇒ 未判定，绝不判「干净」。
+    voided.push({ file: f, why: `按魔数识别为压缩内容但解不开（${archiveError}）` })
+    continue
   }
+  if (views.length > 1) multiViewScanned++
+  if (views.some((v) => v.name.includes('→'))) archiveScanned++
   const seen = new Set()
   for (const view of views) {
     const lines = view.text.split('\n')
@@ -175,8 +343,13 @@ for (const f of files) {
         if (r.fileOnly.test(f)) hits[r.id] = (hits[r.id] || []).concat([{ file: f, line: 0, text: '(文件名命中)' }])
         continue
       }
-      // 二进制内容只跑凭据类规则（见 BINARY_RULES 的说明）；文件名类规则上面已经跑过。
-      if (isBinary && !BINARY_RULES.has(r.id)) continue
+      // 二进制内容只跑凭据类规则（见 BINARY_RULES 的说明）——**但**这条限制按**视图**判：
+      // 如果某个视图是**真实的编码解码**结果（utf16/utf32/gzip/unzip/legacy 解出来的），它上面
+      // 出现公网 IP / 本机路径同样要命，此时定位类规则照跑（v3 前按**文件**一刀切，于是
+      // 「UTF-16 里的公网 IP」整类漏检，W26-E 的 C26 即此）。
+      // 逐字节 latin1 视图**不算解码**（decoded=false）：二进制里随机字节凑出像 IP / 像路径的串
+      // 是常态，在那里跑定位类规则只会带来假红（自检电池的 n3 场景就是这条边界，必须保持 0 命中）。
+      if (isBinary && !view.decoded && !BINARY_RULES.has(r.id)) continue
       const re = new RegExp(r.re.source, r.re.flags.includes('g') ? r.re.flags : r.re.flags + 'g')
       for (let i = 0; i < lines.length; i++) {
         re.lastIndex = 0
@@ -188,6 +361,28 @@ for (const f of files) {
           seen.add(key)
           ;(hits[r.id] = hits[r.id] || []).push({ file: f, line: i + 1, text: m[0].slice(0, 90), view: view.name })
         }
+      }
+      // 【v3 / W26E-09】逐行扫匹配不到**被换行拆开的**令牌（`token=ghp_⏎AAAA…`）。凭据类规则的
+      // 长随机体允许 `\n`，故对整份视图再扫一遍（不按行拆），行号由命中位置之前的换行数推出来。
+      if (!BINARY_RULES.has(r.id)) continue
+      re.lastIndex = 0
+      let cm
+      while ((cm = re.exec(view.text)) !== null) {
+        if (!cm[0].includes('\n')) continue // 同一行内的命中上面已记过
+        // 只有当「换行之前的那一段自己不足以构成命中」时，才算真正的跨行命中 —— 否则上面按行扫
+        // 早就记过一处，这里再来一次就是重复计数（长随机体是贪婪的，会把行尾与下一行一起吞掉）。
+        if (new RegExp(r.re.source).test(cm[0].split('\n')[0])) continue
+        if (r.keep && !r.keep(cm[0])) continue
+        const key = r.id + '\u0000' + f + '\u0000' + cm[0]
+        if (seen.has(key)) continue
+        seen.add(key)
+        const line = view.text.slice(0, cm.index).split('\n').length
+        ;(hits[r.id] = hits[r.id] || []).push({
+          file: f,
+          line,
+          text: cm[0].replace(/\n/g, '⏎').slice(0, 90),
+          view: view.name + '(跨行)',
+        })
       }
     }
   }
@@ -209,7 +404,7 @@ const ORDER = ['P0', 'P1', 'P2']
 console.log('  === 公开仓库发布前敏感信息扫描 ===')
 console.log('  仓库：webees/facedb（PUBLIC）')
 console.log(
-  '  跟踪文件 ' + tracked.length + ' 个 + 未跟踪未忽略 ' + untracked.length + ' 个 = ' + files.length + ' 个：扫描文本 ' + scanned + ' 个，二进制 ' + binaryScanned + ' 个（已扫凭据类规则，定位类规则不适用），其中 ' + utf16Scanned + ' 个额外按 UTF-16LE 解码后复扫，未判定 ' + voided.length + ' 个'
+  '  跟踪文件 ' + tracked.length + ' 个 + 未跟踪未忽略 ' + untracked.length + ' 个 = ' + files.length + ' 个：扫描文本 ' + scanned + ' 个，二进制 ' + binaryScanned + ' 个（凭据类规则照扫；定位类规则只在真实解码视图上跑，逐字节 latin1 视图不跑），其中 ' + multiViewScanned + ' 个按多种解读视图复扫（UTF-16LE/BE × 对齐、必要时 UTF-32、非 UTF-8 时 GBK/Shift-JIS/Big5、压缩内容解压后），未判定 ' + voided.length + ' 个'
 )
 console.log()
 for (const sev of ORDER) {

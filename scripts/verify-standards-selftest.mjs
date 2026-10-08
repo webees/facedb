@@ -190,7 +190,9 @@ const M = [
   { id: 'M20', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '阻断线默认退回 P0（公网 IP / Tailscale / 超管口令命中不再阻断）',
     apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace("process.env.LEAK_BLOCK_AT || 'P1'", "process.env.LEAK_BLOCK_AT || 'P0'")) },
   { id: 'M21', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '令牌前缀收窄（摘掉 sk-proj- 这类新式形态）',
-    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace("  'sk-proj-[A-Za-z0-9_-]{20,}',\n", '')) },
+    // 【R26 重锚】v3 把长随机体的字符类改成了允许换行（`[A-Za-z0-9_\n-]`）⇒ 旧锚点（写死 `_-`）失配、
+    // 变异「未生效」。改为按行首前缀匹配，字符类怎么改都不影响命中（本轮第 6 次同族坑：锚点比目标脆）。
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(/^  'sk-proj-\[[^\n]*\n/m, '')) },
   { id: 'M22', target: 'package.json', expect: 'S27', desc: '闸门的变异自检 npm script 被摘掉（写了没人跑）',
     apply: () => mutate('package.json', (t) => t.replace(/\s*"verify:publish-selftest": "node scripts\/publish-leak-scan-selftest\.mjs",/, '')) },
   { id: 'M23', target: '.github/workflows/ci.yml', expect: 'S27', desc: 'CI 里那一步发布卫生闸门被删（PUBLIC 仓库推送前没人扫）',
@@ -264,7 +266,7 @@ const M = [
   { id: 'M47', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '扫描面报告不再写明「二进制已扫凭据类规则」（读者会把干净误读成全规则扫过）',
     // 该短语在文件里出现 2 次（1 处说明注释 + 1 处报告行）⇒ 锚点必须带 `binaryScanned +` 才能唯一命中报告行。
     // 裸字符串替换会改中注释、报告行照旧，变异体于是「未生效」（本轮第 5 次同族坑：断言/变异被注释满足）。
-    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(/binaryScanned \+ ' 个（已扫凭据类规则，定位类规则不适用）/, "binaryScanned + ' 个'")) },
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(/binaryScanned \+ ' 个（凭据类规则照扫；定位类规则只在真实解码视图上跑，逐字节 latin1 视图不跑）/, "binaryScanned + ' 个'")) },
 
   // 【R25 / W25E-02（P2）】配置卫生判据的空真命题：样本为 0 时四条断言各自退化成 ✅（`零命中 0 条均已标注`、
   // `0 项全部一致`），整体 `通过 5，失败 0`、exit 0；且退出码只有 `fail === 0 ? 0 : 1`，表达不了「没构成结论」。
@@ -308,11 +310,17 @@ const M = [
     apply: () => mutate('scripts/check-repo-config-hygiene-selftest.mjs', (t) => t.replace(
       /process\.exit\(fail > 0 \? 1 : skipped > 0 \? 2 : 0\)/,
       'process.exit(fail === 0 ? 0 : 1)')) },
-  // R25REV-N1（P2）：UTF-16LE 解码视图被摘掉 ⇒ UTF-16 保存的凭据文件整类漏检（新旧两侧都 exit 0 放行）。
-  { id: 'M61', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '摘掉 UTF-16LE 解码视图（UTF-16 保存的 .env 整类漏检）',
-    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(
-      /    views\.push\(\{ name: 'utf16le', text: buf\.toString\('utf16le'\) \}\)\n/,
-      '')) },
+  // R25REV-N1（P2）/ R26 v3（P1）：UTF-16 解码视图被摘掉 ⇒ UTF-16 保存的凭据文件整类漏检。
+  // 【R26 重锚】v2 的「单条 utf16le 视图」已被 v3 的「LE/BE × 对齐」循环取代 ⇒ 改打那个循环。
+  { id: 'M61', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '只试一种字节对齐（奇数长度前缀让整段 UTF-16 视图错位漏检）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace('      for (const off of [0, 1]) {', '      for (const off of [0]) {')) },
+  // 【R26 / W26-E 的 B 族】这两个变异体只摘**机制**、不动任何被断言的字面量：
+  // 结构断言照样全绿（函数在、门控在、报告行在），只有 S27 末尾那条**行为探针**会红。
+  // 它们就是「文本在位即通过」这条缺口的判别力证明 —— 没有行为探针，这一对根本抓不到。
+  { id: 'M72', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: 'UTF-16 视图整块不再生成（结构断言全绿，只有行为探针能抓到）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace('  if (hasNul) {', '  if (false) {')) },
+  { id: 'M73', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '压缩内容解出后不再复扫（拿掉递归那一步；结构断言全绿）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace('      for (const v of viewsFor(Buffer.from(a.text, \'utf8\'), depth + 1).views) {', '      for (const v of []) {')) },
   // R25REV-N2（P3）：A5 退回「无条件 ck + 另记一条 ⚠️」⇒ 零样本时同一断言行 ✅/⚠️ 并存，通过计数被垫高。
   { id: 'M62', target: 'scripts/check-repo-config-hygiene.mjs', expect: 'S33', desc: 'A5 退回无条件 ck（零样本时 ✅ 与 ⚠️ 并存）',
     apply: () => mutate('scripts/check-repo-config-hygiene.mjs', (t) => t.replace(
@@ -327,6 +335,50 @@ const M = [
       "process.env.HYG_BASE_REF || 'a5514c3'")) },
   { id: 'M64', target: 'scripts/fixtures/check-repo-config-hygiene.prefix-v1.mjs', expect: 'S33', desc: '冻结快照被更新成修复版（阴性对照变成「两侧都成立」的恒真）',
     apply: () => mutate('scripts/fixtures/check-repo-config-hygiene.prefix-v1.mjs', (t) => t + '\nconst trackedOk = true\n') },
+  // R26 / W26E-01…E-09（P1/P2）：发布闸门 v2 只扫**一种**解读（只加了一个 UTF-16LE 视图，还要求前 8KB 的
+  // NUL 密度够高、按字节 0 对齐、不解压）⇒ 十三类真实漏检形态（电池 m19–m31 是行为侧的证据）。
+  // 下面这些变异体打 v3 的每一块机制：少任何一块，对应的漏检形态就会静默回来。
+  { id: 'M65', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '主循环不走多解读视图（退回「只扫一种解读」的 v2 形态）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(
+      'const { views, archiveError } = viewsFor(buf)',
+      'const { views, archiveError } = { views: viewsFor(buf).views, archiveError: undefined } // M65')) },
+  { id: 'M66', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '规则适用面不再按视图判（逐字节视图也跑定位类规则 / 真实解码视图被整片跳过）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(
+      /if \(isBinary && !view\.decoded && !BINARY_RULES\.has\(r\.id\)\) continue/,
+      'if (!view.textual && !BINARY_RULES.has(r.id)) continue // M66')) },
+  { id: 'M67', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '压缩内容解不开时不再判未判定（读不到被记成干净）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(/按魔数识别为压缩内容但解不开/g, '压缩内容')) },
+  { id: 'M68', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '归一化不做 NFKC（全角同形令牌漏检）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace("normalize('NFKC')", "normalize('NFC')")) },
+  { id: 'M69', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '手写 UTF-16BE 解码被摘掉（Buffer 不认 utf16be ⇒ 整类漏检或闸门崩溃）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace('function decodeUtf16be(', 'function decodeUtf16beLegacy(')) },
+  { id: 'M70', target: 'scripts/publish-leak-scan-selftest.mjs', expect: 'S27', desc: '电池丢掉一个 v3 行为场景（机制有结构断言但行为无证据）',
+    apply: () => mutate('scripts/publish-leak-scan-selftest.mjs', (t) => t.replace("    name: 'm26 ", "    name: 'z26 ")) },
+  { id: 'M71', target: 'scripts/publish-leak-scan-selftest.mjs', expect: 'S27', desc: '电池汇总行写死场景数（加场景后说过期的话，而它是 CI 的读数来源）',
+    apply: () => mutate('scripts/publish-leak-scan-selftest.mjs', (t) => t.replace('const positives = CASES.filter', 'const positives = 31 || CASES.filter')) },
+  // 【R26 / W26E-17…E-18】S28 原先只验变异体的**声明行**在不在 ⇒ 原子被掏空 / 改错文件照样 [OK]。
+  // 两个变异体分别打「原子不再改那个文件」与「改了别的文件」，都由 S28 新增的逐原子断言抓住。
+  { id: 'M74', target: 'scripts/verify-repo.mjs', expect: 'S28', desc: 'M12 原子改错文件（往别的文件注入，等于没造出 img-src 全开的缺陷）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => {
+      const i = t.indexOf("name: 'M12 ")
+      const j = t.indexOf("name: 'M13 ")
+      if (i < 0 || j < 0) return t
+      return t.slice(0, i) + t.slice(i, j).replace("put('index.html'", "put('README.md'") + t.slice(j)
+    }) },
+  { id: 'M75', target: 'scripts/verify-repo.mjs', expect: 'S28', desc: 'M15 原子改错文件（跨源 url() 注入到别的样式文件，前提锁看不到）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace("put('src/style.css'", "put('src/style2.css'")) },
+  { id: 'M76', target: 'scripts/typecheck-guard.mjs', expect: 'S34', desc: '入口解析失败回归「静默跳过」（删掉一个 package.json 就让真实性护栏整段消失）',
+    apply: () => mutate('scripts/typecheck-guard.mjs', (t) => t.replace(/\n\} else \{\n[\s\S]*?process\.exit\(2\)\n\}\n/, '\n}\n')) },
+  { id: 'M77', target: 'scripts/typecheck-guard-selftest.mjs', expect: 'S34', desc: '电池丢掉「入口读不到 ⇒ 判无法验证」这一场景（机制在、行为无证据）',
+    apply: () => mutate('scripts/typecheck-guard-selftest.mjs', (t) => t.replace(/s6 入口读不到/gi, 's6 入口场景')) },
+  { id: 'M78', target: 'scripts/verify-repo.mjs', expect: 'S35', desc: 'notExecuted 不再把「样本为 0」计入 undetermined（调用点字面量还在，机制被掏空）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace('  if (byDesign) skippedByDesign++\n  else undetermined++', '  if (byDesign) skippedByDesign++')) },
+  { id: 'M79', target: 'scripts/verify-repo.mjs', expect: 'S35', desc: '摘掉「有样本为 0 的未执行项 ⇒ 不构成通过」的判定分支（**锚点非唯一**：该串在文件里有两处，必须全局替换，否则只改第一处、S35 照样绿 —— R24REV-N3 同族）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace(/if \(undetermined > 0\) \{/g, 'if (false) {')) },
+  { id: 'M80', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: 'zip 不再校验压缩方法（method=99 AES 的载荷被 raw inflate 解出即当「已扫描且干净」）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace("      if (method !== 0 && method !== 8) throw new Error(`zip 条目用了未支持的压缩方法 ${method}（可能是加密/AES）`)\n", '')) },
+  { id: 'M81', target: 'scripts/check-repo-standards.mjs', expect: 'S27', desc: '行为探针退回「第一行含 BEARER 的文本 + 命中数」（两端都能被一行普通日志欺骗）',
+    apply: () => mutate('scripts/check-repo-standards.mjs', (t) => t.replace("const bearerLine = (out.match(/^\\s*[✅❌] P\\d BEARER\\s.*?命中 (\\d+) 处.*$/m) || [])[0] || ''", "const bearerLine = out.split('\\n').find((l) => l.includes('BEARER')) || ''")) },
 ]
 
 let caught = 0
