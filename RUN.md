@@ -341,8 +341,9 @@ blendshape 值飙升 → 用户越转头越被判「请睁开眼睛」→ **侧�
 
 MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，域名形如
 `odml.pa.googleapis.com/v1/log`。**本项目处理人脸数据，不允许任何数据外发**，已拦截 ——
-准确口径是：**连接类 API（fetch / XHR / sendBeacon / WS / SSE）与图片通道已关**；
-`<script src>`、`<link rel=stylesheet>`、`<iframe src>` 三条仍敞开（已登记，见
+准确口径是：**连接类 API（fetch / XHR / sendBeacon / WS / SSE）、图片、`<script src>`、
+`<link rel=stylesheet>`、`<iframe src>` 与同源脚本 Worker 的创建全部已关**（第 48 轮实测：
+44 个判定相位全过）；唯一登记的敞口是 `connect-src` 里的 `*:8090`（见
 「遥测拦截：三层（内联脚本 / 运行期模块 / CSP）」一节）。
 
 拦截分两层，互为保险：
@@ -864,16 +865,18 @@ if (vw <= 0 || f.faceWidthPx < vw * MIN_FACE_RATIO) return no('hintTooFar')
 
 | 层 | 位置 | 拦什么 | 覆盖范围 |
 |---|---|---|---|
-| ① 内联拦截 | `index.html` 里的内联脚本 | 加载期的 fetch / XHR / sendBeacon | 主线程（早于任何模块执行） |
-| ② **CSP** | `index.html` 的 `meta` | 连接类 API（fetch / XHR / WS / SSE / beacon）与 `<img src>`；`<script src>` / `<link rel=stylesheet>` / `<iframe src>` **不拦** | 主线程 + `blob:`/`data:` Worker；**不含同源脚本 Worker**（见下） |
+| ① 内联拦截 | `index.html` 里的内联脚本 | 加载期的 fetch / sendBeacon（**R23 起不再补 XHR**，见「遥测拦截：三层」一节） | 主线程（早于任何模块执行） |
+| ② **CSP** | `index.html` 的 `meta` | 连接类 API（fetch / XHR / WS / SSE / beacon）、`<img src>`、`<script src>`、`<link rel=stylesheet>`、`<iframe src>`、同源脚本 Worker 的创建 | 主线程 + `blob:`/`data:` Worker |
 | ③ JS 补丁 | `src/lib/block-telemetry.ts` | 运行期的 fetch / XHR / sendBeacon | 主线程 |
 
-**② 的边界（第 47 轮实测，此前这一格写错了）**：meta CSP 拦得住主线程，也拦得住
-`blob:` 脚本创建的 Worker（worker 继承创建者的策略）；但**同源脚本 Worker 完全不受它约束** ——
+**② 的边界（第 47 轮实测，第 48 轮部分关闭）**：meta CSP 拦得住主线程，也拦得住
+`blob:` 脚本创建的 Worker（worker 继承创建者的策略）；同源脚本 Worker 的作用域**不受本文档 CSP 约束** ——
 worker 作用域的策略来自 worker 脚本自己的响应头，而本仓库与容器都没有 HTTP 头形式的 CSP，
-于是 `new Worker('/w.js')` 里的 fetch 连非 8090 端口都放行（实测 `fetch-ok(200)` 且外部计数服务器
-收到请求；`blob:` 对照被拦、去 CSP 的阴性对照全部放行）。将来若要让 Worker 承载外发，只有两条路：
-用 `blob:` 脚本，或给 worker 脚本加 CSP 响应头。
+于是 `new Worker('/w.js')` 里的 fetch 连非 8090 端口都放行（第 47 轮实测 `fetch-ok(200)` 且外部计数服务器
+收到请求；`blob:` 对照被拦、去 CSP 的阴性对照全部放行）。**第 48 轮补上了 creation 这一手**：
+加上 `worker-src blob: data:` 后，从同源脚本 URL 创建 Worker 本身被拦（服务器命中 1 → 0），
+`blob:`/`data:` Worker 仍可用。残留：worker 脚本若真被加载起来，其内部网络访问仍只受它自己的响应头约束 ——
+将来若要让 Worker 承载外发，只有两条路：用 `blob:` 脚本，或给 worker 脚本加 CSP 响应头。
 
 **顺带纠正一句**：本工程**没有任何 Worker 创建**（`src/`、`index.html`、容器内 bundle 三处
 `new Worker` 均 0 处命中），所以「MediaPipe 的 wasm loader 在 Worker 里发请求」不成立；
@@ -966,10 +969,10 @@ s = s.replaceAll('{' + k + '}', String(v))          // ❌
 旧读数「23 个不同键」只扫 `t('k')` 单引号字面量，既不覆盖上列形态也不查死键，**已作废**。
 
 ```
-中文键 66   英文键 66   ← 完全对称
+中文键 68   英文键 68   ← 完全对称
 仅中文有：无      仅英文有：无
-所有被引用的键（66 个不同键）都有定义   ← 拦住拼错的键
-所有定义的键（66 个）都被引用           ← 拦住死键（无人引用的词条）
+所有被引用的键（68 个不同键）都有定义   ← 拦住拼错的键
+所有定义的键（68 个）都被引用           ← 拦住死键（无人引用的词条）
 ```
 
 **两个方向都要写**：只写「被引用的都有定义」拦不住死键 —— 死键不会被任何分支触发，
@@ -1523,9 +1526,29 @@ MediaPipe（TFLite Tasks）会向 `odml.pa.googleapis.com` 上报使用数据。
 
 | 层 | 位置 | 覆盖范围 |
 |---|---|---|
-| 内联 JS patch | `index.html` 的 `<script>`（解析期即生效） | 仅主线程的 fetch / XHR / sendBeacon |
-| 运行期 JS patch | `src/lib/block-telemetry.ts` | 同上，但装/撤更细（可被后续代码撤销） |
-| **CSP** | `index.html` 的 `<meta http-equiv="Content-Security-Policy">` | **主线程 + `blob:`/`data:` Worker 的连接类 API**（fetch / XHR / WS / SSE / beacon） |
+| 内联 JS patch | `index.html` 的 `<script>`（解析期即生效） | 主线程的 fetch / sendBeacon（**R23 起不再补 XHR**，理由见下） |
+| 运行期 JS patch | `src/lib/block-telemetry.ts` | 主线程的 fetch / XHR / sendBeacon，装/撤更细（可被后续代码撤销） |
+| **CSP** | `index.html` 的 `<meta http-equiv="Content-Security-Policy">` | **连接类 API（fetch / XHR / WS / SSE / beacon）+ 图片 + `<script src>` / `<link rel=stylesheet>` / `<iframe src>` / 同源脚本 Worker 的创建** |
+
+**R23 的两处改动（都带判据）**：
+
+- **内联层删掉 XHR 补丁**（R23-P4）：运行期层在正常构建里必然后加载并覆盖
+  `XMLHttpRequest.prototype.open/send`，内联层那份实现**不可达**（实测 `sendIsInlinePatch=false`）；
+  而它作为第二实现还带着两处规范缺陷 —— 假事件用 `Event` 而非 `ProgressEvent`、被拦请求永不进入
+  `timeout` 分支。XHR 通道现由运行期层 + CSP `connect-src`（不含 googleapis 主机）两层覆盖。
+  判据 `lib/r17-beacon-identity-verify.mjs` 的 A2 现按「内联层改写 2/4 个补丁点」断言。
+- **取值口径修 cross-realm**（R23-P7，即 R22-07）：两层原先按 `instanceof URL` 取目标，而
+  cross-realm 的 URL 过不了本 realm 的 `instanceof`、且 URL 没有 `.url`（是 `.href`）⇒ 目标读成空主机、
+  请求放行。**实测：撤掉内联层、只留运行期层时，cross-realm 形态真的出网（服务器命中 1，响应体
+  `{"ok":true,"counted":true}`）**；两层俱在时被内联层兜住，所以此前看不见。现两层统一为
+  「字符串 → `.url` 字符串 → `String()`」（`String()` 能把 cross-realm URL 正确串化），四个输入形态
+  （string / 同 realm URL / cross-realm URL / Request）全部 0 命中。残留已登记：非法 RequestInfo 会串成
+  `"[object …]"` 落到页面自身主机而不被拦，但原生 fetch/XHR 对非法输入本身抛 `TypeError`，走不到网络。
+- **撤层返回值带「底下还有一层」信号**（R23-P3）：单独撤运行期层后 `window.fetch` 会回落到内联层补丁
+  （不是原生），而旧实现只在还原数不足时告警 ⇒ 调用方可能以为网络已放开。现在 `uninstall()` 返回
+  `{ restored, expected, fellBackToOtherPatch }`；`fellBackToOtherPatch === true` 表示撤完本层后
+  `window.fetch` 仍非原生（正常构建里就是内联层还在），此时网络并未放开。该情形只打 `console.debug`、
+  **不当告警** —— 按文档「先撤模块层、再撤内联层」撤时中间那一刻必然如此，告警会变成噪声。
 
 ### ⚠️ 为什么 CSP 不可省略
 
@@ -1554,16 +1577,20 @@ CSP 是浏览器内核级约束，与调用方用什么 API 无关，比 patch �
 任何 Worker（全仓 grep 0 命中），故该差异当前不构成敞口；将来若要让 Worker 承载外发，只有两条路：
 用 `blob:` 脚本，或给 worker 脚本加 CSP 响应头。
 
-### 这条 CSP 的范围被刻意压到最小
+### 这条 CSP 被实测压到「最小可关闭集」（第 48 轮）
 
 ```html
 <meta http-equiv="Content-Security-Policy"
       content="connect-src 'self' *:8090 ws://*:8090 wss://*:8090<%= PB_CONNECT_SRC %>;
-               img-src 'self' data: blob: *:8090<%= PB_CONNECT_SRC %>" />
+               img-src 'self' data: blob: *:8090<%= PB_CONNECT_SRC %>;
+               script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval';
+               style-src 'self'; frame-src 'none'; worker-src blob: data:" />
 ```
 
-- **不写 `default-src`** —— 因此对脚本、样式、字体**没有任何限制**（`default-src` 会接管
-  `script-src`，可能拦掉内联防线本身与 wasm 加载）
+逐条都是实测功能必需（去掉哪条、哪条通道重新出网、哪个功能坏掉，都有服务器侧命中计数）：
+
+- **不写 `default-src`** —— 它会接管 `script-src`，可能拦掉内联防线本身与 wasm 加载；上面六条
+  指令是**逐条显式**的，没有隐式回落的维度
 - `'self'` —— 经网关访问时的同源 `/api`
 - `*:8090` —— 直连访问时的 `<主机>:8090`
 - `ws://*:8090` / `wss://*:8090` —— WebSocket 属独立方案，`*:8090` 不覆盖它（当前未使用，
@@ -1571,24 +1598,43 @@ CSP 是浏览器内核级约束，与调用方用什么 API 无关，比 patch �
 - `<%= PB_CONNECT_SRC %>` —— 构建期按 `PUBLIC_PB_URL` 追加的额外源（见 `rsbuild.config.ts`）
 - `img-src` —— 图片通道的唯一防线（见下）。界面不渲染任何 `<img>`，同源 favicon 由 `'self'` 覆盖，
   摄像头预览走 `<video>` + `blob:`，故收紧不损伤功能
+- `script-src 'unsafe-inline'` —— **必需**：去掉后 `__facedbBlockInline` 整层消失（内联遥测层
+  静默退化为两层），控制台报 `script-src-elem` / `inline` 违规
+- `script-src 'wasm-unsafe-eval'` —— **必需**：MediaPipe 要编译 wasm，去掉后 `CompileError:
+  … 'unsafe-eval' is not an allowed source of script`，端到端表现为「人脸模型加载失败」且
+  `video.srcObject` 始终为空
+- `style-src 'self'` —— 同源样式表 rules=58、根节点计算背景色非透明；加 `'unsafe-inline'` 零收益
+- `frame-src 'none'` —— 关掉 `<iframe src>` 通道（当前无跨源嵌入需求）
+- `worker-src blob: data:` —— 关掉「同源脚本 Worker」通道：**不能省**，省掉会回落到 `script-src`
+  的 `'self'`，于是 `blob:` Worker 被连坐拦掉；而写上它就同时挡住了从同源脚本 URL 创建 Worker
+  （该路径的策略取自 worker 脚本自身的响应头，不继承本文档 CSP，只有 creation 这一手能挡）
 
 **唯一需要注意的**：若用 `PUBLIC_PB_URL` 指向别的地址，必须同步放行，否则会被 CSP 挡住。
 
-### 仍敞开的三条通道（已知敞口，第 47 轮实测）
+### 通道状态（第 48 轮实测：四条已关，新增一条已知敞口）
 
-JS 的两层 patch 只管 `fetch` / `XHR` / `sendBeacon`，CSP 又只声明了 `connect-src` 与 `img-src`，
-于是下列三条**在实测中确实出网**（三层齐备页与生产页都有服务器命中）：
+第 47 轮时只有 `connect-src` 与 `img-src` 两条指令，于是 `<script src>` / `<link rel=stylesheet>` /
+`<iframe src>` 三条**在实测中确实出网**。第 48 轮用真 Chrome 做了三臂判定（现状 / 加上四条指令 /
+逐条撤掉），44 个判定相位全过，四条通道全部关到服务器命中 0：
 
-| 通道 | 状态 | 为什么不能现在关 |
+| 通道 | 状态 | 关它的指令 |
 |---|---|---|
-| `<img src>` | ✅ 已由 `img-src` 关闭 | ——（加这一条是 1 行改动、零功能影响） |
-| `<script src>` | ❌ 敞开 | 要关必须写 `script-src`，会连带管住内联防线与 wasm 加载，风险大于收益 |
-| `<link rel=stylesheet>` | ❌ 敞开 | 同上（`style-src` 会管住内联样式） |
-| `<iframe src>` | ❌ 敞开 | `frame-src` 可关，但当前无跨源嵌入需求，未做 |
+| `<img src>` | ✅ 已关（第 47 轮） | `img-src 'self' data: blob: *:8090…` |
+| `<script src>` | ✅ 已关（第 48 轮） | `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'` |
+| `<link rel=stylesheet>` | ✅ 已关（第 48 轮） | `style-src 'self'` |
+| `<iframe src>` | ✅ 已关（第 48 轮） | `frame-src 'none'` |
+| 同源脚本 Worker | ✅ 已关（第 48 轮，关在**创建**这一步） | `worker-src blob: data:` |
+| 任意主机 `:8090`（https 页面） | ⚠️ **敞开（新登记）** | `connect-src` 的 `*:8090` 只匹配页面自身 scheme，https 页面上即「任意主机:8090」 |
 
-也就是说：**「任何外发都必须拦住」这句话只对连接类 API + 图片成立**，其余三条通道是已登记的敞口。
-仓库自检里有一条断言盯着 `img-src` 是否还在、`default-src` 是否没被引入、以及 `src/` 里是否
-新出现 `<img>`（出现了就要同步本文档与 CSP）。
+最后一条的实测读数：https 页面上 `https://exfil.<测试域>:8090/...` 命中 1、status=200、CSP 违规 0
+（两层 JS 补丁只按 googleapis 主机名判定）；`:8091` 阴性对照被 `connect-src` 拦。
+**保留的理由**：LAN 部署时页面主机 ≠ PB 主机，`'self'` 覆盖不到 `<主机>:8090`；https 生产下同源
+PB 已由 `'self'` 覆盖，故这条只对「其它主机的 8090」有意义。要彻底关掉就把 `*:8090` 换成部署时的
+具体主机名 —— 属于部署参数，登记为已知敞口。
+
+也就是说：**「任何外发都必须拦住」这句话对连接类 API、图片、脚本、样式、框架与 Worker 创建都成立**，
+唯一例外是上面登记的 `*:8090`。仓库自检里有一组断言盯着六条指令是否都在、`default-src` 是否没被引入、
+以及源码里是否新出现 `<img>`（出现了就要同步本文档与 CSP）。
 
 ### 已实测不受影响
 
