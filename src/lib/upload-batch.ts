@@ -101,3 +101,25 @@ export async function drainWhileBusy(isBusy: () => boolean, tries: number, ms: n
   }
   return !isBusy()
 }
+
+/**
+ * 提交前的队列前提（R23REV-N3）：把「等收尾 → 判队列」这段策略收进模块，
+ * 因为它与 drainWhileBusy 的返回值语义是同一件事 —— 调用方**必须**如实处理 false。
+ *
+ * 为什么不能简化成「等不到就直接往下走」：往下走会命中 `pendingFiles.length === 0`，
+ * 于是「shoot 还在收尾、文件即将入队」被报成「本次没有可上传文件」，并把用户引去点
+ * 「重新采集」—— 而 `retry()` 会清空待提交队列，那一批就真丢了。
+ *
+ * @returns 'finalizing' 等满上限仍忙（队列状态未知，须按「稍后重试」处理，且不得发请求）
+ *          'empty' 队列确实为空（可以给「录制为空」类提示，同样不发请求）
+ *          'ok' 有文件可提交
+ */
+export async function preSubmitQueue(
+  isBusy: () => boolean,
+  tries: number,
+  ms: number,
+  queued: number,
+): Promise<'ok' | 'finalizing' | 'empty'> {
+  if (!(await drainWhileBusy(isBusy, tries, ms))) return 'finalizing'
+  return queued === 0 ? 'empty' : 'ok'
+}

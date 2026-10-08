@@ -17,7 +17,7 @@ import {
   teardownRecorder,
 } from '../lib/capture'
 import { UPLOAD_BUDGET_MS, type CaptureMeta, type CaptureResult, type PendingFile } from '../lib/pb'
-import { runUploadBatch, drainWhileBusy } from '../lib/upload-batch'
+import { runUploadBatch, preSubmitQueue } from '../lib/upload-batch'
 import { buildPoseFiles } from '../lib/batch-files'
 import { primeAudio, resumeAudio, sfx } from '../lib/audio'
 import { t } from '../lib/i18n'
@@ -447,10 +447,9 @@ function advance(): void {
 }
 
 /** 提交整批文件；成功后切到完成页，失败则留在本页等待重试。 */
-/** 自动重试次数与间隔：用户无需任何操作，失败就自己再试。 */
+/** 自动重试次数与间隔（用户无需操作，失败自己再试）与等收尾上限：20ms × 60 = 1.2s */
 const SUBMIT_TRIES = 3
 const SUBMIT_BACKOFF_MS = 1200
-/** 等「正在飞的 shoot()」收尾：20ms × 60 = 1.2s 上限（语义与理由见 upload-batch.ts） */
 const DRAIN_TRIES = 60
 const DRAIN_MS = 20
 
@@ -461,11 +460,15 @@ async function submit(fromShoot = false): Promise<void> {
   submitFailed.value = false
   emptyBatch.value = false
   try {
-    // 提交入口先判「有没有可上传的文件」（W23B-05）：整批文件都被判过小丢弃时队列为空，
-    // 进网络重试循环毫无意义，界面还会报「上传失败，请检查网络」把用户引向错误方向。
-    // 这里直接给「录制为空」类提示（emptyBatch 已并入 retryable），**一个网络请求都不发**。
-    // 从 shoot() 内部调用（最后一步）时队列已定，不必等；从按钮调用时必须先等（理由见 upload-batch.ts）
-    if (!fromShoot) await drainWhileBusy(() => busy.value, DRAIN_TRIES, DRAIN_MS)
+    // 提交入口先判队列前提（W23B-05 / R23REV-N3）：整批被判过小丢弃时队列为空，进重试循环毫无意义，
+    // 界面还会报「上传失败，请检查网络」把用户引向错误方向；而等收尾超时属于**队列状态未知**，
+    // 既不能报「录制为空」也不能给「重新采集」。两种情形都一个网络请求都不发（见 upload-batch.ts）。
+    // 从 shoot() 内部调用（最后一步）时队列已定，不必等；从按钮调用时必须先等。
+    // 等满上限仍忙 ⇒ 队列状态未知（R23REV-N3）：如实提示「仍在收尾」，不发任何请求、也不给「重新采集」。
+    if (!fromShoot) {
+      const q = await preSubmitQueue(() => busy.value, DRAIN_TRIES, DRAIN_MS, pendingFiles.length)
+      if (q === 'finalizing') { uploadError.value = t('stillFinalizing'); hints.setNow('hintStillFinalizing'); sfx.warn(); return }
+    }
     if (pendingFiles.length === 0) {
       emptyBatch.value = true
       uploadError.value = t('emptyRecording')

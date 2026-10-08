@@ -95,8 +95,10 @@ class PermanentError extends Error {}
  */
 function isNetworkError(e: unknown): boolean {
   if (!(e instanceof TypeError)) return false
-  return /failed to fetch|fetch failed|load failed|networkerror|network error|network request failed|connection (refused|reset|closed)|err_connection/i.test(
-    e.message,
+  // R23REV-N4：Node/undici 的文案是 `fetch failed` **且** `cause` 里写 `connect ECONNREFUSED …`；
+  // 只匹配 `connection (refused|reset|closed)` 会漏掉它，于是由 Node 驱动的测试/脚本上屏技术原文。
+  return /failed to fetch|fetch failed|load failed|networkerror|network error|network request failed|connection (refused|reset|closed)|err_connection|connect(ion)? econn(re|fused)|econn(refused|reset)|getaddrinfo|enotfound|eai_again|socket hang up|certificate/i.test(
+    e.message + ' ' + String((e as { cause?: unknown }).cause ?? ''),
   )
 }
 
