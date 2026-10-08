@@ -170,6 +170,12 @@ const M = [
     apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/^(\s*)run: npm run verify:notices\s*$/m, '$1run: |\n$1  npm run verify:notices')) },
   { id: 'M34', target: '.github/workflows/ci.yml', expect: 'S30', desc: '给整个 job 加 `if: false`（整个 job 的步骤都不再执行）',
     apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/^(\s*runs-on: ubuntu-latest\s*)$/m, '    if: false\n$1')) },
+  // 【R23 第四次重锚（PR #27 的 CI 抓到）】体积判据的「dist 与源码同源」前提：摘掉它就会退回
+  // 「本地用陈旧 dist 重锚 ⇒ 本地 16/16 全绿、CI 一跑就红」。M35/M36 分别打前提块与它的变异体。
+  { id: 'M35', target: 'scripts/check-dist-size-budget.mjs', expect: 'S26', desc: '摘掉「dist 与源码同源」（SOURCE_FINGERPRINT）前提块',
+    apply: () => mutate('scripts/check-dist-size-budget.mjs', (t) => t.replace(/const SOURCE_FINGERPRINT = '(?:[a-f0-9]{64}|PLACEHOLDER_SOURCE_FINGERPRINT)'/, 'const SOURCE_FINGERPRINT_OFF = 1')) },
+  { id: 'M36', target: 'scripts/check-dist-size-budget-mutants.mjs', expect: 'S26', desc: '摘掉源码同源前提的阴性对照变异体 m8a（只留 m8b 无法排除「复制本身触发」）',
+    apply: () => mutate('scripts/check-dist-size-budget-mutants.mjs', (t) => t.replace("id: 'm8a-src-copied-control'", "id: 'm8x-removed-control'")) },
 ]
 
 let caught = 0

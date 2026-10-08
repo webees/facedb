@@ -93,11 +93,22 @@ const DIST = distFlag >= 0 ? path.resolve(argv[distFlag + 1]) : path.join(ROOT, 
 // —— 5 个阈值常量（来源见文件头；改这里必须同步改文件头的推导式）——
 // 【R23 第二次重锚】基线由实测值抬到 96311 / 27430594（增量逐条列在文件头），
 // 上限仍按同一推导式派生（web gzip +0.5%、原始总字节 +2%），不是把容差放宽。
-const WEB_GZIP_BASELINE_BYTES = 96573
-const WEB_GZIP_CAP_BYTES = 97055
-const RAW_TOTAL_BASELINE_BYTES = 27431217
-const RAW_TOTAL_CAP_BYTES = 27979842
+const WEB_GZIP_BASELINE_BYTES = 96543
+const WEB_GZIP_CAP_BYTES = 97025
+const RAW_TOTAL_BASELINE_BYTES = 27431220
+const RAW_TOTAL_CAP_BYTES = 27979845
 const EXPECTED_FILE_COUNT = 13
+
+// —— 源码指纹：产物必须是**当前源码**构建出来的 ——
+// 【R23 第四次重锚（PR #27 的 CI 抓到）】此前判据只钉「产物长什么样」，不钉「产物是不是当前源码
+// 构建的」：我在本地用一份**陈旧 dist** 重锚（入口 chunk 名 `index.b0621d6a09.js`），
+// 本地 verify:size 全绿、CI 一跑就红（干净检出重建得 `index.ebc8a68402.js`）。
+// 这种「本地绿、CI 红」的成因不是环境差异，而是**判据缺一条前提**：dist 与源码不同源。
+// 修法：把「喂给打包器的源码输入」的 sha256 记在这里；判据启动时重算，不一致即
+// **未判定（exit 2）**，提示先 `rm -rf dist && npm run build` 再重锚。
+// 覆盖输入：`index.html`、`package.json`、`src/**`（递归、按路径排序）。不含 node_modules
+// （软链/真实目录各有 N0 前提）与 `dist/`（那是被检查对象）。
+const SOURCE_FINGERPRINT = '385a8cdbafdc4d90ad0b54c152f237e54244ca8f59ac34b8c0093f6f65307033'
 
 // 阈值自洽（防手抄错，尤其是 27978237.9 这类取整）：常量必须等于由基线派生的取整结果。
 const DERIVED = {
@@ -123,7 +134,7 @@ const LOCKED_SHA256 = {
 }
 // —— 4 个内容哈希 chunk：文件名里的 hash 由内容算出，故「同名不同内容」= 陈旧/投毒产物 ——
 const HASHED_CHUNKS = {
-  'static/js/index.b0621d6a09.js': '3e54531c24765376e3d151c06b767b57e50202a2ceb4ee8fc7c896efee5f9fdf',
+  'static/js/index.ebc8a68402.js': '2740b35c328acfca4acab2d656157d6992a1dfc8ab85fbc5375f8abdb004bbd1',
   'static/js/lib-vue.8351304052.js': '9185e33ee21bdde949c18f7771c0b9fa0acf413712d83f1412cb4dd9a012ca0f',
   'static/js/m.79c0ab86b6.js': '2956850bd7ffc083eb290d72745395e20dfa588d75d8d9271368e5ed590346b5',
   'static/css/index.d05fa997d9.css': '45171915300c369b502f0658ef5ef5bdf36f6c6ae667cf94343cb4a28dd034a8',
@@ -213,6 +224,41 @@ if (PB_URL !== '') {
         '但与真实目录构建的结果不可比 → 本次未判定（exit 2）。请在带真实 node_modules 的检出里构建',
     )
     process.exit(c.report())
+  }
+}
+
+// (4) dist 必须是**当前源码**构建出来的（R23 第四次重锚补）：判据此前只钉产物长相，不钉「产物是不是
+//     这份源码构建的」。实测代价：我用一份陈旧 dist 重锚 ⇒ 本地 verify:size 16/16 全绿、CI 一跑就红
+//     （干净检出重建得另一个入口 chunk 名）。这是判据缺前提，不是环境差异。
+//     只在能算出指纹的根上核对（合成树/自检树没有 src/，不适用，打印一行说明即可）。
+{
+  const srcDir = path.join(ROOT, 'src')
+  const indexHtml = path.join(ROOT, 'index.html')
+  const pkg = path.join(ROOT, 'package.json')
+  const canFingerprint = existsSync(srcDir) && existsSync(indexHtml) && existsSync(pkg)
+  if (!canFingerprint) {
+    console.log('[INFO] N0 环境前提：dist 与源码同源 —— 本根没有 src//index.html/package.json（自检或合成树），不适用')
+  } else {
+    const inputs = ['index.html', 'package.json', ...listFiles(srcDir).map((f) => 'src/' + f)].sort()
+    const h = createHash('sha256')
+    for (const rel of inputs) h.update(rel + '\0' + sha256(path.join(ROOT, rel)) + '\0')
+    const actual = h.digest('hex')
+    if (SOURCE_FINGERPRINT === 'PLACEHOLDER_SOURCE_FINGERPRINT') {
+      c.un(
+        'N0 环境前提：dist 与源码同源',
+        `本判据还没有记录源码指纹（占位符未替换）→ 本次未判定（exit 2）。用 lib/size-reanchor.mjs --write 写入`,
+      )
+      process.exit(c.report())
+    }
+    if (actual !== SOURCE_FINGERPRINT) {
+      c.un(
+        'N0 环境前提：dist 与源码同源',
+        `实测源码指纹 ${actual.slice(0, 12)}… ≠ 判据记录的 ${SOURCE_FINGERPRINT.slice(0, 12)}…（覆盖 ${inputs.length} 个输入）` +
+          ' —— 源码改过而产物没重建（或反之）：此时文件名/体积基线与产物不可比，判红会把「没重建」误报成产物漂移。' +
+          '先 `rm -rf dist && npm run build`，再用 lib/size-reanchor.mjs --write 重锚 → 本次未判定（exit 2）',
+      )
+      process.exit(c.report())
+    }
   }
 }
 

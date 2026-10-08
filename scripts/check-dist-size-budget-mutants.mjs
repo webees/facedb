@@ -182,7 +182,40 @@ const variants = [
       ]
     },
   },
+  {
+    // R23（PR #27 的 CI 抓到）：判据此前只钉「产物长什么样」，不钉「产物是不是这份源码构建的」——
+    // 我用一份陈旧 dist 重锚，本地 16/16 全绿、CI 一跑就红（干净检出重建得另一个入口 chunk 名）。
+    // 补上源码同源前提后，这一对变异体证明它真的会响：m8a 把 src/ 原样复制（不适用→适用且必须仍绿），
+    // m8b 在复制的 src/ 里改一行（源码动了、产物没重建）⇒ 必须 exit 2 未判定。
+    // 两者成对：只测 m8b 无法排除「复制本身就触发」这种假阳性。
+    id: 'm8a-src-copied-control',
+    desc: '把 src/ + index.html + package.json 原样复制进树（阴性对照：复制本身不得触发同源前提）',
+    expect: { rc: 0, fails: [], undecided: [] },
+    mutate: (dir) => copySourceInputs(dir),
+  },
+  {
+    id: 'm8b-src-drift',
+    desc: '复制的 src/ 里改一行（源码与产物不同源）→ 必须 exit 2 未判定',
+    expect: { rc: 2, fails: [], undecided: ['N0'] },
+    mutate: (dir) => {
+      const proof = copySourceInputs(dir)
+      const p = path.join(dir, 'src/main.ts')
+      const before = readFileSync(p, 'utf8')
+      writeFileSync(p, before + '\n// R23 同源前提的变异体：这一行让源码指纹改变\n')
+      return [...proof, `src/main.ts 字节 ${before.length} → ${statSync(p).size}（追加一行注释）`]
+    },
+  },
 ]
+
+// 把「喂给打包器的源码输入」从工程复制进临时树（m8a/m8b 共用）。
+// 刻意只复制 index.html / package.json / src/ —— 判据的源码指纹覆盖的就是这三者。
+function copySourceInputs(dir) {
+  const cp = spawnSync('cp', ['-R', path.join(REPO, 'src'), path.join(dir, 'src')], { encoding: 'utf8' })
+  if (cp.status !== 0) throw new Error(`cp -R src 失败：${(cp.stderr || '').trim()}`)
+  for (const f of ['index.html', 'package.json']) copyFileSync(path.join(REPO, f), path.join(dir, f))
+  const n = listFiles(path.join(dir, 'src')).length
+  return [`复制 src/ ${n} 个文件 + index.html + package.json（复制后尚未改动）`]
+}
 
 const TMP = mkdtempSync(path.join(os.tmpdir(), 'facedb-size-mutants-'))
 const results = []

@@ -544,7 +544,19 @@ add({ id: 'S26', covers: ['scripts/lib/checker.mjs', 'scripts/check-dist-size-bu
     // 环境前提与零样本纪律：非默认构建环境、缺产物，都不得判通过
     if (!/PUBLIC_PB_URL/.test(g)) miss.push('判据没有 PUBLIC_PB_URL 环境前提断言（该变量会改产物内容与文件名）')
     if (!/from '\.\/lib\/checker\.mjs'/.test(g)) miss.push('判据没有复用 scripts/lib/checker.mjs（未判定/关键跳过不得判通过的纪律）')
+    // 【R23 第四次重锚】「产物是不是这份源码构建的」这条前提不许被摘掉 —— 摘掉就会回到
+    // 「本地用陈旧 dist 重锚 ⇒ 本地 16/16 全绿、CI 一跑就红」（PR #27 实际发生过）。
+    if (!/const SOURCE_FINGERPRINT = '(?:[a-f0-9]{64}|PLACEHOLDER_SOURCE_FINGERPRINT)'/.test(g))
+      miss.push('判据没有 SOURCE_FINGERPRINT 常量（dist 与源码同源这一前提被摘掉了）')
+    if (!/dist 与源码同源/.test(g)) miss.push('判据没有「dist 与源码同源」的 N0 前提块')
+    // 注：写这个常量的重锚工具是审计运行根里的 lib/size-reanchor.mjs，**不在本仓库**（不属于产物
+    // 的一部分），故这里不要求它存在。错锚的兜底是判据自己：源码指纹一对不上就判未判定，
+    // 而 CI 必然在干净检出上跑（PR #27 就是这么抓到本地那次错锚的）。
   }
+  const mut = has(MUT) ? read(MUT) : ''
+  // 前提要有变异体守着：只测「源码漂移」不测「原样复制」无法排除复制本身触发（假阳性）；
+  // 只测复制不测漂移则等于没测。
+  for (const id of ['m8a-src-copied-control', 'm8b-src-drift']) if (!mut.includes(id)) miss.push(`变异体 ${id} 不存在（同源前提失去判别力证明）`)
   const pkg = has('package.json') ? read('package.json') : ''
   for (const s of ['verify:size', 'verify:size-selftest']) if (!pkg.includes(`"${s}"`)) miss.push(`package.json 缺 npm script：${s}`)
   // 不得塞进 verify:all：该判据需要 dist，全新克隆无构建即失败（与 verify:notices 的既有取舍一致）

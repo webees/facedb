@@ -489,11 +489,21 @@ CSP 里还会追加 `https://pb.example.com wss://pb.example.com`。因此**任�
 产物就从 `index.3034178f9f.js` / `lib-vue.8351304052.js` / `m.79c0ab86b6.js`
 变成 `index.59ab2f4658.js` / `lib-vue.41bac71c26.js` / `c.283e6ba8c2.js`（在同一软链目录内**可复现**，
 但与真实目录构建的结果不可比）。**两组名字都是 R23 当时的读数，会随源码变动**（收口期改了 `CaptureView.vue` /
-`i18n.ts` / `pb.ts` 之后，真实目录构建的入口 chunk 已变成 `index.b0621d6a09.js`）——
+`i18n.ts` / `pb.ts` 之后，真实目录构建的入口 chunk 先变成 `index.b0621d6a09.js`，随后因判据自身改动又变成
+`index.ebc8a68402.js`）——
 要点是「同源可比、跨源不可比」，不是这三个名字本身。意义有两层：一是要隔离副本时用 `cp -al`（硬链副本 = 真实目录）或 `cp -R`，
 **别用 `ln -s`**；二是软链里跑 `npm ci` / `install` / `prune` 会穿透软链把工程根的依赖树重实化
 （R23 事故 01：`node_modules/.bin` 被削到 6 项、`vue-tsc` 软链消失）。
 `scripts/check-dist-size-budget.mjs` 对此的处理同样**判未判定（exit 2），绝不判通过**，并有对应变异体 `m6-symlink-nm`。
+
+**产物必须与源码同源（R23 第四次重锚补的前提）**：判据此前只钉「产物长什么样」，不钉「产物是不是这份源码
+构建的」。收口期我拿一份**陈旧 `dist`** 重锚了入口 chunk 名 ⇒ 本地 `verify:size` 16/16 全绿、**CI 一跑就红**
+（同一个提交在干净检出里重建得到另一个 chunk 名）。修法是把喂给打包器的源码输入（`index.html` +
+`package.json` + `src/**`，共 16 个文件）的 sha256 记进判据的 `SOURCE_FINGERPRINT`，启动时重算、不一致即
+**未判定（exit 2）**；变异体 `m8a-src-copied-control`（原样复制 src，必须仍绿）与 `m8b-src-drift`（改一行
+src 不改产物，必须未判定）成对证明这道前提有判别力。**含义**：任何改完源码没重新构建就重锚的读数都不可信
+——重锚前先 `rm -rf dist && npm run build`。这条前提反过来也说明「本地绿」不构成收敛证据，**必须在干净检出
+（或 CI）上复跑才算数**。
 
 
 **关键认识**：`dist` 只有 27.4MB（13 个文件），**镜像的大头从来不是产物，而是「托管它的服务器」**。
