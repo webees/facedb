@@ -449,13 +449,16 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 > | 各层解压后之和 | `docker history` 的 `Size` 逐层求和 | 48,136,900 字节 |
 > | 容器内整棵根文件系统 | `docker run --rm --entrypoint sh … -c 'du -sb /'` | 85,863,301 字节 |
 > | 容器内产物目录 | `… -c 'du -sb /public'` | 27,430,235 字节 |
-> | 宿主 `dist` 文件字节和 | `find dist -type f -exec stat -f %z {} + \| awk '{s+=$1} END{print s}'` | 27,429,645 字节 |
+> | 宿主 `dist` 文件字节和 | `find dist -type f -exec stat -f %z {} + \| awk '{s+=$1} END{print s}'` | 27,429,186 字节（2026-10-08 复读） |
 >
 > 注意 `docker image inspect .Size`（18.6MB）竟然**小于**镜像内 `/public`（27.4MB）—— 机制未查证，此处只作口径事实登记，不据此下结论。
 > 产物文件数：**13 个**（宿主 `dist` 与镜像内 `/public` 一致）。历史上写的「12 个文件」是 R20-F7 之前的读数 ——
 > 第 13 个是 `THIRD-PARTY-NOTICES.md`（17,084 字节），由提交 `55f576b` 引入并经 `rsbuild.config.ts` 的 `output.copy` 拷进产物。
-> 产物有两种口径，同一份产物差 590 字节：`find /public -type f -exec cat {} + | wc -c` = **27,429,645**（文件字节和）、
-> `du -sb /public` = **27,430,235**（`du` 把目录项自身也算进去：13 个文件 + 1 个目录）。
+> 产物有两种口径，同一份产物差 590 字节：`find /public -type f -exec cat {} + | wc -c` = 文件字节和、
+> `du -sb /public` = 文件字节和 **+ 13 个文件 + 1 个目录**的目录项自身开销。
+> **字节和是快照，不是断言**：任何源码改动都会让它变（R22 精简 `index.html` 头部注释后，本项比原读数少 459 字节）。
+> 真正钉住产物的是 `dist/SHA256SUMS`（13 个文件的逐文件 sha256）与 `npm run verify:size` 的阈值判据 ——
+> 复核时用那两者，不要拿这里的数字当期望值。
 > 复测命令（可原样复跑））：
 
 ```bash
@@ -1395,16 +1398,33 @@ rm -rf dist && npm run build && ls dist/static/js/index.*.js
 
 **教训（R14-X5 实测）**：**运行中的容器不等于源码重建产物**。当时宿主机是 arm64，含最新修复的 `webees-facedb-web:latest` 实测为 amd64/linux 无法运行，容器仍在跑 2026-10-06 19:55 的 arm64 备份镜像，当时 3000 端口实供 `index.7211a9f260.js`（不含 `linkTooLong` 闸门、无 `\p{Cc}` 过滤）——**前端源码已修、线上仍是旧行为**。故指纹比对必须取**容器实供产物**。
 
-**已修复并复核（2026-10-07 07:52 重建，11:00 复核）**：`docker compose build web`（宿主 arm64，未覆盖 platform）重建镜像 `webees-facedb-web:latest`（arch=arm64/linux，id `d18adec39ded`），`docker compose up -d web` 重建容器后实测：
+> **历史读数不可追认（R23-W23-E 实测）**：上面那个 `index.7211a9f260.js` 是当时的事实，但**已经取不回来了** ——
+> 该路径现在命中 SPA 回退、返回的是 `index.html`（不是 JS 产物，也不报 404）。凡写进文档的「某次实供 bundle 名/hash」
+> 都会随时间变成不可复核的字符串；因此下文一律改用「命令 + 产物特征」表示，不再以历史 hash 作为判据。
 
-| 项 | 修复前 | 修复后（复核读数） |
+**已修复并复核（2026-10-07 07:52 重建，11:00 复核；2026-10-08 复读）**：`docker compose build web`（宿主 arm64，未覆盖 platform）重建镜像 `webees-facedb-web:latest`（arch=arm64/linux），`docker compose up -d web` 重建容器后实测：
+
+| 项 | 修复前 | 修复后 |
 |---|---|---|
-| 实供 bundle | `/static/js/index.7211a9f260.js` | `/static/js/index.d522b5dd29.js`（34621 字节） |
-| `linkTooLong` 闸门 | 无 | 有（grep 命中 1） |
-| `\p{Cc}` 控制符过滤 | 无（仍是旧的 `\u0000-\u001f` 字面量） | 有（grep 命中 1；旧形态命中 0） |
+| `linkTooLong` 闸门 | 无 | 有（命中 1） |
+| `\p{Cc}` 控制符过滤 | 无（仍是旧的 `\u0000-\u001f` 字面量） | 有（命中 1；旧形态命中 0） |
+| 三层遥测拦截 | 无（`__facedbBlockInline` / `__facedbBlockModule` 命中 0） | 有（两个标记各命中 ≥1） |
 | 容器健康 | healthy | healthy |
 
-复核方法：直接取容器实供的 bundle 并 grep（`curl -s http://127.0.0.1:3000/static/js/<bundle>.js`），不看源码重建产物。回滚标签 `webees-facedb-web:rollback-r13` 指向修复前那份镜像。
+**这张表刻意不写 bundle 文件名与字节数**：它们是**每次构建都变的快照**，写进文档必然漂移（R23-W23-E 实测：文档曾写 `index.d522b5dd29.js` / 34621 字节，实际实供 `index.28c716185e.js` / 35854 字节；镜像 id `d18adec39ded` 也已换成 `ea6eb8244d73`，created 2026-10-07T16:39:49Z）。**可复核的判据是「命令 + 产物特征」，不是「某个 hash」**：
+
+```bash
+# 1. 取容器实供的 bundle 名（不要猜名字，见下方警告）
+B=$(curl -s http://127.0.0.1:3000/ | grep -o 'static/js/index\.[a-f0-9]*\.js' | head -1)
+# 2. 逐条断言产物特征（每项都必须 ≥1；三项全 0 说明容器在跑过期构建）
+curl -s "http://127.0.0.1:3000/$B" | grep -c 'linkTooLong'
+curl -s "http://127.0.0.1:3000/$B" | grep -c 'facedbBlockModule'
+curl -s http://127.0.0.1:3000/ | grep -c 'facedbBlockInline'
+```
+
+**警告（R23-W23-E 实测的高危机制）**：`:3000` 有 **SPA 回退** —— 请求任意**不存在**的路径（含 `deadbeef00.js`）都回 `200 text/html`（index.html 的 10357 字节）。因此「`curl` 拿到 200」**不能**证明该 bundle 存在；把 bundle 名写错时会静默拿到 index.html 并让 grep 全 0，看起来像「闸门没进产物」。必须先从首页解析出真实文件名（上面的第 1 步），或校验 `content-type` 含 `javascript`。
+
+回滚标签 `webees-facedb-web:rollback-r13` 指向修复前那份镜像。
 
 **注**：纯注释改动不影响产物 hash（注释在构建时被剥离），
 所以 hash 相同不代表源码逐字节相同，但能保证**运行时行为**一致 —— 这正是要防的。
