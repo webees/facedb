@@ -365,6 +365,42 @@ function checkCsp() {
   check('CSP 没有 default-src（否则会接管 script-src）', !/\bdefault-src\b/.test(csp),
     /\bdefault-src\b/.test(csp) ? '出现 default-src —— 可能拦掉内联防线与 wasm 加载' : '无 default-src')
 
+  // R23 实测（真 Chrome，44 个判定相位）：第 47 轮只有 connect-src + img-src，于是
+  // `<script src>` / `<link rel=stylesheet>` / `<iframe src>` 三条通道确实出网（服务器命中各 1）。
+  // 第 48 轮补上下面四条指令后全部关到 0。断言必须**同时管「指令在不在」与「取值收不收紧」**：
+  // 只验词存在的话，把取值改回 `*`、或把 worker-src 的 blob:/data: 摘掉（回落到 script-src 的
+  // 'self' ⇒ blob Worker 被连坐）、或给 worker-src 加上 'self'（同源脚本 Worker 创建通道重新敞开）
+  // 都抓不到。
+  const dirVal = (name) => ((csp.match(new RegExp(`(?:^|;)\\s*${name}\\s+([^;]*)`)) || [])[1] || '').trim()
+  const dirToks = (name) => dirVal(name).split(/\s+/).filter(Boolean)
+  const looseIn = (name) => dirToks(name).filter((t) => t === '*' || t === '*:*' || /^(https?|ws|wss):$/.test(t))
+  const scriptToks = dirToks('script-src')
+  check("CSP 声明了 script-src 且带 'unsafe-inline'（内联遥测层必需）",
+    scriptToks.includes("'unsafe-inline'") && looseIn('script-src').length === 0,
+    scriptToks.length === 0 ? '缺失 script-src —— <script src> 通道敞开'
+      : !scriptToks.includes("'unsafe-inline'") ? "缺 'unsafe-inline' —— 内联遥测层会被整层拦掉（三层退化为两层）"
+        : looseIn('script-src').length ? `出现宽泛取值：${looseIn('script-src').join(' ')}` : dirVal('script-src'))
+  check("CSP 的 script-src 带 'wasm-unsafe-eval'（MediaPipe 编译 wasm 必需）",
+    scriptToks.includes("'wasm-unsafe-eval'"),
+    scriptToks.includes("'wasm-unsafe-eval'") ? dirVal('script-src')
+      : "缺 'wasm-unsafe-eval' —— wasm 编译报 CompileError，人脸模型加载失败")
+  check("CSP 声明了 style-src 且取值为 'self'（<link rel=stylesheet> 通道）",
+    dirToks('style-src').includes("'self'") && looseIn('style-src').length === 0,
+    dirToks('style-src').length === 0 ? '缺失 style-src —— <link rel=stylesheet> 通道敞开'
+      : looseIn('style-src').length ? `出现宽泛取值：${looseIn('style-src').join(' ')}` : dirVal('style-src'))
+  check("CSP 声明了 frame-src 'none'（<iframe src> 通道）",
+    dirToks('frame-src').includes("'none'"),
+    dirToks('frame-src').includes("'none'") ? dirVal('frame-src')
+      : dirToks('frame-src').length === 0 ? '缺失 frame-src —— <iframe src> 通道敞开'
+        : `取值不是 'none'：${dirVal('frame-src')}`)
+  const workerToks = dirToks('worker-src')
+  check("CSP 的 worker-src 恰好放行 blob:/data: 且不含 'self'（同源脚本 Worker 创建通道）",
+    workerToks.includes('blob:') && workerToks.includes('data:')
+      && !workerToks.includes("'self'") && !workerToks.includes('*'),
+    workerToks.length === 0 ? "缺失 worker-src —— 会回落到 script-src 的 'self'（blob Worker 被连坐，同源脚本 Worker 仍可创建）"
+      : !workerToks.includes('blob:') || !workerToks.includes('data:') ? `取值缺 blob:/data:：${dirVal('worker-src')}`
+        : `取值含 'self' 或 *，等于重新敞开同源脚本 Worker 创建：${dirVal('worker-src')}`)
+
   // 前提锁：界面不渲染 <img> 是「img-src 可以收紧到 self/data/blob/:8090」的前提。
   // 若将来真的加了 <img>（尤其是跨源图片），这条会红，提示维护者同步 CSP 与文档。
   // R22REV 实测的四条漏检（已全部覆盖）：根 index.html 里的 <img>、.css/.vue 样式里的
@@ -406,12 +442,15 @@ function checkCsp() {
   check('前提：样式里没有跨源 url() 图片引用（img-src 同样管它）', styleUrls.length === 0,
     styleUrls.length ? `发现 ${styleUrls.length} 处：${styleUrls.slice(0, 3).join(' ｜ ')}` : '0 处')
 
-  // 文档一致性：仍敞开的三条通道与 img-src 必须写进 RUN.md
+  // 文档一致性：五条通道的关闭指令与 img-src 必须写进 RUN.md（口径与实现同步）
   const doc = read('RUN.md')
   const missing = []
-  for (const k of ['img-src', 'script src', 'stylesheet', 'iframe src']) if (!doc.includes(k)) missing.push(k)
-  check('RUN.md 写明 img-src 与仍敞开的三条通道', missing.length === 0,
-    missing.length ? `RUN.md 未提及：${missing.join(', ')}` : '4 处口径齐备')
+  for (const k of ['img-src', 'script src', 'stylesheet', 'iframe src', 'script-src', 'style-src', 'frame-src', 'worker-src']) {
+    if (!doc.includes(k)) missing.push(k)
+  }
+  check('RUN.md 写明 img-src 与四条通道的关闭指令（script-src/style-src/frame-src/worker-src）',
+    missing.length === 0,
+    missing.length ? `RUN.md 未提及：${missing.join(', ')}` : '8 处口径齐备')
 }
 
 // ── 变异自检：证明上面每一项断言真的有判别力 ─────────────────────────────────
@@ -450,10 +489,11 @@ function runSelfCheck() {
     // R13-F11：HINT_BUF / HINT_NEED 已移到 src/lib/hints.ts —— fixture 必须跟着走，
     // 否则「常量来源文件都存在」这项在阴性对照里就恒红，自检失去意义。
     put('src/lib/hints.ts', 'export const HINT_BUF = 1\nexport const HINT_NEED = 1\n')
-    put('RUN.md', '# 手册\n' + DOCUMENTED_CONSTANTS.map((n) => `- ${n}`).join('\n') + '\nimg-src script src stylesheet iframe src\n')
-    // R22：CSP 检查组要求 index.html 存在且声明 connect-src + img-src、且不含 default-src。
-    // 阴性对照里这几条必须成立，否则「该红的红」与「副本本来就不行」分不清。
-    put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090 ws://*:8090 wss://*:8090; img-src \'self\' data: blob: *:8090" />\n')
+    put('RUN.md', '# 手册\n' + DOCUMENTED_CONSTANTS.map((n) => `- ${n}`).join('\n') + '\nimg-src script src stylesheet iframe src script-src style-src frame-src worker-src\n')
+    // R23：CSP 检查组要求六条指令齐备（connect-src / img-src / script-src / style-src /
+    // frame-src / worker-src）且不含 default-src。阴性对照里这几条必须成立，否则
+    // 「该红的红」与「副本本来就不行」分不清。
+    put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090 ws://*:8090 wss://*:8090; img-src \'self\' data: blob: *:8090; script-src \'self\' \'unsafe-inline\' \'wasm-unsafe-eval\'; style-src \'self\'; frame-src \'none\'; worker-src blob: data:" />\n')
     const bsha = 'b'.repeat(64)
     put('pb-bin/SHA256SUMS', `${bsha}  pocketbase-zh-linux-arm64\n`)
     put('pb-bin/Dockerfile', `case "\${TARGETARCH}" in\n  arm64) want_sha256=${bsha} ;;\nesac\n`)
@@ -530,6 +570,26 @@ function runSelfCheck() {
     { name: 'M19 清单路径护栏被摘掉（条数类断言必须报红）',
       scriptMutate: (s) => s.replace(/  check\('清单登记的路径都在 public\/ 之内（不得越界）',[\s\S]*?之内`\)\n/, ''),
       expectCode: 1, expectFail: ['每个检查组都跑了足够多的断言', '断言总数不低于硬编码下限'] },
+    // R23：四条新指令的取值护栏（每条都是「指令在但取值被改回宽松」的形态 —— 只验词存在的
+    // 断言对这种改法完全无感）。
+    { name: 'M20 CSP 摘掉 worker-src（回落到 script-src 的 self）',
+      expectFail: ["CSP 的 worker-src 恰好放行 blob:/data: 且不含 'self'（同源脚本 Worker 创建通道）"],
+      mutate: () => put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090; img-src \'self\' data: blob: *:8090; script-src \'self\' \'unsafe-inline\' \'wasm-unsafe-eval\'; style-src \'self\'; frame-src \'none\'" />\n') },
+    { name: 'M21 CSP 的 worker-src 加上 self（同源脚本 Worker 创建通道重新敞开）',
+      expectFail: ["CSP 的 worker-src 恰好放行 blob:/data: 且不含 'self'（同源脚本 Worker 创建通道）"],
+      mutate: () => put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090; img-src \'self\' data: blob: *:8090; script-src \'self\' \'unsafe-inline\' \'wasm-unsafe-eval\'; style-src \'self\'; frame-src \'none\'; worker-src \'self\' blob: data:" />\n') },
+    { name: "M22 CSP 的 script-src 去掉 'wasm-unsafe-eval'（wasm 编译会失败）",
+      expectFail: ["CSP 的 script-src 带 'wasm-unsafe-eval'（MediaPipe 编译 wasm 必需）"],
+      mutate: () => put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090; img-src \'self\' data: blob: *:8090; script-src \'self\' \'unsafe-inline\'; style-src \'self\'; frame-src \'none\'; worker-src blob: data:" />\n') },
+    { name: "M23 CSP 的 script-src 去掉 'unsafe-inline'（内联遥测层被整层拦掉）",
+      expectFail: ["CSP 声明了 script-src 且带 'unsafe-inline'（内联遥测层必需）"],
+      mutate: () => put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090; img-src \'self\' data: blob: *:8090; script-src \'self\' \'wasm-unsafe-eval\'; style-src \'self\'; frame-src \'none\'; worker-src blob: data:" />\n') },
+    { name: 'M24 CSP 的 style-src 放开成裸 *',
+      expectFail: ["CSP 声明了 style-src 且取值为 'self'（<link rel=stylesheet> 通道）"],
+      mutate: () => put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090; img-src \'self\' data: blob: *:8090; script-src \'self\' \'unsafe-inline\' \'wasm-unsafe-eval\'; style-src *; frame-src \'none\'; worker-src blob: data:" />\n') },
+    { name: 'M25 CSP 摘掉 frame-src（<iframe src> 通道敞开）',
+      expectFail: ["CSP 声明了 frame-src 'none'（<iframe src> 通道）"],
+      mutate: () => put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090; img-src \'self\' data: blob: *:8090; script-src \'self\' \'unsafe-inline\' \'wasm-unsafe-eval\'; style-src \'self\'; worker-src blob: data:" />\n') },
   ]
 
   console.log('=== 变异自检（验证每一项断言有判别力）===')
@@ -568,13 +628,14 @@ const SECTION_MIN_CHECKS = {
   'i18n': 1,
   'pb-bin 指纹': 3,
   'RUN.md 常量': 3,
-  'CSP 覆盖范围': 7,
+  // R23：7 → 12（新增 script-src 取值 / wasm-unsafe-eval / style-src 取值 / frame-src 取值 /
+  // worker-src 取值 各 1 条）。这五条必须计入下限，否则「摘掉某条指令的取值护栏」不会被
+  // 任何计数类断言发现。
+  'CSP 覆盖范围': 12,
 }
 // 全局下限：新增/删除检查必须显式改这个字面量（改它是一次可被 review 的改动）。
-// R22-04：23 → 25（新增清单路径护栏 1 条）。取 25 而不是 24：`attempted` 把「未执行」也计
-// 在内，所以自检夹具与真实仓库的快照值同为 25（真实仓库多一条「在场二进制比对」，
-// 夹具少的那条以「环境所限未执行」补位）—— 24 会让「摘掉路径护栏」正好躲过这条断言（M19 实测）。
-const MIN_TOTAL_CHECKS = 25
+// R23：25 → 30（CSP 组新增 5 条取值类断言）。
+const MIN_TOTAL_CHECKS = 30
 
 if (process.argv.includes('--self-check')) {
   runSelfCheck()

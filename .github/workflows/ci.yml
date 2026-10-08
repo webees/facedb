@@ -84,8 +84,8 @@ jobs:
         run: npm run verify:standards-selftest
 
       # 仓库结构面与 CSP 面的判据（verify-repo.mjs）此前**从未在 CI 里自检** ——
-      # 它的 24 个变异体只在本地跑，判据被无声削弱时 CI 仍然全绿（R22 实测发现）。
-      - name: 仓库判据的变异自检（24 个变异体/零样本/越界场景必须全部符合预期）
+      # 它的 30 个变异体只在本地跑，判据被无声削弱时 CI 仍然全绿（R22 实测发现）。
+      - name: 仓库判据的变异自检（30 个变异体/零样本/越界场景必须全部符合预期）
         run: npm run verify:selfcheck
 
       - name: 第三方许可判据的变异自检（9 个变异体 + 缺 dist 必须判未判定）

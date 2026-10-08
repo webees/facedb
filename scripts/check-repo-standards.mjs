@@ -604,8 +604,9 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
 
 // ── S28 仓库判据的变异自检接线与判别力（R22） ──────────────────────────
 // 为什么单独立一条：`scripts/verify-repo.mjs` 是仓库结构面与 CSP 面的判据，它的判别力来自
-// `--self-check` 的 24 个变异体（M1–M19 + 零样本 4 条 + 越界 2 条；R23 的 W23-H 修 R22-04/05
-// 时补了 M16–M19 四条 —— 判据的计数必须跟着走，否则 CI 步骤名与真实判别力脱钩）。R22 实测：这个自检
+// `--self-check` 的 30 个变异体（M1–M19 沿用 + 零样本 4 条 + 越界 2 条；R23 的 W23-H 修
+// R22-04/05 时补了 M16–M19，R23 的六指令 CSP 又补了 M20–M25 六条 —— 判据的计数必须跟着走，
+// 否则 CI 步骤名与真实判别力脱钩）。R22 实测：这个自检
 // **从未进 CI**（package.json 有 `verify:selfcheck`，但 CI 里一次都没跑）—— 于是「判据被无声
 // 削弱」的路径正坐在 CI 绿灯的背面。这与 R22REV 报的「只验 img-src 这个词存在」是同一层级的
 // 两个问题：一个是断言太弱，一个是守断言的东西没接线。这里守三件事：
@@ -639,6 +640,17 @@ add({ id: 'S28', covers: ['scripts/verify-repo.mjs', 'package.json', '.github/wo
     if (!v.includes('/<!--[\\s\\S]*?-->/g')) miss.push('缺少注释遮蔽 —— 说明文字里的 <img> 会被自己的检查判成标签')
     if (!/样式里没有跨源 url\(\) 图片引用/.test(v)) miss.push('缺少样式跨源图片断言的标题')
     for (const m of ['M12', 'M13', 'M14', 'M15']) if (!v.includes(`name: '${m} `)) miss.push(`变异体 ${m} 被摘掉`)
+    // R23：六指令 CSP 的取值护栏（每条都是「指令在、取值被改回宽松」的形态，只验词存在的断言无感）
+    for (const d of ['script-src', 'style-src', 'frame-src', 'worker-src']) {
+      if (!v.includes(`dirToks('${d}')`)) miss.push(`缺少 ${d} 的取值断言（只验指令存在的话，取值被改回宽松抓不到）`)
+    }
+    if (!/worker-src 恰好放行 blob:\/data:/.test(v)) miss.push('worker-src 取值断言的标题被改名或摘掉（省掉它会回落 script-src 的 self）')
+    if (!/CSP 声明了 frame-src 'none'/.test(v)) miss.push("缺少 frame-src 'none' 断言")
+    for (const m of ['M20', 'M21', 'M22', 'M23', 'M24', 'M25']) {
+      // 变异体名里可能含单引号（如 `'wasm-unsafe-eval'`），那时声明行用双引号 —— 两种都要认，
+      // 否则「改名/换引号」会被误报成「被摘掉」（本检查第一次就跑出过这个假红）。
+      if (!v.includes(`name: '${m} `) && !v.includes(`name: "${m} `)) miss.push(`变异体 ${m} 被摘掉（CSP 取值护栏的判别力载体）`)
+    }
     if (!/process\.exit\(bad \? 1 : 0\)/.test(v)) miss.push('自检失败没有非零退出（自检本身变成恒真）')
   }
   return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '3 个文件 · npm script 指向真文件且带 --self-check · CI 独立步骤 · 取值断言 + 前提锁扩面 + 注释遮蔽 · M12–M15 · 自检非零退出' }
