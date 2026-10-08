@@ -253,6 +253,80 @@ const M = [
     apply: () => mutate('scripts/verify-standards-selftest.mjs', (t) => t.replace(/^(    if \(pidAlive\(pid\)\) continue)/m, '    // $1')) },
   { id: 'M44', target: 'scripts/verify-standards-selftest.mjs', expect: 'S31', desc: '反转副本前缀过滤（只清扫不该扫的、放过真残留）',
     apply: () => mutate('scripts/verify-standards-selftest.mjs', (t) => t.replace(/^    if \(!base\.startsWith\(WT_PREFIX\)\) continue$/m, '    if (base.startsWith(WT_PREFIX)) continue')) },
+  // 【R25 / W25E-01（P1）】发布卫生闸门的二进制旁路：旧形态「前 8KB 有 NUL 就整份跳过」会放行含凭据的文件。
+  // 三个变异体分别打「解码方式」「适用规则集」「报告口径」—— 少任何一条都会让修复被静默回退或让读数误导读者。
+  { id: 'M45', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '二进制内容退回整份跳过（W25E-01：含 ghp_ 的文件 exit 0 放行）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(
+      "  const isBinary = buf.subarray(0, 8192).includes(0)\n",
+      "  const isBinary = buf.subarray(0, 8192).includes(0)\n  if (isBinary) {\n    skippedBinary++\n    continue\n  }\n")) },
+  { id: 'M46', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '摘掉 BINARY_RULES 适用集（二进制会退回跑全部规则或全部不跑）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace('const BINARY_RULES = new Set(', 'const UNUSED_BINARY_RULES = new Set(')) },
+  { id: 'M47', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '扫描面报告不再写明「二进制已扫凭据类规则」（读者会把干净误读成全规则扫过）',
+    // 该短语在文件里出现 2 次（1 处说明注释 + 1 处报告行）⇒ 锚点必须带 `binaryScanned +` 才能唯一命中报告行。
+    // 裸字符串替换会改中注释、报告行照旧，变异体于是「未生效」（本轮第 5 次同族坑：断言/变异被注释满足）。
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(/binaryScanned \+ ' 个（已扫凭据类规则，定位类规则不适用）/, "binaryScanned + ' 个'")) },
+
+  // 【R25 / W25E-02（P2）】配置卫生判据的空真命题：样本为 0 时四条断言各自退化成 ✅（`零命中 0 条均已标注`、
+  // `0 项全部一致`），整体 `通过 5，失败 0`、exit 0；且退出码只有 `fail === 0 ? 0 : 1`，表达不了「没构成结论」。
+  // 三个变异体分别打「零样本分支」「退出码三态」「自检接线」—— 少任何一条都会让修复被静默回退。
+  { id: 'M48', target: 'scripts/check-repo-config-hygiene.mjs', expect: 'S33', desc: 'A3 摘掉「文本类 0 个 ⇒ 未判定」分支（空样本退回空真命题 ✅）',
+    // 锚点必须带 `else if (` 前缀：裸 `textish.length === 0` 在别处也出现（注释里），裸替换会改中注释、分支照旧。
+    apply: () => mutate('scripts/check-repo-config-hygiene.mjs', (t) => t.replace(/else if \(textish\.length === 0\) unk\('A3/, "else if (false) unk('A3")) },
+  { id: 'M49', target: 'scripts/check-repo-config-hygiene.mjs', expect: 'S33', desc: '退出码退回两态（fail === 0 ? 0 : 1），未判定无法表达',
+    apply: () => mutate('scripts/check-repo-config-hygiene.mjs', (t) => t.replace('process.exit(fail > 0 ? 1 : un > 0 ? 2 : 0)', 'process.exit(fail === 0 ? 0 : 1)')) },
+  { id: 'M50', target: 'package.json', expect: 'S33', desc: '摘掉 verify:hygiene-selftest 接线（自检从此不进 CI）',
+    apply: () => mutate('package.json', (t) => t.replace('    "verify:hygiene-selftest": "node scripts/check-repo-config-hygiene-selftest.mjs",\n', '')) },
+  // ── R25：本判据自己的两条空真命题守卫（W25E-03/04）─────────────────────
+  // 这两条的变异体只能锚**源码断言**（S33）：S1 的样本来自 README、S24 的样本来自磁盘枚举，
+  // 单文件变异造不出「样本为 0」的现场；而守卫一旦被摘掉，零样本就会退回 ✅ 空真命题。
+  { id: 'M51', target: 'scripts/check-repo-standards.mjs', expect: 'S33', desc: '摘掉 S1 的「README 里 0 个相对链接 ⇒ 不得判通过」守卫',
+    apply: () => mutate('scripts/check-repo-standards.mjs', (t) => t.replace(/^  if \(links\.length === 0\) return \{ ok: false, detail: 'README 里没有任何相对链接[^\n]*\n/m, '')) },
+  { id: 'M52', target: 'scripts/check-repo-standards.mjs', expect: 'S33', desc: '摘掉 S24 的「受管来源为空 ⇒ 不得判通过」守卫',
+    apply: () => mutate('scripts/check-repo-standards.mjs', (t) => t.replace(/^  if \(emptySources\.length\) \{\n(?:.*\n)*?  \}\n/m, '')) },
+  // 【R25-INCIDENT-02】类型检查判据的可执行文件真实性前提：摘掉它，「vue-tsc 被换成桩」就会
+  // 退化成「无判别力」一条含糊结论（甚至被误读成仓库有类型错误）。
+  { id: 'M53', target: 'scripts/typecheck-guard.mjs', expect: 'S34', desc: '摘掉「可执行文件被桩替换」整支静态判据',
+    apply: () => mutate('scripts/typecheck-guard.mjs', (t) => t.replace(/  const head = st && st\.isFile\(\) \? readFileSync\(vueTscBin, 'utf8'\)\.slice\(0, 400\) : ''\n  const isJs = [^\n]*\n  const shellish = [^\n]*\n  if \(!st \|\| !st\.isFile\(\)[^\n]*\{\n(?:.*\n)*?  \}\n/m, '  const head = \'\'\n  const isJs = true\n  const shellish = false\n')) },
+  { id: 'M54', target: 'scripts/typecheck-guard.mjs', expect: 'S34', desc: '摘掉 `vue-tsc --version` 行为前提（只留静态判据）',
+    apply: () => mutate('scripts/typecheck-guard.mjs', (t) => t.replace(/  const v = spawnSync\('npx', \['vue-tsc', '--version'\][^\n]*\n(?:.*\n)*?    process\.exit\(2\)\n  \}\n/m, '')) },
+  { id: 'M55', target: 'scripts/typecheck-guard.mjs', expect: 'S34', desc: '摘掉 TCG_ROOT 覆盖通道（自检电池无法造桩现场）',
+    apply: () => mutate('scripts/typecheck-guard.mjs', (t) => t.replace('process.env.TCG_ROOT || ', '')) },
+  { id: 'M56', target: 'scripts/typecheck-guard-selftest.mjs', expect: 'S34', desc: '把整个 node_modules 软链过去（桩会写穿到真仓库）',
+    apply: () => mutate('scripts/typecheck-guard-selftest.mjs', (t) => t.replace(/  for \(const name of readdirSync\(NODE_MODULES\)\) \{\n(?:.*\n)*?  \}\n  \/\/ 只有 vue-tsc 是实体拷贝[^\n]*\n  cpSync\([^\n]*\n/m, "  symlinkSync(NODE_MODULES, path.join(nm, 'node_modules'), 'dir')\n")) },
+  // R25 / W25E-05：两条都打「迁移语法检查把环境问题记成迁移缺陷」的修复（S35 的判别力）。
+  { id: 'M57', target: 'scripts/verify-repo.mjs', expect: 'S35', desc: '摘掉 Invalid package config 分类（环境问题重新变成「迁移语法错误」）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace(/      if \(\/Invalid package config\/i\.test\(err\)\) \{ envBad\+\+; envMsg = err\.split\('\\n'\)\[0\]; continue \}\n/, '')) },
+  { id: 'M58', target: 'scripts/verify-repo.mjs', expect: 'S35', desc: 'M29 摘掉 expectAbsent 反向断言（多出来的假红不再被看见）',
+    apply: () => mutate('scripts/verify-repo.mjs', (t) => t.replace(/, expectAbsent: \['全部迁移可被 node 解析'\]/, '')) },
+  // R25 收口发现（P2）：阴性对照的基线锚在 HEAD ⇒ 修复提交一落地对照就崩塌（R14 / R21 / R25 三次同型）；
+  // 收口期 PR #29 又实测出「现取 git 历史」在浅克隆下取不到 ⇒ 改为读冻结快照。
+  { id: 'M59', target: 'scripts/check-repo-config-hygiene-selftest.mjs', expect: 'S33', desc: '阴性对照的基线退回「用修复后的判据自己当基线」（对照恒真）',
+    apply: () => mutate('scripts/check-repo-config-hygiene-selftest.mjs', (t) => t.replace(
+      /path\.join\(HERE, 'fixtures', 'check-repo-config-hygiene\.prefix-v1\.mjs'\)/,
+      "path.join(HERE, 'check-repo-config-hygiene.mjs')")) },
+  { id: 'M60', target: 'scripts/check-repo-config-hygiene-selftest.mjs', expect: 'S33', desc: '退出码退回两态（跳过项被当成通过）',
+    apply: () => mutate('scripts/check-repo-config-hygiene-selftest.mjs', (t) => t.replace(
+      /process\.exit\(fail > 0 \? 1 : skipped > 0 \? 2 : 0\)/,
+      'process.exit(fail === 0 ? 0 : 1)')) },
+  // R25REV-N1（P2）：UTF-16LE 解码视图被摘掉 ⇒ UTF-16 保存的凭据文件整类漏检（新旧两侧都 exit 0 放行）。
+  { id: 'M61', target: 'scripts/publish-leak-scan.mjs', expect: 'S27', desc: '摘掉 UTF-16LE 解码视图（UTF-16 保存的 .env 整类漏检）',
+    apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace(
+      /    views\.push\(\{ name: 'utf16le', text: buf\.toString\('utf16le'\) \}\)\n/,
+      '')) },
+  // R25REV-N2（P3）：A5 退回「无条件 ck + 另记一条 ⚠️」⇒ 零样本时同一断言行 ✅/⚠️ 并存，通过计数被垫高。
+  { id: 'M62', target: 'scripts/check-repo-config-hygiene.mjs', expect: 'S33', desc: 'A5 退回无条件 ck（零样本时 ✅ 与 ⚠️ 并存）',
+    apply: () => mutate('scripts/check-repo-config-hygiene.mjs', (t) => t.replace(
+      /\} else \{\n  ck\('public\/SHA256SUMS 登记的每项都与磁盘一致'[\s\S]*?\n\}/,
+      "}\nck('public/SHA256SUMS 登记的每项都与磁盘一致', mismatch.length === 0, `${sums.length} 项`)")) },
+  // R25 收口期 PR #29 首跑实测：CI 是浅克隆（fetch-depth 1），`git show <ref>:` 取不到历史提交 ⇒
+  // 阴性对照被跳过、自检 exit 2。此后基线改成 `scripts/fixtures/` 下的冻结快照。这两条守住回退：
+  // M63 = 电池退回「现取 git 历史」；M64 = 冻结快照被更新成修复版（对照变成两侧都成立）。
+  { id: 'M63', target: 'scripts/check-repo-config-hygiene-selftest.mjs', expect: 'S33', desc: '阴性对照退回「现取 git 历史」（浅克隆下取不到 ⇒ 对照被跳过）',
+    apply: () => mutate('scripts/check-repo-config-hygiene-selftest.mjs', (t) => t.replace(
+      /process\.env\.HYG_BASELINE \|\| path\.join\(HERE, 'fixtures', 'check-repo-config-hygiene\.prefix-v1\.mjs'\)/,
+      "process.env.HYG_BASE_REF || 'a5514c3'")) },
+  { id: 'M64', target: 'scripts/fixtures/check-repo-config-hygiene.prefix-v1.mjs', expect: 'S33', desc: '冻结快照被更新成修复版（阴性对照变成「两侧都成立」的恒真）',
+    apply: () => mutate('scripts/fixtures/check-repo-config-hygiene.prefix-v1.mjs', (t) => t + '\nconst trackedOk = true\n') },
 ]
 
 let caught = 0

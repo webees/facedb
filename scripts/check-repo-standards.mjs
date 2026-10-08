@@ -81,6 +81,10 @@ add({ id: 'S1', covers: ['README.md'], name: 'README 的相对链接都指向真
   const t = read('README.md')
   const links = [...t.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)].map((m) => m[1]).filter((u) => !/^(https?:|mailto:|#)/.test(u))
   const dead = links.filter((u) => { const p = u.split('#')[0]; return p && !has(p) })
+  // 【R25 / W25E-04（P3）】零样本纪律：README 里一个相对链接都没有时，`links.filter(...)` 恒为空
+  // ⇒ 打出 `[OK] S1 | … | 0 个相对链接全部可达` 的空真命题（W25-E 实测）。与 S3 的写法一致：
+  // 样本为 0 判**不通过**（本判据的 ck 只有两态，没有第三种「未判定」；口径见 S3 同一行）。
+  if (links.length === 0) return { ok: false, detail: 'README 里没有任何相对链接 —— 没有样本，覆盖面不完整，不得判通过' }
   return { ok: dead.length === 0, detail: dead.length ? '死链：' + dead.join('、') : `${links.length} 个相对链接全部可达` }
 } })
 
@@ -482,6 +486,14 @@ add({ id: 'S24', covers: [], name: '仓库根与 .github 下的每个受管文�
   for (const f of watched) {
     if (/^\.github\/workflows\/.+\.ya?ml$/.test(f) && !wfOwner.has(f)) missing.push(`${f}（未被 S15 逐个检查，只是被别的断言覆盖）`)
   }
+  // 【R25 / W25E-03（P2）】零样本纪律：三个受管来源全空时 `missing` 恒为空 ⇒ 打出
+  // `[OK] S24 | … | 0 个受管文件全部有归属` 的空真命题（W25-E 实测：受管面为空 ⇒ 通过 5、失败 0、exit 0）。
+  // 逐来源点名，避免「只有一个来源被掏空」也被算成有样本。
+  const emptySources = [['.github', onDisk('.github')], ['根文档', rootDocs], ['scripts', onDisk('scripts')]]
+    .filter(([, arr]) => arr.length === 0).map(([n]) => n)
+  if (emptySources.length) {
+    return { ok: false, detail: `受管来源为空：${emptySources.join('、')} —— 没有样本，覆盖面不完整，不得判通过` }
+  }
   return { ok: missing.length === 0, detail: missing.length ? '没有任何断言覆盖：' + missing.join('、') : `${watched.length} 个受管文件全部有归属` }
 } })
 
@@ -614,11 +626,26 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
     if (g.includes(SSH_HDR)) miss.push('闸门源码里出现完整 OPENSSH 私钥头字面量（会自阻断）')
   }
   if (m) {
-    // 电池的覆盖面：15 阳性 + 2 阴性 + 未判定语义（读不到 / 扫描面为空）+ 提示区 + 自扫
-    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'm14', 'm15', 'n1 ', 'n2 ', 'u1 ', 'u2 ', 'i1 ', 's1 自扫真实仓库']) {
+    // 电池的覆盖面：18 阳性 + 3 阴性 + 未判定语义（读不到 / 扫描面为空）+ 提示区 + 自扫
+    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'm14', 'm15', 'm16', 'm17', 'm18', 'n1 ', 'n2 ', 'n3 ', 'u1 ', 'u2 ', 'i1 ', 's1 自扫真实仓库']) {
       if (!m.includes(k)) miss.push(`电池缺场景 ${k.trim()}`)
     }
+    // R25 / W25E-01（P1）：二进制**不许整份跳过** —— 旧形态「前 8KB 有 NUL 就 continue」实测放行含 ghp_ 的文件。
+    // 断言的是「判二进制之后仍然扫」：解码用 latin1，且凭据类规则集存在、定位类规则被显式排除（口径可见）。
+    if (!/isBinary \? 'latin1' : 'utf8'/.test(g)) miss.push('闸门没有对二进制内容按 latin1 解码后照扫（W25E-01 回归：二进制整份跳过会放行凭据）')
+    if (!/const BINARY_RULES = new Set\(/.test(g)) miss.push('闸门缺 BINARY_RULES（二进制适用规则集）—— 二进制内容会退回整份跳过')
+    // 断言必须钉在**报告行那个表达式**上：只查「文件里有没有这句话」会被 BINARY_RULES 上方那段说明注释满足
+    //（M47 实测：把报告里的括号说明删掉，S27 照样绿 —— 又是「注释满足断言」那一族，本轮第 5 次）。
+    if (!/binaryScanned \+ ' 个（已扫凭据类规则，定位类规则不适用）/.test(g)) miss.push('闸门的扫描面报告没有写明「二进制已扫凭据类规则、定位类规则不适用」—— 读者会把干净误读成全规则扫过')
+    if (/if \(isBinary\) \{\s*\n\s*skippedBinary\+\+/.test(g)) miss.push('闸门退回「二进制整份跳过」的旧形态（W25E-01）')
     if (!/process\.exit\(1\)/.test(m)) miss.push('电池失败时不 exit 1（会把失败读成通过）')
+    // R25REV-N1（P2）：同一份字节可以有多种文本解读 —— UTF-16LE 保存的 .env 里每个字符后跟 NUL，
+    // latin1 视图下凭据正则整类匹配不到（实测新旧两侧都 exit 0 放行）。断言「UTF-16LE 视图存在」。
+    if (!/utf16le/.test(g) || !/nulCount \* 4 >= head\.length/.test(g)) miss.push('闸门缺 UTF-16LE 解码视图（UTF-16 保存的凭据文件整类漏检，R25REV-N1 回归）')
+    if (!/utf16Scanned/.test(g)) miss.push('闸门的扫描面报告没有写明「其中 N 个额外按 UTF-16LE 解码后复扫」')
+    if (!/view: view\.name/.test(g)) miss.push('命中记录没有带上视图名（无法分辨命中来自哪种解读）')
+    // LEAK_SCAN 覆盖通道：把旧版闸门喂进同一套电池，才能证明 m16/m17 有判别力（R25 的成对读数就靠它）
+    if (!/process\.env\.LEAK_SCAN \|\|/.test(m)) miss.push('电池缺 LEAK_SCAN 覆盖通道（无法把旧版闸门喂进同一套用例做成对读数）')
     // R23REV-N6：闸门必须对「扫描面为空」判未判定（零样本不得判通过），且该分支不许只剩 exit 0
     if (!/files\.length === 0/.test(g) || !/扫描面为空/.test(g)) miss.push('闸门对空扫描面没有判未判定（R23REV-N6 回归）')
     // R23REV-N8：SECRET-ASSIGN 的前导边界不许退回 `\b`（下划线前缀键名会整类漏检）
@@ -641,7 +668,7 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
   const pr = prHit.path ? read(prHit.path) : ''
   if (prHit.path && (!/verify:publish/.test(pr) || !/阻断/.test(pr))) miss.push('PR 模板没有写明发布卫生闸门的真实阻断线')
   if (!/P1/.test(ci.split('\n').find((l) => /name: 发布卫生闸门/.test(l)) || '')) miss.push('CI 步骤名没有写明阻断线（P0/P1）')
-  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（禁扩展名白名单回退）· 未判定 exit 2（读不到 / 扫描面为空）· 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 15+2+2+1 场景 · npm/CI 接线 · 文档口径一致' }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制且**二进制内容照扫凭据类规则**（禁扩展名白名单回退 / 禁整份跳过）· 未判定 exit 2（读不到 / 扫描面为空）· 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 17+3+2+1 场景 · npm/CI 接线 · 文档口径一致' }
 } })
 
 // ── S28 仓库判据的变异自检接线与判别力（R22） ──────────────────────────
@@ -893,6 +920,133 @@ add({ id: 'S32', covers: ['scripts/verify-repo.mjs', 'scripts/check-dist-size-bu
     ok: miss.length === 0,
     detail: miss.length ? '缺：' + miss.join('、') : '三处落点均按次唯一（mkdtemp / 快照）+ 采样自洽守卫在位（verify-repo 的 .verify-selfcheck、许可自检的 /tmp 固定路径、体积判据的 N4 单独 statSync 都不会再回来）',
   }
+} })
+
+add({ id: 'S33', covers: ['scripts/check-repo-config-hygiene.mjs', 'scripts/check-repo-config-hygiene-selftest.mjs', 'scripts/fixtures/check-repo-config-hygiene.prefix-v1.mjs', 'package.json', '.github/workflows/ci.yml'], name: '配置卫生判据不许退化成空真命题（零样本判未判定、退出码三态、读不到不裸栈），且自检接进 CI', run() {
+  const miss = []
+  const hy = has('scripts/check-repo-config-hygiene.mjs') ? read('scripts/check-repo-config-hygiene.mjs') : null
+  const st = has('scripts/check-repo-config-hygiene-selftest.mjs') ? read('scripts/check-repo-config-hygiene-selftest.mjs') : null
+  if (hy === null) miss.push('缺 scripts/check-repo-config-hygiene.mjs')
+  else {
+    // 零样本：四条断言各自都要有「样本为 0 ⇒ unk」的分支，不许只剩 ck(ok=true)
+    if (!/const unk = \(label, detail = ''\) => \{/.test(hy)) miss.push('缺未判定计数器 unk()')
+    if (!/else if \(gaRules\.length === 0\) unk\('A1/.test(hy)) miss.push('A1 缺「规则数 0 ⇒ 未判定」分支')
+    if (!/else if \(sections\.length === 0\) unk\('A2/.test(hy)) miss.push('A2 缺「段落数 0 ⇒ 未判定」分支')
+    if (!/else if \(textish\.length === 0\) unk\('A3/.test(hy)) miss.push('A3 缺「文本类 0 个 ⇒ 未判定」分支')
+    if (!/sums\.length === 0\)[\s\S]{0,40}unk\('A5/.test(hy)) miss.push('A5 缺「登记项 0 个 ⇒ 未判定」分支')
+    if (!/const trackedOk = /.test(hy)) miss.push('缺 trackedOk 前提（列不出已跟踪文件时 A1/A2 不许判「全部零命中」）')
+    // 健壮性：读文本要经守卫，不许裸 readFileSync 配置
+    if (!/const readText = \(abs\) => \{/.test(hy)) miss.push('缺 readText 守卫')
+    if (/readFileSync\(gaPath|readFileSync\(ecPath|readFileSync\(sumsPath/.test(hy)) miss.push('配置文件仍被裸 readFileSync 读')
+    // 退出码三态 + 汇总行
+    if (!/process\.exit\(fail > 0 \? 1 : un > 0 \? 2 : 0\)/.test(hy)) miss.push('退出码不是三态（失败 1 / 未判定 2 / 通过 0）')
+    if (!/未判定 \$\{un\}/.test(hy)) miss.push('汇总行未打印未判定数')
+    // R25REV-N2（P3）：A5 原先**无条件** ck（先 ✅ 再 ⚠️）—— 零样本/读不到时同一断言行两种结论并存，
+    // 通过计数被垫高。要求 ck 落在 else 分支里（三态互斥）。
+    if (!/\} else \{\s*\n\s*ck\('public\/SHA256SUMS 登记的每项都与磁盘一致'/.test(hy)) miss.push('A5 的 ck 不在 else 分支里（零样本时同一行会同时出现 ✅ 与 ⚠️，R25REV-N2 回归）')
+  }
+  if (st === null) miss.push('缺 scripts/check-repo-config-hygiene-selftest.mjs')
+  else {
+    if (!/mkdtempSync\(path\.join\(tmpdir\(\), 'facedb-hyg-selftest-'\)\)/.test(st)) miss.push('电池必须为每个场景建独立临时仓库')
+    if (!/HYG_SCAN/.test(st)) miss.push('电池缺 HYG_SCAN 覆盖通道（成对读数用）')
+    // 【R25 收口发现，P2】阴性对照的基线**不许锚在 HEAD、也不许现取 git 历史**：
+    //   · 锚 HEAD：修复提交一落地 HEAD 就变成「已经修好的树」⇒ 对照崩塌（R14 / R21 / R25 三次同型）；
+    //   · 现取历史（`git show <ref>:`）：CI 的 checkout 默认是浅克隆（fetch-depth 1），历史提交不在
+    //     本地 ⇒ 取不到、对照被跳过、自检以 exit 2 收尾（R25 PR #29 首跑实测）。
+    // ⇒ 修复前版本冻结成 `scripts/fixtures/` 下的快照，对克隆深度 / 网络 / 历史改写全部免疫。
+    if (/'show', 'HEAD:scripts\/check-repo-config-hygiene\.mjs'/.test(st)) miss.push('阴性对照的基线不许锚在 HEAD（它会随修复提交移动）')
+    if (/HYG_BASE_REF/.test(st)) miss.push('电池不许再依赖 git 历史取基线（浅克隆下取不到 ⇒ 对照被跳过）')
+    if (!/fixtures', 'check-repo-config-hygiene\.prefix-v1\.mjs'/.test(st)) miss.push('电池必须读冻结基线快照（scripts/fixtures/check-repo-config-hygiene.prefix-v1.mjs）')
+    if (!/process\.env\.HYG_BASELINE/.test(st)) miss.push('冻结基线必须可用 HYG_BASELINE 覆盖（成对读数用）')
+    if (!/已经含有本轮修复/.test(st)) miss.push('缺「基线里已含修复 ⇒ 判未判定」的装置前提（否则锚错会被误报成修复无效）')
+    if (!/noStack/.test(st)) miss.push('电池缺「不许裸栈」断言')
+    if (!/notHas: \['✅ public\/SHA256SUMS 登记的每项都与磁盘一致'\]/.test(st)) miss.push('电池缺 A5 的「零样本时不许出现 ✅ 行」断言（R25REV-N2 回归）')
+    if (!/process\.exit\(fail > 0 \? 1 : skipped > 0 \? 2 : 0\)/.test(st)) miss.push('电池退出码必须是三态：失败 1 / 有跳过项 2（未判定） / 0')
+    // 冻结基线快照本身也要守：它必须存在、必须是「修复前」的形态、必须带 provenance 头。
+    // 少了第一条 ⇒ 阴性对照整条被跳过；少了第二条 ⇒ 对照变成「两侧都成立」的恒真。
+    const FX = 'scripts/fixtures/check-repo-config-hygiene.prefix-v1.mjs'
+    if (!has(FX)) miss.push('冻结基线快照不存在（阴性对照会整条被跳过）')
+    else {
+      const fx = read(FX)
+      if (/trackedOk|function unk\(/.test(fx)) miss.push('冻结基线里出现了修复版标记 —— 它已不是「修复前」的形态，阴性对照失去意义')
+      if (!/provenance/.test(fx)) miss.push('冻结基线缺 provenance 头（无法复核它取自哪个提交）')
+    }
+  }
+  const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
+  if (ci === '') miss.push('缺 .github/workflows/ci.yml')
+  else if (!ciHasStep(ci, 'verify:hygiene-selftest')) miss.push('CI 缺 verify:hygiene-selftest 独立步骤')
+  // 【R25 / W25E-03、W25E-04（P2/P3）】本判据自己的两条空真命题守卫：S1（README 里 0 个相对链接）
+  // 与 S24（受管来源为空）在样本为 0 时都曾打出 ✅。守卫必须留在源码里，否则修复会被静默回退。
+  const rs = read('scripts/check-repo-standards.mjs')
+  if (!/if \(links\.length === 0\) return \{ ok: false/.test(rs)) miss.push('S1 缺「没有相对链接 ⇒ 不得判通过」守卫')
+  if (!/if \(emptySources\.length\)/.test(rs)) miss.push('S24 缺「受管来源为空 ⇒ 不得判通过」守卫')
+  const pkg = has('package.json') ? read('package.json') : ''
+  if (!/"verify:hygiene-selftest": "node scripts\/check-repo-config-hygiene-selftest\.mjs"/.test(pkg)) miss.push('package.json 缺 verify:hygiene-selftest')
+  if (!/verify:publish-selftest && npm run verify:hygiene-selftest"/.test(pkg)) miss.push('verify:ci 未包含 verify:hygiene-selftest')
+  if (/verify:all[^"]*verify:hygiene-selftest/.test(pkg)) miss.push('verify:hygiene-selftest 不许塞进 verify:all（本地捷径只跑非 dist 子集）')
+  return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : '零样本四分支 + 前提 + 读文本守卫 + 三态退出码 + 电池（独立临时仓库/覆盖通道/阴性对照/裸栈断言）+ npm script + CI 独立步骤 全部在位' }
+} })
+
+// 【R25-INCIDENT-02（P1）】共享 node_modules 里的 `vue-tsc` 入口曾被写成 17 字节的
+// `#!/bin/sh\nexit 0\n` 桩 ⇒ `npx vue-tsc --noEmit` 恒 exit 0 零输出，`npm run typecheck`
+// 与 CI 的类型检查步骤整段空转。`verify:types` 的阳性对照当时判出了「不构成结论」，但把
+// 「二进制被换成桩」与「检查器逻辑不判别」混成一条结论 —— 这里把该支钉住：判据必须有
+// 可执行文件真实性前提（静态 + `--version` 行为），自检电池必须把两支分别验到。
+add({ id: 'S34', covers: ['scripts/typecheck-guard.mjs', 'scripts/typecheck-guard-selftest.mjs', 'package.json', '.github/workflows/ci.yml'], name: '类型检查判据能识别「可执行文件被桩替换」（与「不判别」分开判），且自检电池与接线在位', run() {
+  const miss = []
+  const g = has('scripts/typecheck-guard.mjs') ? read('scripts/typecheck-guard.mjs') : null
+  const b = has('scripts/typecheck-guard-selftest.mjs') ? read('scripts/typecheck-guard-selftest.mjs') : null
+  if (g === null) miss.push('缺 scripts/typecheck-guard.mjs')
+  else {
+    if (!/process\.env\.TCG_ROOT \|\|/.test(g)) miss.push('判据缺 TCG_ROOT 覆盖通道（自检电池靠它造桩现场）')
+    // 下限必须很小：真 vue-tsc 的入口本身就是 50 字节的转发壳，阈值放到 200 会把真件判成桩。
+    if (!/const MIN_BIN_BYTES = Number\(process\.env\.TCG_MIN_BIN_BYTES \|\| 24\)/.test(g)) miss.push('缺可执行文件真实性下限（且必须是小值：真入口只有 50 字节）')
+    if (!/vue-tsc', 'package\.json'/.test(g)) miss.push('可执行文件入口必须按 vue-tsc 自己的 package.json bin 声明解析')
+    if (!/可执行文件被桩替换/.test(g)) miss.push('缺「可执行文件被桩替换」这一支的结论行')
+    if (!/没有给出可用的版本号/.test(g)) miss.push('缺 `vue-tsc --version` 行为前提（能报版本才算装上）')
+    if (!/可执行文件真实性：/.test(g)) miss.push('缺成立时的可执行文件真实性读数行')
+    if (!/shellish/.test(g) || !/isJs/.test(g)) miss.push('缺「shell shebang / 不是 JS」两条静态判据')
+  }
+  if (b === null) miss.push('缺 scripts/typecheck-guard-selftest.mjs')
+  else {
+    for (const s of ['s1 真 vue-tsc', 's2 shell 桩', 's3 node 空转桩', 's4 像真件但不判别', 's5 真仓库的 vue-tsc 本体未被本电池改动']) {
+      if (!b.includes(s)) miss.push(`自检电池缺场景：${s}`)
+    }
+    if (!/mkdtempSync\(path\.join\(tmpdir\(\)/.test(b)) miss.push('自检电池必须每场景用 mkdtemp 建独立临时树')
+    // 临时树的 node_modules 必须是真目录：做成整目录软链会让桩写穿到真仓库（事故成因）。
+    if (!/name === 'vue-tsc' \|\| name === '\.bin'\) continue/.test(b)) miss.push('自检电池不许把整个 node_modules 软链过去（会写穿到真仓库）')
+    if (!/path\.delimiter/.test(b) || !/node_modules', '\.bin'/.test(b)) miss.push('自检电池必须把临时树的 .bin 放 PATH 最前（否则 npx 解析到真仓库，场景静默失效）')
+    if (!/process\.exit\(ok \? 0 : 1\)/.test(b)) miss.push('自检电池失败必须 exit 1')
+  }
+  const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
+  if (ci === '') miss.push('缺 .github/workflows/ci.yml')
+  else if (!ciHasStep(ci, 'verify:types-selftest')) miss.push('CI 缺 verify:types-selftest 独立步骤')
+  const pkg = has('package.json') ? read('package.json') : ''
+  if (!/"verify:types-selftest": "node scripts\/typecheck-guard-selftest\.mjs"/.test(pkg)) miss.push('package.json 缺 verify:types-selftest')
+  if (!/verify:types && npm run verify:types-selftest && npm run typecheck/.test(pkg)) miss.push('verify:ci 里 verify:types-selftest 必须紧挨 verify:types（与 CI 同集同序）')
+  if (/verify:all[^"]*verify:types-selftest/.test(pkg)) miss.push('verify:types-selftest 不许塞进 verify:all（本地捷径只跑非 dist 子集）')
+  return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : '真实性前提（静态 shell/JS + --version 行为 + bin 声明解析）+ TCG_ROOT 覆盖 + 电池 5 场景 + 临时树隔离（不软链整个 node_modules / PATH 指向本树）+ npm script + CI 独立步骤 全部在位' }
+} })
+
+add({ id: 'S35', covers: ['scripts/verify-repo.mjs'], name: '迁移语法检查把「node --check 跑不起来」判未判定，不许记成迁移的语法错误（且判据自检里有对应的反向断言）', run() {
+  const miss = []
+  const v = has('scripts/verify-repo.mjs') ? read('scripts/verify-repo.mjs') : null
+  if (v === null) miss.push('缺 scripts/verify-repo.mjs')
+  else {
+    // 前提探针：证明 --check 本身可用（tmpdir 里的已知合法文件）。
+    if (!/facedb-nodecheck-probe-/.test(v)) miss.push('缺前提探针（对已知合法文件跑 node --check）')
+    // 逐文件失败要分类：Invalid package config 是环境/配置问题，不是迁移的语法错误。
+    // 断言锚在**代码行**而不是短语：本文件上方注释里也写着这句话（裸 includes 会被注释满足 ——
+    // 本项目已复现五次的「断言被自己文件里的说明文字满足」，M57 首次跑就是这么漏的）。
+    if (!/if \(\/Invalid package config\/i\.test\(err\)\) \{ envBad\+\+/.test(v)) miss.push('缺 Invalid package config 分类（package.json 非法 JSON 会让每个迁移都被记成语法错误）')
+    if (!/个迁移的 node --check 因环境\/配置失败（不是迁移的语法错误）/.test(v)) miss.push('缺「因环境/配置失败」的未判定文案')
+    if (!/notExecuted\('全部迁移可被 node 解析'/.test(v)) miss.push('跑不起来时必须走 notExecuted（判未判定），不许 check(false)')
+    // 反向断言：自检里必须有 M29 且带 expectAbsent（只查「该红的红了」看不见多出来的假红）。
+    if (!/M29 package\.json 是非法 JSON/.test(v)) miss.push('自检缺 M29 场景（非法 package.json）')
+    if (!/expectAbsent: \['全部迁移可被 node 解析'\]/.test(v)) miss.push('M29 缺 expectAbsent 反向断言（不许把环境问题记成被测缺陷）')
+    if (!/const absentOk = absent\.every/.test(v)) miss.push('自检 harness 缺 expectAbsent 判定')
+  }
+  return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : '前提探针 + Invalid package config 分类 + 未判定文案 + notExecuted 路径 + 自检 M29 与 expectAbsent 反向断言 全部在位' }
 } })
 
 for (const c of CHECKS) {

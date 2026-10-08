@@ -41,18 +41,28 @@
         var TRIES = 40
         var shown = false
 
+        // 【R25 / W25A-05】这是全工程唯一一处 innerHTML。三个入参里 zh/en 是常量，但 detail 是
+        // 「脚本 URL / 错误 message / rejection reason」——message 可能夹带用户输入（编号校验、
+        // 解析失败的原文），未转义时会在标记流里变成真标签（实测 <img src=x onerror=…> 会执行）。
+        // 一律转义后再拼接；zh/en 也走同一条路，避免将来有人把动态文案塞进去。
+        function esc(s) {
+          return String(s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+          })
+        }
+
         function box(zh, en, detail) {
           var html =
             '<div style="max-width:36rem;margin:12vh auto;padding:1.5rem;font:16px/1.6 system-ui,-apple-system,sans-serif;color:#111">' +
             '<h1 style="font-size:1.25rem;font-weight:700;margin:0 0 .5rem">' +
-            zh +
+            esc(zh) +
             '</h1><p style="margin:0;color:#444">' +
-            en +
+            esc(en) +
             '</p>'
           if (detail) {
             html +=
               '<pre style="margin:1rem 0 0;padding:.75rem;background:#f3f4f6;border-radius:.5rem;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:12px">' +
-              detail +
+              esc(detail) +
               '</pre>'
           }
           return html + '</div>'

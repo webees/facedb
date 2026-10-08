@@ -1,3 +1,22 @@
+// 【冻结快照 · 不要修改 · 不要引用它的结论】
+//
+// 本文件是 `scripts/check-repo-config-hygiene.mjs` 在 R25 修复**之前**的版本（提交 `a5514c3`），
+// 只作为「阴性对照」的材料：`scripts/check-repo-config-hygiene-selftest.mjs` 会把它当成被测判据跑一遍，
+// 断言它在空样本上确实给出假通过（空真命题的 ✅ 行 / 整仓 exit 0）—— 这正是 R25 修掉的那个缺陷形态。
+//
+// 为什么不每次用 `git show <ref>:<path>` 现取，而是冻结成文件（R25 收口期实测教训）：
+//   · CI 的 `actions/checkout@v5` 默认是**浅克隆**（fetch-depth 1），历史提交不在本地 ⇒ 现取失败，
+//     阴性对照整条被跳过、自检以 exit 2 收尾（PR #29 首跑实测读数：
+//     `8 个场景 + 阴性对照 —— 通过 9，失败 0（1 个场景被跳过 —— 本次不构成通过）`）；
+//   · 基线钉在历史提交上还会随时间漂移（仓库重写 / fork / 归档都会让它取不到）。
+// 冻结文件对克隆深度、网络、历史改写全部免疫，内容也仍可复核 —— 与下方 provenance 对照即可。
+//
+// 校验：`scripts/check-repo-standards.mjs` 的 S33 断言本文件存在，且**不含**修复后引入的零样本守卫
+// 标记（具体标记名见 S33 那几条断言，此处不重复写出来 —— 免得本文件把自己判成修复版）。
+// 一旦有人把它更新成修复版，阴性对照就失去意义，S33 会报红。
+//
+// provenance: `git show a5514c3:scripts/check-repo-config-hygiene.mjs`（148 行）
+
 // 判据：仓库配置文件（.gitattributes / .editorconfig）的「零命中规则」与「哈希资产保护」。
 //
 // 起因（R14-B 的 3 条 P3）：这两个文件里的规则**没有任何机制检查它们是否还在生效**。
@@ -14,13 +33,7 @@
 //      trim_trailing_whitespace=false 的 editorconfig 段落覆盖
 //   A4 行尾口径一致：.gitattributes 的 `eol=lf` 与 .editorconfig 的 `end_of_line = lf` 同时存在
 //   A5 反向断言：被 editorconfig 覆盖的哈希资产，其当前内容与 public/SHA256SUMS 一致（不能被已发生的格式化改坏）
-//   A6（R25 新增）零样本纪律：A1/A2/A3/A5 的样本量各自为 0 时**不得判通过**，一律判「未判定」并 exit 2。
-//      起因（W25-E 的 W25E-02，P2）：`.gitattributes` 只剩注释、`public/SHA256SUMS` 是 0 字节时，
-//      四条断言全部退化成空真命题（`零命中 0 条均已标注`、`0 项全部一致`），整体 `通过 5，失败 0`、exit 0。
-//      同时补上健壮性：读不到的配置（缺失 / 是目录 / 权限 000 / 超大文件）一律判未判定，不许裸栈崩。
-//   A7（R25 新增）退出码三态：失败 → 1；有未判定 → 2；否则 0。原实现只有 `fail === 0 ? 0 : 1`，
-//      结构上表达不了「这次没构成结论」。
-import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
@@ -30,38 +43,16 @@ import { fileURLToPath } from 'node:url'
 //   HYG_ROOT=… 指向副本（变异自检用）；默认取脚本自身位置的上一级。
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = process.env.HYG_ROOT ? path.resolve(process.env.HYG_ROOT) : path.resolve(HERE, '..')
-let pass = 0, fail = 0, un = 0
+let pass = 0, fail = 0
 const ck = (label, ok, detail = '') => {
   console.log(`  ${ok ? '✅' : '❌'} ${label}${detail ? '  ' + detail : ''}`)
   ok ? pass++ : fail++
-}
-// 未判定：样本为 0、或读不到被测文件（R25 新增，见文件头 A6/A7）。
-const unk = (label, detail = '') => {
-  console.log(`  ⚠️ ${label}${detail ? '  ' + detail : ''}`)
-  un++
-}
-// 读文本：任何读不到的情形都返回 null（调用方判未判定），不抛栈。
-const MAX_READ = 8 * 1024 * 1024
-const readText = (abs) => {
-  try {
-    const st = statSync(abs)
-    if (!st.isFile()) return null
-    if (st.size > MAX_READ) return null
-    return readFileSync(abs, 'utf8')
-  } catch { return null }
 }
 const CK = process.env.CK_LOG
 const lines = []
 const log = (s) => { console.log(s); lines.push(s) }
 
-const gitLs = spawnSync('git', ['-C', ROOT, 'ls-files'], { encoding: 'utf8' })
-const tracked = (gitLs.stdout || '').split('\n').filter(Boolean)
-// 被测面本身取不到（不是 git 仓库 / git 不可执行 / 空仓库）⇒ A1/A2 无样本，判未判定而不是「全部零命中」。
-const trackedOk = !gitLs.error && gitLs.status === 0 && tracked.length > 0
-if (!trackedOk) {
-  unk('被测面前提：能列出已跟踪文件（A1/A2 的样本来源）',
-    gitLs.error ? `git 执行失败：${gitLs.error.message}` : `git ls-files 退出码=${gitLs.status}、文件数=${tracked.length}`)
-}
+const tracked = spawnSync('git', ['-C', ROOT, 'ls-files'], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean)
 
 // glob → 正则（够用即可：*、**、{a,b}、?、[abc]、无斜杠者按 basename 任意深度匹配）
 const globToRe = (glob) => {
@@ -90,8 +81,7 @@ const hits = (glob) => {
 
 log('=== A1 .gitattributes 零命中规则 ===')
 const gaPath = ROOT + '/.gitattributes'
-const gaText = readText(gaPath)
-const ga = (gaText ?? '').split('\n')
+const ga = readFileSync(gaPath, 'utf8').split('\n')
 const gaRules = []
 // .gitattributes 不支持行尾注释（属性之后的任何东西都会被当成属性），所以「预留」只能靠
 // 上方注释块标注；这里按「空行结束一个块、块内出现『预留』则整块视为已标注」来解析。
@@ -104,10 +94,7 @@ for (let i = 0; i < ga.length; i++) {
   gaRules.push({ pattern: parts[0], attr: parts[parts.length - 1], annotated: reserved, n: hits(parts[0]).length, line: i + 1 })
 }
 const gaZero = gaRules.filter((r) => r.n === 0 && !r.annotated)
-if (gaText === null) unk('A1 .gitattributes 零命中规则', `读不到 ${gaPath}（缺失 / 是目录 / 权限不足 / 超过 ${MAX_READ} 字节）`)
-else if (!trackedOk) unk('A1 .gitattributes 零命中规则', '列不出已跟踪文件 —— 命中数无意义，本次不构成结论')
-else if (gaRules.length === 0) unk('A1 .gitattributes 零命中规则', '规则数 0 —— 没有样本，本次不构成结论')
-else ck(
+ck(
   `.gitattributes 每条规则都命中 ≥1 个已跟踪文件或已标注「预留」（共 ${gaRules.length} 条规则）`,
   gaZero.length === 0,
   gaZero.length ? '零命中且未标注：' + gaZero.map((r) => `${r.pattern}(L${r.line})`).join('、') : `零命中 ${gaRules.filter((r) => r.n === 0).length} 条均已标注`,
@@ -116,8 +103,7 @@ for (const r of gaRules.filter((x) => x.n === 0)) log(`      [零命中] ${r.pat
 
 log('=== A2 .editorconfig 零命中段落 ===')
 const ecPath = ROOT + '/.editorconfig'
-const ecText = readText(ecPath)
-const ec = (ecText ?? '').split('\n')
+const ec = readFileSync(ecPath, 'utf8').split('\n')
 const sections = []
 let cur = null
 for (let i = 0; i < ec.length; i++) {
@@ -132,10 +118,7 @@ for (let i = 0; i < ec.length; i++) {
 }
 for (const s of sections) s.n = hits(s.glob).length
 const ecZero = sections.filter((s) => s.n === 0 && !s.annotated)
-if (ecText === null) unk('A2 .editorconfig 零命中段落', `读不到 ${ecPath}`)
-else if (!trackedOk) unk('A2 .editorconfig 零命中段落', '列不出已跟踪文件 —— 命中数无意义，本次不构成结论')
-else if (sections.length === 0) unk('A2 .editorconfig 零命中段落', '段落数 0 —— 没有样本，本次不构成结论')
-else ck(
+ck(
   `.editorconfig 每段落都命中 ≥1 个已跟踪文件或已标注「预留」（共 ${sections.length} 段）`,
   ecZero.length === 0,
   ecZero.length ? '零命中且未标注：' + ecZero.map((s) => `${s.glob}(L${s.line})`).join('、') : `零命中 ${sections.filter((s) => s.n === 0).length} 段均已标注`,
@@ -143,9 +126,8 @@ else ck(
 
 log('=== A3 哈希登记的文本资产必须被 trim=false 覆盖 ===')
 const sumsPath = ROOT + '/public/SHA256SUMS'
-const sumsText = readText(sumsPath)
 const sums = []
-for (const line of (sumsText ?? '').split('\n')) {
+for (const line of readFileSync(sumsPath, 'utf8').split('\n')) {
   const m = line.match(/^([0-9a-f]{64})\s+(\d+)\s+(\S+)\s*$/)
   if (m) sums.push({ sha: m[1], size: Number(m[2]), path: m[3] })
 }
@@ -158,9 +140,7 @@ for (const s of textish) {
   )
   if (!trimmed) unprotected.push(full)
 }
-if (sumsText === null) unk('A3 哈希登记的文本资产受保护', `读不到 ${sumsPath}`)
-else if (textish.length === 0) unk('A3 哈希登记的文本资产受保护', `登记项 ${sums.length} 个、其中文本类 0 个 —— 没有样本，本次不构成结论`)
-else ck(
+ck(
   `哈希登记的文本资产都受 trim_trailing_whitespace=false 保护（${textish.length} 个文本资产 / 登记共 ${sums.length} 项）`,
   unprotected.length === 0,
   unprotected.length ? '未受保护：' + unprotected.join('、') : textish.map((s) => 'public/' + s.path).join('、'),
@@ -169,8 +149,7 @@ else ck(
 log('=== A4 行尾口径一致 ===')
 const gaEol = gaRules.some((r) => r.attr === 'eol=lf')
 const ecEol = ec.some((l) => /^end_of_line\s*=\s*lf/.test(l.trim()))
-if (gaText === null || ecText === null) unk('A4 行尾口径一致', '两个配置文件之一读不到 —— 不许把「读不到」记成「没声明」')
-else ck('.gitattributes 有 eol=lf 且 .editorconfig 有 end_of_line = lf', gaEol && ecEol, `gitattributes=${gaEol} editorconfig=${ecEol}`)
+ck('.gitattributes 有 eol=lf 且 .editorconfig 有 end_of_line = lf', gaEol && ecEol, `gitattributes=${gaEol} editorconfig=${ecEol}`)
 
 log('=== A5 哈希资产当前内容确实与登记值一致（不能被已发生的格式化改坏）===')
 const mismatch = []
@@ -180,18 +159,9 @@ for (const s of sums) {
   const h = createHash('sha256').update(readFileSync(p)).digest('hex')
   if (h !== s.sha) mismatch.push(`${s.path}(${h.slice(0, 12)} != ${s.sha.slice(0, 12)})`)
 }
-// R25REV-N2：这一条原先**无条件** ck（先记一次 ✅ 再记一次 ⚠️）—— 读不到或零样本时同一断言行
-// 同时出现 ✅ 与 ⚠️，把「通过」的计数垫高（退出码仍正确为 2，但读数会骗人）。改成三态互斥。
-if (sumsText === null) {
-  unk('A5 哈希资产内容与登记值一致', `读不到 ${sumsPath}`)
-} else if (sums.length === 0) {
-  unk('A5 哈希资产内容与登记值一致', '登记项 0 个 —— 没有样本，本次不构成结论')
-} else {
-  ck('public/SHA256SUMS 登记的每项都与磁盘一致', mismatch.length === 0, mismatch.length ? mismatch.join('、') : `${sums.length} 项全部一致`)
-}
+ck('public/SHA256SUMS 登记的每项都与磁盘一致', mismatch.length === 0, mismatch.length ? mismatch.join('、') : `${sums.length} 项全部一致`)
 
 log('')
-log(`通过 ${pass}，失败 ${fail}，未判定 ${un}`)
-if (un > 0) log(`⚠️ 有 ${un} 项未判定（样本为 0 或读不到被测文件）—— 覆盖面不完整，本次不构成通过（exit 2）`)
+log(`通过 ${pass}，失败 ${fail}`)
 if (CK) writeFileSync(CK, lines.join('\n') + '\n')
-process.exit(fail > 0 ? 1 : un > 0 ? 2 : 0)
+process.exit(fail === 0 ? 0 : 1)

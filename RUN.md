@@ -1605,6 +1605,31 @@ MediaPipe（TFLite Tasks）会向 `odml.pa.googleapis.com` 上报使用数据。
 判据：`lib/r24-app-concurrency-verify.mjs` 的 7 条断言全部**成对**（修复后成立且 HEAD 版不成立）；
 判据自身的并发安全由 `lib/r24-concurrency-verify.mjs`（C1–C4）与体积判据的采样自洽守卫覆盖。
 
+**R25 的四处应用侧改动（都带判据）**：R25 的主题是输入边界 —— 前三处挡住「外部/异常输入
+变成静默错误」，第四处让同一次提交的文件对应关系可核对。
+
+- **`pickVideoMime()` 的 `isTypeSupported` 守卫**（`src/lib/capture.ts`）：该函数在部分实现里
+  **不存在**（旧 WebView、被裁剪的构建、测试桩），原实现直接调用 ⇒ 异常抛在 `begin()` 的
+  `new MediaRecorder` try/catch **之前**，录到 **0 个录制器**、「录制器启动失败」提示永远走不到，
+  这一步**静默没有视频**。现在有该函数才用它挑编码，没有就退回第一候选，让 `new MediaRecorder`
+  去失败（失败会被捕获并提示）。成对实测：HEAD 抛 `MediaRecorder.isTypeSupported is not a function`，
+  修复后返回 `video/webm;codecs=vp9` 不抛。
+- **实时指标的有限性渲染**（`src/components/CaptureFooter.vue`）：`frame.yaw/pitch/roll/faceWidthPx`、
+  `stats.blur/brightness`、`frame.eyeBlink*` 原先直接 `.toFixed()` / `Math.round()` ⇒ NaN 印成
+  「脸宽 NaNpx」，字符串在渲染期抛 TypeError（50 组输入里 10 组）。现在统一走 `fin()`（非有限数
+  与 `'—'` 占位）/`fx()`/`px()`。
+- **启动兜底框的转义**（`index.html` 的 `box()`）：它是全页**唯一**的 `innerHTML` 写入面，而
+  `detail` 是「脚本 URL / 错误 message / rejection reason」，可能夹带用户输入 ⇒ 实测
+  `<img src=x onerror=…>` 进入标记流并执行。现在三处插值全部过 `esc()`（覆盖 `& < > " '`），
+  并由 `scripts/verify-repo.mjs` 的「启动兜底框的转义」组（3 条）看着。
+- **perFile 的位置对应**（`src/lib/pb.ts:uploadSession()`）：`meta.perFile` 与表单里那份文件
+  只能按**位置**对应 —— PocketBase 会改写文件名（>100 字符截断、含非 ASCII 就整段换成随机 token），
+  落库后的 `file` 不一定等于上传时的 `filename`。现在每条 perFile 带显式 `idx`，且提交前核对
+  「perFile 条数 === 表单文件数」（不符即抛，宁可挡住也不写出一批错位记录）。
+
+判据：`lib/r25-app-boundary-verify.mjs`（8 条，前两条成对：修复后成立且 HEAD 版不成立；
+后两条静态断言各配**自变异对照**），已接进 `lib/audit-regression.mjs` 与签名自检。
+
 ### ⚠️ 为什么 CSP 不可省略
 
 **Worker 有独立的全局作用域，主线程的 patch 覆盖不到它。** 实测（第 47 轮，服务器侧命中计数）：
@@ -2401,7 +2426,9 @@ docker compose build pocketbase && docker compose up -d --force-recreate pocketb
 
 ```bash
 npm run verify            # 仓库自检：资源指纹 / 迁移不变量 / 文案键对称 / 二进制指纹 / 关键常量
-npm run verify:selfcheck  # 变异自检：证明上面每一项断言真的有判别力（1 个阴性对照 + 6 个变异）
+npm run verify:selfcheck  # 变异自检：证明上面每一项断言真的有判别力（1 个阴性对照 + 34 个变异）
+npm run verify:hygiene    # 配置卫生：.gitattributes / .editorconfig 的零命中规则与哈希资产保护
+npm run verify:hygiene-selftest  # 上面这条的零样本与健壮性自检（9 场景 + 2 阴性对照）
 npm run typecheck         # vue-tsc --noEmit
 npm run build             # 生产构建
 ```
@@ -2409,6 +2436,43 @@ npm run build             # 生产构建
 `scripts/verify-repo.mjs` 是**可被 CI 复现的那部分**审计断言：它只依赖 Node 内置模块，
 读取真实来源（清单、迁移文件、源码）而**不在脚本里复刻实现**；样本为零一律不判通过；
 二进制本体不入库时该项明确记为「未执行」而不是静默通过。
+
+**R25 的六处判据改动（都带变异自检）**
+
+| 判据 | 改前 | 改后 |
+|---|---|---|
+| `scripts/publish-leak-scan.mjs` | 前 8 KB 有 NUL 就**整份跳过**：含凭据的文件 `P0 命中 0 处`、exit 0（首字节 NUL 或 UTF-16 保存的 `.env` 都能绕过） | 二进制改用 `latin1` **逐字节扫**，只跑凭据类规则（`SECRET-ASSIGN`/`BEARER`/`PRIVATEKEY`/`SSH-KEY`/`SUPERUSER-PW`）；定位类规则（IP/域名/本机路径/邮箱/私网）对二进制不适用，且**报告行写明这一点**，不许让「干净」被读成「所有规则都扫过」 |
+| `scripts/check-repo-config-hygiene.mjs` | 四条断言在**样本为 0** 时退化成空真命题（`.gitattributes` 只剩注释 ⇒「零命中 0 条均已标注」✅；`public/SHA256SUMS` 0 字节 ⇒「0 项全部一致」✅），退出码只有 `fail === 0 ? 0 : 1` | 每条断言各自有「样本为 0 ⇒ 未判定」分支；读不到的配置（缺失 / 是目录 / 权限 000 / 超过 8 MiB）判未判定且**不裸栈**；退出码三态：失败 1 / 有未判定 2 / 通过 0 |
+| `scripts/typecheck-guard.mjs` | 只证明「有样本 + 真跑 + 有判别力」。`node_modules` 里的 `vue-tsc` 入口被换成桩时（17 字节 `#!/bin/sh` + `exit 0`），`npx vue-tsc --noEmit` 恒 exit 0 且零输出 ⇒ 只能给出「无判别力」这条含糊结论，与「仓库本体有类型错误」难以区分 | 新增**可执行文件真实性前提**：按 vue-tsc 自己的 `package.json` bin 声明解析入口，要求是 JS（不是 shell 桩）且 `vue-tsc --version` 真的报出 `Version x.y.z`；命中判**未判定 exit 2**，写明「可执行文件被桩替换」，与「检查器逻辑不判别」分开。自检电池 `scripts/typecheck-guard-selftest.mjs`（5 场景：真件 / shell 桩 / 空转桩 / 像真件但不判别 / 真仓库未被改动）接进 CI |
+| `scripts/verify-repo.mjs` 的迁移语法检查 | 仓库根的 `package.json` 是非法 JSON 时，`node --check` 连模块类型都定不下来（`Error: Invalid package config`），**每一个**迁移都被记成「语法错误」并 exit 1 —— 一次坏配置伪装成一个要改源码的缺陷 | 加**前提探针**（对已知合法文件跑 `node --check`，失败即判未判定）＋逐文件把 `Invalid package config` 归为标准外的环境失败；真正的语法错误照旧报错。自检 harness 新增 `expectAbsent` **反向断言**与 M29（fixture 放非法 `package.json`，期望 exit 2 且该断言**不许**出现在失败项里） |
+
+**:warning: 不许往共享 `node_modules` 里放桩**：第三行来自本轮实测事故 —— `node_modules/vue-tsc/bin/vue-tsc.js`
+被写成 17 字节的 shell 桩，而本项目的工作树用 `cp -al node_modules`（硬链接）建，一份被写穿就污染
+全部工作树，`npm run typecheck` 与 CI 的类型检查步骤**整段空转**且看起来是绿的。要造「命令不可用」
+的现场，请用**假 PATH**（`PATH=/nonexistent …`）或临时树，不要改共享依赖树里的文件。
+
+两处由 R25 复核席在收口期指出、同轮补上的缺口（`scripts/publish-leak-scan.mjs` 与
+`scripts/check-repo-config-hygiene.mjs`）：
+
+| 缺口 | 现象 | 补法 |
+|---|---|---|
+| 闸门只扫**一种文本解读** | UTF-16LE 保存的 `.env` 里每个字符后面跟着 NUL（`g\0h\0p\0_\0…`），`latin1` 视图下凭据正则整类匹配不到 ⇒ 新旧两侧都 `exit 0` 放行。**「判成二进制」只解决「要不要扫」，不解决「按哪种解读扫」** | 对 NUL 占比高的文件**再加一个 UTF-16LE 视图**（`nulCount * 4 >= head.length`），两个视图都跑规则、命中按 `(规则, 文件, 文本)` 去重，报告行写明「其中 N 个额外按 UTF-16LE 解码后复扫」；电池加 `m18`（UTF-16LE 的 `.env` 必须被抓），S27 断言视图存在，M61 守住 |
+| 零样本时同一断言行 ✅ 与 ⚠️ 并存 | `check-repo-config-hygiene.mjs` 的 A5 原先**无条件** `ck()`（先记一次 ✅ 再记一次 ⚠️）⇒ 读不到 / 登记项 0 个时通过计数被垫高（退出码仍正确为 2，但读数骗人） | A5 改三态**互斥**（读不到 ⇒ 未判定 / 登记项 0 ⇒ 未判定 / 否则才 `ck`）；电池 `h3` 加 `notHas: ['✅ public/SHA256SUMS 登记的每项都与磁盘一致']`；S33 断言 ck 落在 `else` 分支里，M62 守住 |
+
+**:warning: 阴性对照的基线：冻结快照，不许现取 `git` 历史**（R25 收口期 PR #29 首跑实测）
+`scripts/check-repo-config-hygiene-selftest.mjs` 的阴性对照需要「修复前那版判据」。它先后试过两种取法，
+两种都出过事：
+
+| 取法 | 出的事 |
+|---|---|
+| `git show HEAD:scripts/check-repo-config-hygiene.mjs` | 修复提交一落地，`HEAD` 就是**已经修好的树** ⇒ 对照整体塌成「两侧都成立」（R14 时还导致修复器把刚提交的修复自动 revert 一次） |
+| `git show a5514c3:…`（钉固定提交） | CI 的 `actions/checkout@v5` 默认是**浅克隆**（`fetch-depth 1`），`a5514c3` 不在本地 ⇒ 取不到、阴性对照被跳过、自检以 `exit 2` 收尾（读数：`8 个场景 + 阴性对照 —— 通过 9，失败 0（1 个场景被跳过 —— 本次不构成通过）`） |
+
+现在修复前版本**冻结**在 `scripts/fixtures/check-repo-config-hygiene.prefix-v1.mjs`（带 `provenance` 头，
+写明取自哪个提交），对克隆深度 / 网络 / 历史改写全部免疫。守则：
+`S33` 断言该快照存在、**不含**修复版标记、带 `provenance`，并断言电池**不再**依赖 `git` 历史；
+`M59`/`M63`/`M64` 三条变异体分别守住「基线退回修复后的判据自己」「退回现取历史」「快照被更新成修复版」。
+判据在浅克隆里跑得起来是硬要求 —— 贡献者的默认克隆就是浅克隆。
 
 **:warning: 与工作房运行根的关系**：更强的审计判据（文档契约、判定器四关、边界电池等）
 依赖工作房运行根下的脚本与一次性 PocketBase 实例，不在本仓库内；每次修复的完整证据索引

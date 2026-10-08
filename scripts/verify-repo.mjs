@@ -168,13 +168,43 @@ function checkMigrations() {
   const files = readdirSync(dir).filter((f) => f.endsWith('.js')).sort()
   if (files.length === 0) { notExecuted('迁移不变量', 'pb_migrations/ 下没有迁移文件'); return }
 
-  // 2.1 每个文件都能被 node 解析（语法错误在离线文本检查里看不见）
-  let syntaxBad = 0
-  for (const f of files) {
-    const r = spawnSync(process.execPath, ['--check', join(dir, f)], { encoding: 'utf8' })
-    if (r.status !== 0) { syntaxBad++; console.log(`   ❌ 语法错误：${f}\n${(r.stderr || '').trim().split('\n').slice(0, 3).join('\n')}`) }
+  // 2.0 前提：node --check 在本环境确实能判定语法（R25 / W25E-05）。
+  // 实测踩过的形态：仓库根的 package.json 是非法 JSON 时，node 连模块类型都定不下来
+  // （stderr: Error: Invalid package config），于是**每一个**迁移都被记成「语法错误」——
+  // 错的是环境/配置，不是迁移。这一层先证明 --check 本身可用；逐文件的同类错误在下面
+  // 按环境问题归类（两者都要有：前提探针在 tmpdir，够不到仓库根的 package.json）。
+  const probe = join(tmpdir(), `facedb-nodecheck-probe-${process.pid}.js`)
+  let probeErr = ''
+  try {
+    writeFileSync(probe, 'const ok = 1\n')
+    const r = spawnSync(process.execPath, ['--check', probe], { encoding: 'utf8' })
+    if (r.status !== 0) probeErr = (r.stderr || r.error?.message || '').trim().split('\n').slice(0, 2).join(' ')
+  } catch (e) {
+    probeErr = String((e && e.message) || e)
+  } finally {
+    rmSync(probe, { force: true })
   }
-  check('全部迁移可被 node 解析', syntaxBad === 0, `检查 ${files.length} 个，失败 ${syntaxBad}`)
+  if (probeErr) {
+    notExecuted('全部迁移可被 node 解析', `node --check 对已知合法文件也失败（环境/配置问题，不是迁移的语法错误）：${probeErr}`)
+  } else {
+    // 2.1 每个文件都能被 node 解析（语法错误在离线文本检查里看不见）
+    let syntaxBad = 0
+    let envBad = 0
+    let envMsg = ''
+    for (const f of files) {
+      const r = spawnSync(process.execPath, ['--check', join(dir, f)], { encoding: 'utf8' })
+      if (r.status === 0) continue
+      const err = (r.stderr || r.error?.message || '').trim()
+      if (/Invalid package config/i.test(err)) { envBad++; envMsg = err.split('\n')[0]; continue }
+      syntaxBad++
+      console.log(`   ❌ 语法错误：${f}\n${err.split('\n').slice(0, 3).join('\n')}`)
+    }
+    if (envBad > 0) {
+      notExecuted('全部迁移可被 node 解析', `${envBad}/${files.length} 个迁移的 node --check 因环境/配置失败（不是迁移的语法错误）：${envMsg}`)
+    } else {
+      check('全部迁移可被 node 解析', syntaxBad === 0, `检查 ${files.length} 个，失败 ${syntaxBad}`)
+    }
+  }
 
   // 2.2 文件名唯一且以时间戳开头
   const nameOk = files.every((f) => /^\d+_[\w.-]+\.js$/.test(f))
@@ -467,6 +497,66 @@ function checkCsp() {
     missing.length ? `RUN.md 未提及：${missing.join(', ')}` : '8 处口径齐备')
 }
 
+// ── 启动兜底框的转义（R25 / W25A-05） ────────────────────────────────────────
+// `index.html` 的内联兜底脚本是全工程**唯一**一处 innerHTML。它的 detail 入参是
+// 「脚本 URL / 错误 message / rejection reason」——message 可能夹带用户输入（编号校验、
+// 解析失败原文）。W25-A 端到端实测：未转义时 `<img src=x onerror=…>` 会真的进入标记流并执行。
+// 这条判据守两件事：三处插值都必须走 esc()；esc() 必须覆盖五个字符（少一个就是一条注入路径）。
+function checkBootBox() {
+  console.log('\n=== 启动兜底框的转义 ===')
+  if (!existsSync(join(ROOT, 'index.html'))) {
+    check('index.html 存在（兜底框转义无从检查）', false, '文档缺失')
+    return
+  }
+  const html = read('index.html')
+  // 函数体用**花括号配对**取（不锚缩进）：真实文件是 8 空格缩进，但夹具/压缩产物可能是单行，
+  // 锚缩进会让判据在单行形态下静默找不到函数（判据自己报「口径需重新核对」= 未判定）。
+  const fnBody = (name) => {
+    const i = html.indexOf(`function ${name}(`)
+    if (i < 0) return ''
+    const s = html.indexOf('{', i)
+    if (s < 0) return ''
+    let d = 0
+    for (let j = s; j < html.length; j++) {
+      if (html[j] === '{') d++
+      else if (html[j] === '}') { d--; if (d === 0) return html.slice(i, j + 1) }
+    }
+    return ''
+  }
+  const boxFn = fnBody('box')
+  if (boxFn === '') {
+    check('index.html 里有兜底框构造函数 box()', false, '找不到 function box(...) —— 判据口径需重新核对')
+    return
+  }
+  const escFn = fnBody('esc')
+  const raw = ['zh', 'en', 'detail'].filter((v) => new RegExp(`\\+\\s*${v}\\s*\\+`).test(boxFn))
+  const escaped = ['zh', 'en', 'detail'].filter((v) => new RegExp(`esc\\(\\s*${v}\\s*\\)`).test(boxFn))
+  check('兜底框的三个插值都经过 esc()（detail 会夹带用户输入）',
+    raw.length === 0 && escaped.length === 3,
+    raw.length ? `仍有裸插值：${raw.join(', ')} —— 错误 message 里的标签会变成真标签`
+      : escaped.length === 3 ? 'zh/en/detail 三处全部转义' : `未转义的入参：${['zh', 'en', 'detail'].filter((v) => !escaped.includes(v)).join(', ')}`)
+  const five = ['&', '<', '>', '"', "'"]
+  // 覆盖口径看**字符类**（`/[&<>"']/`）而不是逐个找 `'&'` 这种字面量：实体表里键的引号风格
+  // 两种写法都合法（`"'": '&#39;'` 与 `"'": "&#39;"`），锚引号会让判据在合法实现上假红。
+  const cls = (escFn.match(/\/\[([^\]]+)\]\//) || [])[1] || ''
+  const missingCh = escFn === '' ? five : five.filter((c) => !cls.includes(c))
+  check('esc() 覆盖 & < > " \' 五个字符（少一个就是一条注入路径）',
+    escFn !== '' && missingCh.length === 0,
+    escFn === '' ? '找不到 function esc(...)' : missingCh.length ? `esc() 的字符类未覆盖：${missingCh.join(' ')}（字符类=${cls || '无'}）` : `字符类 [${cls}] 五个字符齐备`)
+  // 写入面口径：**所有** innerHTML / insertAdjacentHTML 都必须落在 render() 内部，且 render 只被
+  // `render(box(…))` 调用。原先写成「总数 ≤ 2」是错的：新增一处写入恰好把 1 补成 2，判据照样绿
+  //（M28 实测漏检）—— 数量阈值挡不住「在别处再加一处」。
+  const writeRe = /\.innerHTML\s*=|insertAdjacentHTML\(/g
+  const allWrites = (html.match(writeRe) || []).length
+  const renderFn = fnBody('render')
+  const inRender = (renderFn.match(writeRe) || []).length
+  check('兜底框的写入面只有 render() 的 innerHTML / insertAdjacentHTML，且值来自 box()',
+    renderFn !== '' && allWrites === inRender && allWrites > 0 && /render\(box\(/.test(html),
+    renderFn === '' ? '找不到 function render(...)'
+      : allWrites !== inRender ? `render() 之外还有 ${allWrites - inRender} 处写入面 —— 每一处都要单独证明已转义`
+        : !/render\(box\(/.test(html) ? 'render 的实参不来自 box()' : `写入面 ${allWrites} 处，全在 render() 内且值来自 box()`)
+}
+
 // ── 变异自检：证明上面每一项断言真的有判别力 ─────────────────────────────────
 // 造一个最小可过的仓库副本，再逐个注入缺陷，确认「该红的红、干净的绿」。
 // 变异体自身若没生效（文本未变化），会明确报「本次不构成结论」而不是记成漏检。
@@ -483,6 +573,14 @@ function runSelfCheck() {
   }
   const asset = Buffer.from('fixture-asset-bytes\n')
   const assetSha = sha256(asset)
+  // R25：兜底框 fixture —— 六条 CSP 指令 + 转义齐备的 box/esc/render。变异体直接在这份字符串上
+  // 做定点替换（`esc(detail)` → `detail` 等），保证「只改了要改的那一处」。
+  const HTML_FIXTURE = '<!doctype html>\n'
+    + '<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090 ws://*:8090 wss://*:8090; img-src \'self\' data: blob: *:8090; script-src \'self\' \'unsafe-inline\' \'wasm-unsafe-eval\'; style-src \'self\'; frame-src \'none\'; worker-src blob: data:" />\n'
+    + '<script>function esc(s){return String(s).replace(/[&<>"\']/g,function(c){return {\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',\'"\':\'&quot;\',"\'":\'&#39;\'}[c]})}\n'
+    + 'function box(zh,en,detail){return \'<h1>\'+esc(zh)+\'</h1><p>\'+esc(en)+\'</p><pre>\'+esc(detail)+\'</pre>\'}\n'
+    + 'function render(h){document.getElementById(\'root\').innerHTML=h}\n'
+    + 'render(box(\'甲\',\'A\',\'d\'))</script>\n'
   const pristine = () => {
     rmSync(tmp, { recursive: true, force: true })
     put('public/asset.bin', asset)
@@ -510,7 +608,9 @@ function runSelfCheck() {
     // R23：CSP 检查组要求六条指令齐备（connect-src / img-src / script-src / style-src /
     // frame-src / worker-src）且不含 default-src。阴性对照里这几条必须成立，否则
     // 「该红的红」与「副本本来就不行」分不清。
-    put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090 ws://*:8090 wss://*:8090; img-src \'self\' data: blob: *:8090; script-src \'self\' \'unsafe-inline\' \'wasm-unsafe-eval\'; style-src \'self\'; frame-src \'none\'; worker-src blob: data:" />\n')
+    // R25：同一份 fixture 还要满足「启动兜底框的转义」组（box/esc/render 三件齐备），
+    // 故把兜底脚本并入同一行 —— 单行形态同时验证判据不锚缩进。
+    put('index.html', HTML_FIXTURE)
     const bsha = 'b'.repeat(64)
     put('pb-bin/SHA256SUMS', `${bsha}  pocketbase-zh-linux-arm64\n`)
     put('pb-bin/Dockerfile', `case "\${TARGETARCH}" in\n  arm64) want_sha256=${bsha} ;;\nesac\n`)
@@ -607,6 +707,22 @@ function runSelfCheck() {
     { name: 'M25 CSP 摘掉 frame-src（<iframe src> 通道敞开）',
       expectFail: ["CSP 声明了 frame-src 'none'（<iframe src> 通道）"],
       mutate: () => put('index.html', '<!doctype html>\n<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' *:8090; img-src \'self\' data: blob: *:8090; script-src \'self\' \'unsafe-inline\' \'wasm-unsafe-eval\'; style-src \'self\'; worker-src blob: data:" />\n') },
+    // R25：启动兜底框转义的判别力（W25A-05）。三条都锚在 fixture 的定点替换上。
+    { name: 'M26 兜底框 detail 退回裸插值（错误 message 里的标签会变成真标签）',
+      expectFail: ['兜底框的三个插值都经过 esc()（detail 会夹带用户输入）'],
+      mutate: () => put('index.html', HTML_FIXTURE.replace('esc(detail)', 'detail')) },
+    { name: 'M27 esc() 不再处理 < 与 >（只转义引号与 &）',
+      expectFail: ['esc() 覆盖 & < > " \' 五个字符（少一个就是一条注入路径）'],
+      mutate: () => put('index.html', HTML_FIXTURE.replace(/\[&<>"'\]/g, '[&"\']').replace("'<':'&lt;',", '').replace("'>':'&gt;',", '')) },
+    { name: 'M28 新增第三处 innerHTML 写入面（值不来自 box()）',
+      expectFail: ['兜底框的写入面只有 render() 的 innerHTML / insertAdjacentHTML，且值来自 box()'],
+      mutate: () => put('index.html', HTML_FIXTURE.replace('render(box(', 'document.body.insertAdjacentHTML("afterbegin", String(location.hash)); render(box(')) },
+    // R25 / W25E-05：仓库根 package.json 是非法 JSON 时，node --check 连模块类型都定不下来
+    // （Invalid package config），旧版把**每个**迁移都记成「语法错误」。期望：整体判未判定
+    // （exit 2），并且「全部迁移可被 node 解析」**不许**出现在失败项里。
+    { name: 'M29 package.json 是非法 JSON（node --check 无法运行 ⇒ 判未判定，不许记成迁移语法错误）',
+      expectCode: 2, expectFail: [], expectAbsent: ['全部迁移可被 node 解析'],
+      mutate: () => put('package.json', '{ "name": "facedb", ') },
   ]
 
   console.log('=== 变异自检（验证每一项断言有判别力）===')
@@ -617,7 +733,12 @@ function runSelfCheck() {
     const { code, failed, out } = c.scriptMutate ? runMutantScript(c.scriptMutate) : run()
     // 三态：expectCode 缺省时按「无 expectFail 即 exit 0、有 expectFail 即 exit 1」推断
     const wantCode = c.expectCode ?? (c.expectFail.length === 0 ? 0 : 1)
-    const asExpected = code === wantCode && c.expectFail.every((f) => failed.includes(f))
+    // expectAbsent：反向断言 —— 这些项**不许**出现在失败项里。用来钉住「误把环境问题
+    // 记成被测对象缺陷」这类错法（只查「该红的红了」看不见多出来的假红）。
+    const absent = c.expectAbsent ?? []
+    const absentOk = absent.every((f) => !failed.includes(f))
+    const asExpected = code === wantCode && c.expectFail.every((f) => failed.includes(f)) && absentOk
+    if (!absentOk) console.log(`   ⚠️ 不该出现的失败项出现了：${absent.filter((f) => failed.includes(f)).join(' | ')}`)
     console.log(`${asExpected ? '✅' : '❌'} ${c.name}  —— exit=${code}（期望 ${wantCode}）失败项=${failed.length}${failed.length ? '：' + failed.join(' | ') : ''}`)
     if (!asExpected) {
       bad++
@@ -633,7 +754,7 @@ function runSelfCheck() {
 // 前向防线：每个检查组都必须在下面被真的调用一次。
 // 漏调一个 section 时 `executed` 只会变小、不会变成 0，所以单看 `executed === 0`
 // 发现不了「整段检查消失」（复核席 P3 实测：空 ROOT 仍执行 1 项）。
-const EXPECTED_SECTIONS = ['public/ 资源指纹', 'pb_migrations', 'i18n', 'pb-bin 指纹', 'RUN.md 常量', 'CSP 覆盖范围']
+const EXPECTED_SECTIONS = ['public/ 资源指纹', 'pb_migrations', 'i18n', 'pb-bin 指纹', 'RUN.md 常量', 'CSP 覆盖范围', '启动兜底框的转义']
 // 每个检查组至少要**尝试**这么多条断言（硬编码字面量：故意不写成「取当前值」或从数组推导）。
 // 掏空某个组的函数体 → 该组尝试条数掉到 0 → 下面立刻报红。
 const SECTION_MIN_CHECKS = {
@@ -649,10 +770,13 @@ const SECTION_MIN_CHECKS = {
   // worker-src 取值 各 1 条）。这五条必须计入下限，否则「摘掉某条指令的取值护栏」不会被
   // 任何计数类断言发现。
   'CSP 覆盖范围': 12,
+  // R25 新增的「启动兜底框的转义」组 3 条（三处插值 / 五个字符 / 写入面口径；box() 缺失时
+  // 会早退成 1 条，那种情况下另有别的断言变红，故下限取 3）。
+  '启动兜底框的转义': 3,
 }
 // 全局下限：新增/删除检查必须显式改这个字面量（改它是一次可被 review 的改动）。
-// R23：25 → 30（CSP 组新增 5 条取值类断言）。
-const MIN_TOTAL_CHECKS = 30
+// R23：25 → 30（CSP 组新增 5 条取值类断言）。R25：30 → 33（新增「启动兜底框的转义」组 3 条）。
+const MIN_TOTAL_CHECKS = 33
 
 if (process.argv.includes('--self-check')) {
   runSelfCheck()
@@ -663,6 +787,7 @@ if (process.argv.includes('--self-check')) {
   section('pb-bin 指纹', checkPbbin)
   section('RUN.md 常量', checkRunmdConstants)
   section('CSP 覆盖范围', checkCsp)
+  section('启动兜底框的转义', checkBootBox)
 
   // 条数类断言：不依赖 ranSections / EXPECTED_SECTIONS 的一致性，
   // 所以「把调用和清单一起删」也躲不过它。

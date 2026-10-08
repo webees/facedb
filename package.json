@@ -25,17 +25,19 @@
     "verify": "node scripts/verify-repo.mjs",
     "verify:selfcheck": "node scripts/verify-repo.mjs --self-check",
     "verify:types": "node scripts/typecheck-guard.mjs",
+    "verify:types-selftest": "node scripts/typecheck-guard-selftest.mjs",
     "verify:publish": "node scripts/publish-leak-scan.mjs",
     "verify:publish-selftest": "node scripts/publish-leak-scan-selftest.mjs",
     "verify:standards": "node scripts/check-repo-standards.mjs",
     "verify:hygiene": "node scripts/check-repo-config-hygiene.mjs",
+    "verify:hygiene-selftest": "node scripts/check-repo-config-hygiene-selftest.mjs",
     "verify:notices": "node scripts/check-third-party-notices.mjs",
     "verify:notices-selftest": "node scripts/check-third-party-notices-mutants.mjs",
     "verify:size": "node scripts/check-dist-size-budget.mjs",
     "verify:size-selftest": "node scripts/check-dist-size-budget-mutants.mjs",
     "verify:standards-selftest": "node scripts/verify-standards-selftest.mjs",
     "verify:all": "npm run verify && npm run verify:publish && npm run verify:standards && npm run verify:hygiene && npm run verify:types && npm run typecheck",
-    "verify:ci": "npm run verify && npm run verify:publish && npm run verify:standards && npm run verify:hygiene && npm run verify:types && npm run typecheck && npm run build && npm run verify:size && npm run verify:notices && npm run verify:standards-selftest && npm run verify:selfcheck && npm run verify:notices-selftest && npm run verify:size-selftest && npm run verify:publish-selftest"
+    "verify:ci": "npm run verify && npm run verify:publish && npm run verify:standards && npm run verify:hygiene && npm run verify:types && npm run verify:types-selftest && npm run typecheck && npm run build && npm run verify:size && npm run verify:notices && npm run verify:standards-selftest && npm run verify:selfcheck && npm run verify:notices-selftest && npm run verify:size-selftest && npm run verify:publish-selftest && npm run verify:hygiene-selftest"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",

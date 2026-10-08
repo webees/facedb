@@ -30,9 +30,17 @@ const emit = defineEmits<{
 
 // 与 CaptureView 同一口径：只在 ?debug=1 时显示逐帧变化的数字
 const DEBUG = new URLSearchParams(location.search).has('debug')
-const pitchHint = computed(() =>
-  props.frame.pitch < -3 ? t('debugUp') : props.frame.pitch > 3 ? t('debugDown') : t('debugLevel'),
-)
+// 【R25 / W25A-02（P3）】这些指标来自 MediaPipe 的关键点计算，边界情况下可能不是有限数
+// （NaN/Infinity），下游解析失败时甚至可能是字符串。直接 `.toFixed()` 会印出「脸宽 NaNpx」，
+// 字符串则**在渲染期抛 TypeError**（实测 50 组组合里 10 组抛错，整行指标消失）。
+// 统一口径：非有限数一律印「—」（`?debug=1` 是排查通道，宁可显式留白也不要假读数）。
+const fin = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+const fx = (v: unknown, d = 0): string => { const n = fin(v); return n === null ? '—' : n.toFixed(d) }
+const px = (v: unknown): string => { const n = fin(v); return n === null ? '—' : String(Math.round(n)) }
+const pitchHint = computed(() => {
+  const p = fin(props.frame.pitch)
+  return p === null ? t('debugLevel') : p < -3 ? t('debugUp') : p > 3 ? t('debugDown') : t('debugLevel')
+})
 </script>
 
 <template>
@@ -70,11 +78,11 @@ const pitchHint = computed(() =>
 
   <!-- 实时指标：逐帧变化的数字会让界面看起来在「跳」，因此只在 ?debug=1 时显示，便于排查 -->
   <p v-if="DEBUG" class="text-center text-xs leading-relaxed text-gray-400">
-    {{ t('metricCamera') }} {{ camRes }} · {{ t('metricYaw') }} {{ frame.yaw.toFixed(0) }}° ·
-    {{ t('metricPitch') }} {{ frame.pitch.toFixed(0) }}° ({{ pitchHint }}) · {{ t('metricRoll') }} {{ frame.roll.toFixed(0) }}° ·
-    {{ t('metricFaceWidth') }} {{ Math.round(frame.faceWidthPx) }}px · {{ t('metricSharpness') }}
-    {{ Math.round(stats.blur) }} ({{ stats.roi }}) · {{ t('metricLight') }} {{ Math.round(stats.brightness) }}
-    · {{ t('metricBlink') }} {{ frame.eyeBlinkLeft.toFixed(2) }}/{{ frame.eyeBlinkRight.toFixed(2) }}
+    {{ t('metricCamera') }} {{ camRes }} · {{ t('metricYaw') }} {{ fx(frame.yaw) }}° ·
+    {{ t('metricPitch') }} {{ fx(frame.pitch) }}° ({{ pitchHint }}) · {{ t('metricRoll') }} {{ fx(frame.roll) }}° ·
+    {{ t('metricFaceWidth') }} {{ px(frame.faceWidthPx) }}px · {{ t('metricSharpness') }}
+    {{ px(stats.blur) }} ({{ stats.roi }}) · {{ t('metricLight') }} {{ px(stats.brightness) }}
+    · {{ t('metricBlink') }} {{ fx(frame.eyeBlinkLeft, 2) }}/{{ fx(frame.eyeBlinkRight, 2) }}
     · {{ uploading ? t('debugUploading') : uploadError ? t('debugUploadFailed') + uploadError.slice(0, 40) : t('debugPending') + ' ' + pendingCount + ' ' + t('debugFilesUnit') }}
   </p>
 </template>
