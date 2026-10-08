@@ -8,15 +8,19 @@
 // 施加一处改动后用 STD_ROOT 指向它跑判据，比对 exit code 与翻转的断言名。
 //
 // 用法：node lib/r20-f7-notices-mutants.mjs
-import { mkdirSync, rmSync, copyFileSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, copyFileSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const P = process.env.FACEDB_ROOT || path.resolve(HERE, '..')
 const JUDGE = process.env.JUDGE || path.join(P, 'scripts/check-third-party-notices.mjs')
-const TMP = '/tmp/r20-f7-notices-mutants'
+// 【R24 / W24-E-03】落点必须每次运行唯一：原先硬编码 `/tmp/r20-f7-notices-mutants`，两个实例并发跑时
+// 互相删目录（实测并发 6 次里 5 次直接崩：ENOTEMPTY rmdir …/baseline、ENOENT open/copyfile 同目录），
+// 还会打印误导性结论「判据的判别力不足或期望值写错」。
+const TMP = mkdtempSync(path.join(tmpdir(), 'facedb-notices-mutants-'))
 
 const FILES = [
   'THIRD-PARTY-NOTICES.md',
