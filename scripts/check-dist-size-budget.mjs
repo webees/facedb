@@ -40,6 +40,21 @@
 //     并要求后续每次重锚同样逐条列出增量来源。
 //     W21-A 原始基线（历史，勿删：仓库标准 S26 要求判据自带注释写明阈值来源）：
 //     web gzip 95700 B → 上限 96178 B；原始总字节 27429645 B → 上限 27978238 B。
+//     【R23 第三次重锚（收口期，复核席发现驱动）】入口 chunk 改为 index.b0621d6a09.js，
+//     基线随实测抬高（web gzip 96311 → 96573、原始总字节 27430594 → 27431217）。增量逐条：
+//       · R23REV-N3 修「等收尾超时后仍按队列为空下结论」→ CaptureView.vue 增 3 行守卫
+//         + i18n 2 键（hintStillFinalizing / stillFinalizing）；
+//       · R23REV-N4 修 isNetworkError 漏 Node/undici 形态（connect ECONNREFUSED 在 cause 里）
+//         → pb.ts 正则扩 12 个形态 + 拼接 cause 文本。
+//     上限仍由同一推导式派生（floor ×1.005 / ceil ×1.02），不是放宽容差；余量 482 B。
+//     重锚工具已固化：`$RUN/lib/size-reanchor.mjs --root <工程根> [--write]`（口径与判据同源），
+//     不再为一次性重锚现写临时脚本。
+//     关于「基线与实测精确相等」（R23REV-N11，已登记为已知取舍）：本判据是**棘轮**而不是
+//     「与历史版本比较」—— 基线就是上一次通过时的实测快照，两者相等是设计使然，不是读数错。
+//     代价是：任何改动源码的轮次都必须重锚（R23 一轮里重锚 3 次），否则 N3/N4 会先报红。
+//     之所以仍这样定：把基线钉在「上一个已知良好的快照」上，任何净增长都必须有人显式过一遍
+//     并逐条归因（重锚要求把增量来源写进本注释），比给一个无人认领的固定余量更能拦住悄悄变胖。
+//     反面代价也已实测：0.5% 的余量只有 482 B，一次「顺手加的代码」就会顶破 —— 这正是设计意图。
 //
 // gzip 口径说明（为什么调系统 gzip 而不是 node 的 zlib）：基线 95700 B 是用系统 `gzip -9 -c`
 // 量的；本机实测 node 自带 zlib（1.3.1-e00f703）对同一批文件给出 96168 B（+468 B），
@@ -78,10 +93,10 @@ const DIST = distFlag >= 0 ? path.resolve(argv[distFlag + 1]) : path.join(ROOT, 
 // —— 5 个阈值常量（来源见文件头；改这里必须同步改文件头的推导式）——
 // 【R23 第二次重锚】基线由实测值抬到 96311 / 27430594（增量逐条列在文件头），
 // 上限仍按同一推导式派生（web gzip +0.5%、原始总字节 +2%），不是把容差放宽。
-const WEB_GZIP_BASELINE_BYTES = 96311
-const WEB_GZIP_CAP_BYTES = 96792
-const RAW_TOTAL_BASELINE_BYTES = 27430594
-const RAW_TOTAL_CAP_BYTES = 27979206
+const WEB_GZIP_BASELINE_BYTES = 96573
+const WEB_GZIP_CAP_BYTES = 97055
+const RAW_TOTAL_BASELINE_BYTES = 27431217
+const RAW_TOTAL_CAP_BYTES = 27979842
 const EXPECTED_FILE_COUNT = 13
 
 // 阈值自洽（防手抄错，尤其是 27978237.9 这类取整）：常量必须等于由基线派生的取整结果。
@@ -108,7 +123,7 @@ const LOCKED_SHA256 = {
 }
 // —— 4 个内容哈希 chunk：文件名里的 hash 由内容算出，故「同名不同内容」= 陈旧/投毒产物 ——
 const HASHED_CHUNKS = {
-  'static/js/index.3034178f9f.js': '05c0f1a1ff3ceb1305319c78283a67d780c5a094fadf6c699409bf76fd918bb8',
+  'static/js/index.b0621d6a09.js': '3e54531c24765376e3d151c06b767b57e50202a2ceb4ee8fc7c896efee5f9fdf',
   'static/js/lib-vue.8351304052.js': '9185e33ee21bdde949c18f7771c0b9fa0acf413712d83f1412cb4dd9a012ca0f',
   'static/js/m.79c0ab86b6.js': '2956850bd7ffc083eb290d72745395e20dfa588d75d8d9271368e5ed590346b5',
   'static/css/index.d05fa997d9.css': '45171915300c369b502f0658ef5ef5bdf36f6c6ae667cf94343cb4a28dd034a8',

@@ -40,6 +40,8 @@ function listFiles(dir) {
   walk(dir, '')
   return out.sort()
 }
+// 与判据同源的「原始总字节」量法：目录下所有文件的字节和（目录项开销不计）
+const rawTotal = (dir) => listFiles(dir).reduce((n, f) => n + statSync(path.join(dir, f)).size, 0)
 // 与判据同源的量法：系统 `gzip -9 -c <文件>`，逐字节数长度
 function gzipTotal(dir) {
   const files = ['index.html']
@@ -154,6 +156,30 @@ const variants = [
       // 悬空软链即可：判据只 lstat 它是不是链接，不解析内容
       symlinkSync(path.join(os.tmpdir(), 'facedb-deps-not-real'), nm)
       return [`node_modules 是符号链接 = ${lstatSync(nm).isSymbolicLink()}（指向不存在的目标也算）`]
+    },
+  },
+  {
+    id: 'm7-raw-inflate',
+    // R23REV-N10：本轮之前**没有任何变异体打过「原始总字节 +2%」这条上限档** ——
+    // 复核席自己的草案算式算出负值（RangeError）后放弃了，于是这道「防 wasm/模型整体变胖」的闸
+    // 整轮没被真变异验证过。这里补上：往非 web-gzip 面的 wasm 追加 600KB 不可压缩内容 ⇒
+    // 原始总字节顶穿上限（2% = 548612 B），而 web gzip 面（只看 6 个 web 文件）不动。
+    desc: '往 dist/wasm 追加 600 KB 不可压缩内容：原始总字节顶穿 +2% 上限，web 传输面不受影响',
+    // 期望同时翻 N9（该 wasm 的 sha256 锁）—— 这是**正确**行为：追加字节既顶穿总量上限、
+    // 又改变被锁文件的内容哈希。本变异体的靶子是 N4（此前没有任何变异体打过这条档），
+    // 顺带证明「体积档」与「内容哈希档」是两条独立的防线（与 m2 的附加断言互补）。
+    expect: { rc: 1, fails: ['N4', 'N9'], undecided: [] },
+    mutate: (dir) => {
+      const p = path.join(dir, 'dist/wasm/vision_wasm_internal.wasm')
+      const before = statSync(p).size
+      const rawBefore = rawTotal(path.join(dir, 'dist'))
+      writeFileSync(p, Buffer.concat([readFileSync(p), randomBytes(600 * 1024)]))
+      const after = statSync(p).size
+      const rawAfter = rawTotal(path.join(dir, 'dist'))
+      return [
+        `${path.basename(p)} 原始字节 ${before} → ${after}（+${after - before}）`,
+        `原始总字节 ${rawBefore} → ${rawAfter}（+${rawAfter - rawBefore}，上限 = 基线 + 2% = ${Math.ceil(rawTotal(SRC_DIST) * 1.02)}）`,
+      ]
     },
   },
 ]

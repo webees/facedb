@@ -160,6 +160,16 @@ const M = [
     apply: () => mutate('package.json', (t) => t.replace('npm run build && npm run verify:size', 'npm run verify:size && npm run build')) },
   { id: 'M31', target: 'package.json', expect: 'S30', desc: 'verify:all 里塞进一个 CI 侧不存在的步骤（本地捷径凭空长出步骤）',
     apply: () => mutate('package.json', (t) => t.replace(/"verify:all": "[^"]*"/, (s) => s.slice(0, -1) + ' && npm run preview"')) },
+  // 【R23REV-N1/N2】S30 的两条盲区：`if: false` 让「同集同序」在 CI 永不执行时恒真；
+  // block scalar 形式的 `run:` 让步骤凭空消失、反向误报「本地多了 CI 不跑的步骤」。
+  { id: 'M32', target: '.github/workflows/ci.yml', expect: 'S30', desc: '给承载 npm run 的步骤加 `if: false`（CI 永不执行它，S30 不许判绿）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/^(\s*)run: npm run verify:publish\s*$/m, '$1if: false\n$1run: npm run verify:publish')) },
+  // 这一条是**阴性对照型**变异体（staysGreen）：改法合法（YAML 语义等价），S30 不许因此报红。
+  // R23REV-N2 实测的旧行为是把它误报成「verify:ci 多了 CI 不跑的步骤」——那正是本变异体要守住的反例。
+  { id: 'M33', target: '.github/workflows/ci.yml', expect: 'S30', staysGreen: true, desc: '把步骤的 `run:` 改成 block scalar —— 语义等价，S30 不许误报（R23REV-N2）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/^(\s*)run: npm run verify:notices\s*$/m, '$1run: |\n$1  npm run verify:notices')) },
+  { id: 'M34', target: '.github/workflows/ci.yml', expect: 'S30', desc: '给整个 job 加 `if: false`（整个 job 的步骤都不再执行）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/^(\s*runs-on: ubuntu-latest\s*)$/m, '    if: false\n$1')) },
 ]
 
 let caught = 0
@@ -173,9 +183,10 @@ for (const m of M) {
   }
   const r = runJudge()
   const hit = r.out.split('\n').filter((l) => l.startsWith('[FAIL]') && l.includes(m.expect)).map((l) => l.trim().slice(0, 120))
-  const ok = r.code === 1 && hit.length > 0
-  say(`${ok ? '✅' : '❌'} ${m.id} 期望 ${m.expect} 命中：${m.desc}`)
-  say(`     exit=${r.code} ${hit.join(' ｜ ') || '（该断言没报红）'}`)
+  // staysGreen：改法语义等价（或刻意不改坏），该断言**不许报红**；其余变异体必须报红。
+  const ok = m.staysGreen ? r.code === 0 && hit.length === 0 : r.code === 1 && hit.length > 0
+  say(`${ok ? '✅' : '❌'} ${m.id} 期望 ${m.expect} ${m.staysGreen ? '不报红（阴性对照型）' : '命中'}：${m.desc}`)
+  say(`     exit=${r.code} ${hit.join(' ｜ ') || (m.staysGreen ? '（正确地没报红）' : '（该断言没报红）')}`)
   if (ok) caught++
   restore(m.target)
 }

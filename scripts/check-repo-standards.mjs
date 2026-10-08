@@ -36,6 +36,34 @@ const resolveTracked = (rel) => {
 }
 const isDirPath = (rel) => tracked.some((t) => t.startsWith(rel.replace(/\/$/, '') + '/'))
 
+// 【R23REV-N2】工作流里的 `run:` 有两种写法：单行（`run: npm run X`）与 block scalar
+// （`run: |` + 缩进正文，多命令步骤的常规写法）。只认单行会让后者的步骤**凭空消失**，
+// 于是「CI 有没有以独立步骤跑某判据」被反向误判（实测：把 `run: npm run verify:notices`
+// 改成 block scalar 后，S25/S30 同时报「CI 没有以独立步骤跑 / verify:ci 多了 CI 不跑的步骤」）。
+// 所有解析工作流步骤的地方都必须走这个函数，不要再各自写 `^\s*run:\s*(.+)$`。
+const ciRunBodies = (text) => {
+  const out = []
+  const all = text.split('\n')
+  for (let i = 0; i < all.length; i++) {
+    const m = all[i].match(/^(\s*)(?:-\s*)?run:\s*(.*)$/)
+    if (!m) continue
+    const indent = m[1].length
+    const inline = m[2].trim()
+    if (inline && !/^[|>]/.test(inline)) { out.push(inline); continue }
+    const body = []
+    for (let j = i + 1; j < all.length; j++) {
+      const l = all[j]
+      if (!l.trim()) continue
+      if (l.match(/^\s*/)[0].length <= indent) break
+      body.push(l.trim())
+    }
+    out.push(body.join(' '))
+  }
+  return out
+}
+// 某个 npm script 是否以**独立步骤**出现在 CI 里（单行或 block scalar 都算）。
+const ciHasStep = (text, script) => ciRunBodies(text).some((b) => b.trim() === `npm run ${script}`)
+
 const lines = []
 let pass = 0
 let fail = 0
@@ -249,9 +277,8 @@ add({ id: 'S15', covers: yamlFilesUnder('.github/workflows'), name: '每个工�
   checked++
   const txt = read(rel)
   const m0 = miss.length
-  for (const m of txt.matchAll(/^\s*(?:-\s*)?run:\s*(.+)$/gm)) {
+  for (const v of ciRunBodies(txt)) {
     runs++
-    const v = m[1].trim()
     if (!v) miss.push(`${rel}: 有空 run:`)
     for (const n of v.matchAll(/npm run ([a-zA-Z0-9:_-]+)/g)) if (!scripts.includes(n[1])) miss.push(`${rel} 里的 npm run ${n[1]} 不存在于 package.json`)
   }
@@ -480,8 +507,7 @@ add({ id: 'S25', covers: ['THIRD-PARTY-NOTICES.md'], name: '第三方声明文�
   // 必须按**整行**匹配：'npm run verify:notices' 是 'npm run verify:notices-selftest' 的前缀，
   // 用 includes 会让「摘掉真判据、只留下自检」也判绿（M16c 变异体实测踩到，已改成行级正则）。
   for (const s of ['verify:notices', 'verify:notices-selftest']) {
-    const line = new RegExp(`^\\s*run:\\s*npm run ${s.replace(':', ':')}\\s*$`, 'm')
-    if (!line.test(ci)) miss.push(`CI 没有以独立步骤跑：npm run ${s}`)
+    if (!ciHasStep(ci, s)) miss.push(`CI 没有以独立步骤跑：npm run ${s}`)
   }
   if (!has('docs/THIRD-PARTY.md') || !read('docs/THIRD-PARTY.md').includes('THIRD-PARTY-NOTICES.md')) miss.push('docs/THIRD-PARTY.md 没有引用该文件（文档与处置脱钩）')
   return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '文件标记齐备 · 构建复制 · npm script 与 CI 接线 · 文档引用' }
@@ -576,11 +602,15 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
     if (g.includes(SSH_HDR)) miss.push('闸门源码里出现完整 OPENSSH 私钥头字面量（会自阻断）')
   }
   if (m) {
-    // 电池的覆盖面：13 阳性 + 2 阴性 + 未判定语义 + 提示区 + 自扫
-    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'n1 ', 'n2 ', 'u1 ', 'i1 ', 's1 自扫真实仓库']) {
+    // 电池的覆盖面：15 阳性 + 2 阴性 + 未判定语义（读不到 / 扫描面为空）+ 提示区 + 自扫
+    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'm14', 'm15', 'n1 ', 'n2 ', 'u1 ', 'u2 ', 'i1 ', 's1 自扫真实仓库']) {
       if (!m.includes(k)) miss.push(`电池缺场景 ${k.trim()}`)
     }
     if (!/process\.exit\(1\)/.test(m)) miss.push('电池失败时不 exit 1（会把失败读成通过）')
+    // R23REV-N6：闸门必须对「扫描面为空」判未判定（零样本不得判通过），且该分支不许只剩 exit 0
+    if (!/files\.length === 0/.test(g) || !/扫描面为空/.test(g)) miss.push('闸门对空扫描面没有判未判定（R23REV-N6 回归）')
+    // R23REV-N8：SECRET-ASSIGN 的前导边界不许退回 `\b`（下划线前缀键名会整类漏检）
+    if (!/\(\?<!\[A-Za-z0-9\]\)/.test(g)) miss.push('SECRET-ASSIGN 前导边界退回 \\b 形态（下划线前缀键名整类漏检，R23REV-N8 回归）')
   }
   // 接线：npm script + CI 独立步骤（includes 会让「摘掉真判据只留自检」也判绿）
   const pkg = has('package.json') ? read('package.json') : ''
@@ -599,7 +629,7 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
   const pr = prHit.path ? read(prHit.path) : ''
   if (prHit.path && (!/verify:publish/.test(pr) || !/阻断/.test(pr))) miss.push('PR 模板没有写明发布卫生闸门的真实阻断线')
   if (!/P1/.test(ci.split('\n').find((l) => /name: 发布卫生闸门/.test(l)) || '')) miss.push('CI 步骤名没有写明阻断线（P0/P1）')
-  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（禁扩展名白名单回退）· 未判定 exit 2 · 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 13+2+2+1 场景 · npm/CI 接线 · 文档口径一致' }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（禁扩展名白名单回退）· 未判定 exit 2（读不到 / 扫描面为空）· 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 15+2+2+1 场景 · npm/CI 接线 · 文档口径一致' }
 } })
 
 // ── S28 仓库判据的变异自检接线与判别力（R22） ──────────────────────────
@@ -629,7 +659,7 @@ add({ id: 'S28', covers: ['scripts/verify-repo.mjs', 'package.json', '.github/wo
   }
   // CI 步骤用**行级正则**匹配，不用 includes：includes 会被注释或别的脚本里的同名字符串满足
   // （S25/M16c 与 S27/M21 都踩过同型坑）。
-  if (!/^\s*run:\s*npm run verify:selfcheck\s*$/m.test(ci)) miss.push('CI 没有以独立步骤跑 npm run verify:selfcheck（判据的判别力在 CI 里无人守）')
+  if (!ciHasStep(ci, 'verify:selfcheck')) miss.push('CI 没有以独立步骤跑 npm run verify:selfcheck（判据的判别力在 CI 里无人守）')
   if (v) {
     // 必须锚在**声明行**上：只测 /imgLoose/ 会被「声明被摘、引用还在」的变异体骗过（M25 实测：
     // 摘掉 `const imgLoose = …` 后文件里仍有 `imgLoose.length === 0`，断言照旧为真 → 变异体漏检）。
@@ -705,11 +735,37 @@ add({ id: 'S30', covers: ['package.json', '.github/workflows/ci.yml'], name: '�
   const wf = tracked.filter((f) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(f))
   if (!wf.length) return { ok: false, detail: '没有跟踪任何工作流文件（判据无从对齐）' }
   // CI 侧的 npm 步骤（去重、保持首次出现顺序）；`npm ci` 不是 `npm run`，天然不入集
+  // 步骤正文解析必须同时支持单行 `run: npm run X` 与 block scalar（`run: |` + 缩进正文）——
+  // 只认单行会让 `run: |` 形式的步骤**凭空消失**，于是 verify:ci 被反向误报成「多了 CI 不跑的步骤」
+  // （R23REV-N2 实测：把 `run: npm run verify:notices` 改成 block scalar 后 S30 报红）。
   const ciSteps = []
   for (const f of wf) {
     if (!has(f)) { miss.push(`${f} 已跟踪但工作区缺失`); continue }
-    for (const m of read(f).matchAll(/^\s*run:\s*(.+)$/gm)) {
-      for (const n of m[1].matchAll(/\bnpm run ([A-Za-z0-9:_-]+)/g)) if (!ciSteps.includes(n[1])) ciSteps.push(n[1])
+    const text = read(f)
+    const lines = text.split('\n')
+    for (const r of ciRunBodies(text)) {
+      for (const n of r.matchAll(/\bnpm run ([A-Za-z0-9:_-]+)/g)) if (!ciSteps.includes(n[1])) ciSteps.push(n[1])
+    }
+    // R23REV-N1：`if: false` 会让「同集同序」在**CI 永不执行**的情况下同时为真。
+    // 窗口判定：从 `if:` 行往下，直到出现缩进 ≤ 该行的新键为止，窗口里出现 `npm run` 即命中。
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/^(\s*)if:\s*(.*)$/)
+      if (!m) continue
+      const val = m[2].trim().replace(/^['"]|['"]$/g, '')
+      if (!/^(false|\$\{\{\s*false\s*\}\})$/.test(val)) continue
+      const indent = m[1].length
+      let hit = false
+      for (let j = i + 1; j < lines.length; j++) {
+        const l = lines[j]
+        if (!l.trim()) continue
+        const li = l.match(/^\s*/)[0].length
+        // 新步骤（`- name:` 形式的列表项）或缩进更浅的新键 ⇒ 窗口结束
+        if (/^\s*- /.test(l) && li <= indent) break
+        if (li < indent && /^\s*[A-Za-z_-]+:/.test(l)) break
+        // 同缩进的键行属于同一个 step（`if:` 与自身的 `run:` 缩进相同），必须留在窗口内
+        if (/\bnpm run [A-Za-z0-9:_-]+/.test(l)) { hit = true; break }
+      }
+      if (hit) miss.push(`${f}:${i + 1} 的 \`if: false\` 关掉了承载 npm run 的 job/步骤 —— CI 不会执行它，「同集同序」在此恒真`)
     }
   }
   const chain = (name) => (scripts[name] || '').split('&&').map((s) => s.trim())
