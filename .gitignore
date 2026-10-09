@@ -12,3 +12,6 @@ pb_data
 # 2026-10-06 工程已 git init（基线 96f8211），本文件的规则自此生效。
 pb-bin/pocketbase-zh
 pb-bin/pocketbase-zh-linux-*
+# 临时目录：审计/构建/探针的一次性产物（R32 实测工程根 tmp/ 为空、无人引用、
+# 且未被忽略 —— 向量未跟踪文件的落点；显式忽略以防将来把它提交进去）：
+tmp/

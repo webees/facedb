@@ -31,7 +31,6 @@
 
 1. **Security → Advisories → Report a vulnerability**（仓库的私密举报入口，仅维护者可见）；
 2. 若私密举报入口不可用，可开一个**不含细节**的 Issue 说明需要私密联系方式，或按 `SECURITY.md` 的渠道联系维护者 [@webees](https://github.com/webees)。
-   （R30 修正：原文写的「GitHub 私信」功能已下线，不再可用。）
 
 所有投诉都会被及时、公正地审阅与处理；维护者有义务对报告者身份保密。
 

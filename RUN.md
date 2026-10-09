@@ -471,12 +471,19 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 > | 宿主 `dist` 文件字节和 | `find dist -type f -exec stat -f %z {} + \| awk '{s+=$1} END{print s}'` | 27,429,186 字节（2026-10-08 复读） |
 >
 > 注意 `docker image inspect .Size`（18.6MB）竟然**小于**镜像内 `/public`（27.4MB）—— 机制未查证，此处只作口径事实登记，不据此下结论。
+> **本表只登记口径差异，不是产物大小的权威**（R32/W32-G-03）：唯一权威是判据里的常量
+> （`scripts/check-dist-size-budget.mjs` 的 `WEB_GZIP_BASELINE_BYTES` / `RAW_TOTAL_BASELINE_BYTES` / `EXPECTED_FILE_COUNT`），
+> 它们随源码变动被**重锚**；复读当前值用 `node <运行根>/lib/size-reanchor.mjs --root <工程根>`（**不带 `--write` 就是只读读数**）。
+> 表里每行都必须连着日期读：R28 在当时的 HEAD 上实测宿主 `dist` = **13 文件 / 27,433,280 字节**、web gzip **97,510 字节**，与判据常量相等。
 > 产物文件数：**13 个**（宿主 `dist` 与镜像内 `/public` 一致）。历史上写的「12 个文件」是 R20-F7 之前的读数 ——
 > 第 13 个是 `THIRD-PARTY-NOTICES.md`（17,084 字节），由提交 `55f576b` 引入并经 `rsbuild.config.ts` 的 `output.copy` 拷进产物。
 > 产物有两种口径，同一份产物差 590 字节：`find /public -type f -exec cat {} + | wc -c` = 文件字节和、
 > `du -sb /public` = 文件字节和 **+ 13 个文件 + 1 个目录**的目录项自身开销。
 > **字节和是快照，不是断言**：任何源码改动都会让它变（R22 精简 `index.html` 头部注释后，本项比原读数少 459 字节）。
-> 真正钉住产物的是 `dist/SHA256SUMS`（13 个文件的逐文件 sha256）与 `npm run verify:size` 的阈值判据 ——
+> 真正钉住产物的是**两道不同的闸**，别把它们混成一句：`dist/SHA256SUMS` 登记的是 **5 个 vendored 外部资源**
+> （`face_landmarker.task` + `wasm/*` 四件，与 `public/SHA256SUMS` 逐字节相同），**不是**产物清单；
+> 产物自身的**文件数与逐文件内容锁**由 `npm run verify:size` 的判据持有
+> （`scripts/check-dist-size-budget.mjs` 的 `EXPECTED_FILE_COUNT = 13` + `LOCKED_SHA256`）——
 > 复核时用那两者，不要拿这里的数字当期望值。
 > **体积判据是棘轮，不是「与历史版本比较」**（R23REV-N11 已登记为已知取舍）：`verify:size` 的基线
 > 就是上一次通过时的实测快照，两者精确相等是设计使然。代价是**任何改动源码的轮次都必须重锚**
@@ -2192,7 +2199,7 @@ mkdir -p /tmp/migcheck && docker run --rm \
 | 紧接着再 `down 1` | **还是它**，且 `_migrations` 行数**不再变化**（纯空操作） |
 | `down 2` | `[1640988000_aux_init.go, 1778828400_normalize_indexes.go]` |
 | `down 16` / `down 17` | 分别删掉 16/17 行，但 `Reverted` 只打印 15/16 行（差 1） |
-| 空库全量 `up`（测量时 27 行；R26 起 29 行；**R28 实测 30 行** = 22 个工程迁移 + 8 个二进制内建 `.go` 迁移）后 `down 1` | **正常**：回退最新一条（测量当时是 `1791281100_restrict_session_id_control_chars.js`；R27 起最新是 `1791281400_capture_submit_id.js`） |
+| 空库全量 `up`（计数口径与三个基座的读数见下方「`_migrations` 行数按基座陈述」表；R28 实测 30 行）后 `down 1` | **正常**：回退最新一条（测量当时是 `1791281100_restrict_session_id_control_chars.js`；R27 起最新是 `1791281400_capture_submit_id.js`） |
 | 空目录直接 `down 1` | **正常**：回退 `1778828400_normalize_indexes.go` |
 
 → 异常**只在既有生产库上**出现。能同时解释全部观测的唯一模型：走链顺序是「`1640988000_aux_init.go` 排第一，其余按 `applied` 降序；`_migrations` 里**文件已不存在**的行被静默跳过（不报错、不删记录、也不占 N）」。
@@ -2200,7 +2207,7 @@ mkdir -p /tmp/migcheck && docker run --rm \
 
 **幽灵记录（正常现象，不是缺陷）**：生产库 `_migrations` **R30 实测 31 行** = 仓库 22 个 `.js` + 二进制内建 8 个 `.go` + **1 行幽灵** `1791206104_deleted_employees.js`（集合差集见 `evidence/R30-LEAD-migrations-setdiff.log`；早期读数是「28 行而仓库 19 个 `.js`」，行数不会因为仓库新增文件而变，新增文件只会在下次 `up` 时追加行）。多出的那一行是 `1791206104_deleted_employees.js` —— 该迁移改名为 `1791206415_…` 之前已被应用过，改名后 PB 把新名字当新迁移重跑（up 体用 `try { … } catch { return }` 幂等跳过），而**旧名字的记录永远留在表里**：`down 27`（一路到底）之后表里**只剩这一行**。任何「`_migrations` 行数 == 迁移文件数」的断言都会误报。
 
-**⚠️ `_migrations` 读法（R28 实测）**：它**不是** API 集合 —— `GET /api/collections/_migrations/records` 即使带超管 token 也返回 `404 {"message":"缺少集合上下文。"}`。要读行数只能把 `data.db`（连同 `-wal`/`-shm`）从容器里 `docker cp` 出来再用宿主的 `sqlite3` 查 `SELECT COUNT(*) FROM _migrations`；空数据目录 + `0.40.4-zh` 上该值是 **30**（= 22 个工程迁移 + 8 个内建 `.go`：`1640988000_aux_init.go`、`1640988000_init.go`、`1717233556..559_v0.23_migrate{,2,3,4}.go`、`1763020353_update_default_auth_alert_templates.go`、`1778828400_normalize_indexes.go`）。
+**⚠️ `_migrations` 读法（R28 实测）**：它**不是** API 集合 —— `GET /api/collections/_migrations/records` 即使带超管 token 也返回 `404 {"message":"缺少集合上下文。"}`。要读行数只能把 `data.db`（连同 `-wal`/`-shm`）从容器里 `docker cp` 出来再用宿主的 `sqlite3` 查 `SELECT COUNT(*) FROM _migrations`；空数据目录 + `0.40.4-zh` 上该值是 **30**（构成见下方「`_migrations` 行数按基座陈述」表；8 条内建 `.go` 是：`1640988000_aux_init.go`、`1640988000_init.go`、`1717233556..559_v0.23_migrate{,2,3,4}.go`、`1763020353_update_default_auth_alert_templates.go`、`1778828400_normalize_indexes.go`）。
 
 **✅ R26/R27 新增的 4 支迁移逐支往返复测（R31 实测，一次性实例 18312，判定一律用 `migrate` 输出文本）**：
 
@@ -2214,17 +2221,18 @@ mkdir -p /tmp/migcheck && docker run --rm \
 ⇒ 这四支的 `down` **都是真还原**（不是空操作、也不是只还原一半）。阴性对照：`true |` 与 `echo n`
 两种无确认输入均 `rc=0`、stdout 只有「命令已取消」、计数仍 30 —— 再次确认**退出码不能当判据**。
 
-**⚠️ `_migrations` 行数是基座相关的，不是常量**（R20 实测，三个读数各有口径）：
+**⚠️ `_migrations` 行数是「基座 + 仓库当时的迁移数」两个变量决定的，不是常量**（R20 实测起，R28 复测）：
 
 | 口径 | 0.28.1 | 0.40.4 |
 |---|---|---|
-| 空目录全量 `migrate up` | **25 行** | **27 行** = 19 条工程迁移 + 8 条内置 `.go` |
+| 空目录全量 `migrate up` | **25 行**（测量当时） | **30 行** = **22** 条工程迁移 + 8 条内置 `.go`（R28 实测；R20 测量当时是 19 + 8 = 27 行，差的两条就是那之后新增的工程迁移） |
 | 生产 `pb_data/data.db`（0.28.1 时代创建） | 28 行 | 28 行（**未被重放**，逐字节不变） |
 
 0.40.4 比 0.28.1 多出的两条内置迁移是
 `1763020353_update_default_auth_alert_templates.go` 与 `1778828400_normalize_indexes.go`
-（`evidence/W20-B-10-base028-compare.log`）。生产库那 28 行里含早期已删除迁移的历史记录，
-所以「生产库 28」既不等于 25 也不等于 27 —— **凡把 `_migrations` 行数当基座无关常量写的句子都要改成分基座陈述**。
+（`evidence/W20-B-10-base028-compare.log`；22 + 8 = 30 行的复测见 R28 的
+`evidence/R28-LEAD-migrations-rows.log` 与 `-rows2.log`）。生产库那 28 行里含早期已删除迁移的历史记录，
+所以「生产库 28」既不等于 25、也不等于 30 —— **凡把 `_migrations` 行数当基座无关常量写的句子都要改成分基座陈述**。
 
 **③ 改名后的迁移必须幂等。**
 
@@ -2334,8 +2342,9 @@ docker compose run --rm pocketbase superuser upsert <邮箱> <密码> ❌ 反例
 
 ### `_migrations` 行数按基座陈述
 
-见上一节的表：空库全量 `migrate up` 在 0.28.1 是 **25 行**、0.40.4 是 **27 行**（19 条工程迁移 + 8 条内置 `.go`），
-生产库是 **28 行**（0.28.1 时代创建，0.40.4 下未被重放）。**不要在文档或脚本里把它写成基座无关的常量。**
+见上一节的表：空库全量 `migrate up` 在 0.28.1 是 **25 行**（测量当时）、0.40.4 是 **30 行**（R28 实测），
+生产库是 **28 行**（0.28.1 时代创建，0.40.4 下未被重放）。**不要在文档或脚本里把它写成基座无关的常量，
+也不要在别处复述这两个数的构成 —— 唯一出处就是上一节的表**（该数随仓库迁移数增长）。
 
 ## 照片与视频规格
 
