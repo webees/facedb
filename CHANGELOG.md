@@ -3,8 +3,9 @@
 本文件记录本项目的显著变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-> **尚未打 tag**（当前 `git tag -l` 为空）：下面各版本的 `releases/tag/...` 链接要等首次
-> 发布后才会生效；在此之前，「未发布」段即 `main` 分支的最新提交。
+> **尚未打 tag**（当前 `git tag -l` 为空）：下面各版本的 `releases/tag/...` 与
+> `compare/...` 链接都要等首次发布后才会生效（未打 tag 时 `compare/v0.1.0...HEAD` 是 404）；
+> 在此之前，「未发布」段即 `main` 分支的最新提交。
 
 ## [未发布]
 
@@ -14,7 +15,7 @@
   再跑 `vue-tsc --noEmit`，最后在临时副本里注入一个类型错误要求它报红 —— 三者缺一即判
   「未执行」并返回非零，堵住「没有任何可检查内容也 exit 0」的假通过。CI 已接入该步骤。
 - 提示状态机外移到 `src/lib/hints.ts`（`createHints` 工厂 + `URGENT_HINTS` / `HINT_BUF` /
-  `HINT_NEED`），组件只保留接线，`CaptureView.vue` 由 814 行降到 760 行。
+  `HINT_NEED`），组件只保留接线，`CaptureView.vue` 由 814 行降到 760 行（**这是 R13 当时的读数**：该文件此后又经过多轮拆分，当前行数见 `RUN.md`，不要用本行核现状）。
 
 ### 修复
 
@@ -80,5 +81,5 @@
 - `.env` 从版本库移除并加入 `.gitignore`。
 
 
-[未发布]: https://github.com/webees/facedb/compare/v0.1.0...HEAD
+[未发布]: https://github.com/webees/facedb/commits/main
 [0.1.0]: https://github.com/webees/facedb/releases/tag/v0.1.0

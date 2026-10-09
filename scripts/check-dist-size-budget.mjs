@@ -125,7 +125,7 @@ if (DERIVED.webGzip !== WEB_GZIP_CAP_BYTES || DERIVED.rawTotal !== RAW_TOTAL_CAP
 // —— 逐文件 sha256 锁定（外部 vendored 资产 + 许可正文 + 完整性登记本身）——
 const LOCKED_SHA256 = {
   SHA256SUMS: 'e0357ae4fdee5d24b7dd60cca46db9af1c9bab09b026fa601d6d4da2d0b9e11c',
-  'THIRD-PARTY-NOTICES.md': '6891c359b6feb210923856ad1ed18eb95677ed5c105db4b4aded2d40e2691253',
+  'THIRD-PARTY-NOTICES.md': '61a96410cc37caae98bf267d5a733453b9ed8d3d3eea4d1c0819bd0347726db0',
   'face_landmarker.task': '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff',
   'wasm/vision_wasm_internal.js': 'e170ee67dd4e16c1a6fcd8840a206687e5a59b22c20e4a902bc445b095454d73',
   'wasm/vision_wasm_internal.wasm': '8da277a733926eacd0474b8704b36742d6ec3231c57a860c5b889dff8f1df886',

@@ -46,10 +46,11 @@ docker compose up -d --build  # 采集端 → http://localhost:3000/<采集编�
 
 ```
 src/                 前端源码
-  components/        CaptureView.vue（采集流程主体）
+  components/        CaptureView.vue（采集流程主体）、CaptureFooter.vue（页脚与操作按钮）
   lib/               capture.ts 录制/拍照、face.ts 推理、quality.ts 质检判定、
                      pb.ts 上传、i18n.ts 文案、hints.ts 提示状态机、audio.ts 提示音、
-                     block-telemetry.ts 遥测拦截
+                     block-telemetry.ts 遥测拦截、upload-batch.ts 批量上传、
+                     batch-files.ts 文件批构造、submit-key.ts 幂等键
 pb_migrations/       PocketBase 迁移（集合、字段、约束、权限的唯一来源）
 public/              随前端发布的静态资源（MediaPipe wasm、人脸模型、SHA256SUMS 清单）
 pb-bin/              PocketBase 本地化二进制与构建说明（二进制本体不入库，只入库指纹清单）
@@ -63,7 +64,8 @@ RUN.md               运行手册 + 全部实测记录（部署、阈值、边�
 npm ci             # 按 package-lock.json 安装
 npm run dev        # 开发服务器
 npm run typecheck  # vue-tsc --noEmit
-npm run verify     # 仓库自检：资源指纹、迁移可解析性与约束不变量、文案键对称
+npm run verify     # 仓库自检（7 节）：资源指纹、迁移可解析性与约束不变量、文案键对称、
+                   # pb-bin 指纹、RUN.md 常量、CSP 覆盖范围、启动兜底框转义
 npm run build      # 生产构建
 ```
 

@@ -61,7 +61,7 @@ docker compose config -q   # 若改动 docker-compose.yml
 `.github/`、`scripts/`、`.editorconfig`、`.gitattributes` 或哈希资产时请一并跑：
 
 ```bash
-npm run verify:standards    # 30 项：文档 / 治理文件 / 工作流 / 脚本之间的交叉核对
+npm run verify:standards    # 35 项：文档 / 治理文件 / 工作流 / 脚本之间的交叉核对
 npm run verify:hygiene      # 5 项：零命中规则、哈希资产保护、行尾口径
 npm run verify:standards-selftest   # 判据自身的变异自检（83 个变异体必须全部被抓到）
 npm run verify:all          # 本地快速一键（不构建、不跑变异自检）

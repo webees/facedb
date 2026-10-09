@@ -31,7 +31,7 @@
 | `public/face_landmarker.task` | 3758596 | MediaPipe 官方模型（`face_landmarker`） | Apache-2.0 |
 
 实测归属事实（R20）：`public/wasm` 的 4 个文件与 `node_modules/@mediapipe/tasks-vision/wasm` 下的同名文件**逐字节相同**，
-且已在 `public/SHA256SUMS` 登记（`npm run verify:public` 会校验）。
+且已在 `public/SHA256SUMS` 登记（`npm run verify` 会按该清单做「登记项逐个比对 + 目录资源反向断言」）。
 
 ### 2.2 为什么这一节必须存在
 
@@ -49,7 +49,8 @@ Apache-2.0 第 4 条要求「向接收者提供许可证副本」，因此许可
 ## 4. 运行期闭包清单（自动生成）
 
 <!-- BEGIN GENERATED: runtime-closure -->
-<!-- 本块由 lib/r20-thirdparty-gen.mjs 从 package-lock.json 生成，勿手改；改依赖后重跑该脚本。 -->
+<!-- 口径：package-lock.json 的非 dev 闭包（与 docs/THIRD-PARTY.md 的 `npm ls --prod --all` 口径不同，故包数不同）；
+     生成器 lib/r20-thirdparty-gen.mjs 已不在本仓库，改依赖后按同一口径重生成，再由 npm run verify:notices 校验本块与 lock 逐条一致。 -->
 运行期闭包（lock 推导，共 24 个包）：
 
 | 包 | 版本 | 许可证 |

@@ -18,6 +18,7 @@
 //   N8 反向断言：docs/THIRD-PARTY.md 引用了该文件，且旧标题「已知缺口：MediaPipe chunk 没有
 //      许可侧车」已被替换（否则文档与处置互相矛盾）
 //   N9 反向断言：文件里不得残留 `<!-- APACHE-2.0-TEXT -->` 之类的占位符
+//   N11 docs/THIRD-PARTY.md 的闭包表与 package.json / package-lock.json 一致（R30-LEAD-13）
 //   N10（仅 --live <url> 时）线上真能读到**这份**文件 —— 必须比内容，不能比状态码：
 //      本服务的 SPA 回退会让不存在的路径也返回 200 + index.html（实测：容器静态根里没有
 //      THIRD-PARTY-NOTICES.md，`GET /THIRD-PARTY-NOTICES.md` 仍是 200、content-type 是
@@ -224,6 +225,54 @@ ck('N8 反向断言：docs/THIRD-PARTY.md 已引用且不再声称未解决', do
 const PLACEHOLDERS = ['<!-- APACHE-2.0-TEXT -->', '<!-- VUE-MIT-TEXT -->']
 const left = PLACEHOLDERS.filter((p) => txt.includes(p))
 ck('N9 反向断言：无未替换的许可证占位符', left.length === 0, left.length ? `残留 ${left.join('、')}` : `${PLACEHOLDERS.length} 个占位符均不存在`)
+
+// ---- N11 docs 闭包表 vs package.json / lock（R30-LEAD-13，闭 W30-D-05 的覆盖面缺口）
+// 为什么需要：N5 只核对 NOTICE 的生成块与 lock。docs/THIRD-PARTY.md 的那张表既不被解包、
+// 也不与 package.json 对照 —— R30 实测三种变异全部 rc=0 静默通过：
+//   ① 表里插一个仓库根本没有的包；② 改掉某一行的版本；③ 给 package.json 加一个依赖。
+// 这条规则把三者都钉住：直接依赖必须在表里、表里每一行必须在 lock 里有对应包、版本必须一致。
+// N11d（R30REV-01）再补第四维：**许可列**必须与 lock 的 license 字段一致（原先只取名字+版本两列，
+// 把 entities 的 BSD-2-Clause 改成 MIT 会静默通过）。
+{
+  const rows = []
+  if (has(DOC)) {
+    for (const l of read(DOC).split('\n')) {
+      const m = l.match(/^\|\s*`([^`]+)`\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*$/)
+      if (m) rows.push({ name: m[1].trim(), version: m[2].trim(), license: m[3].trim() })
+    }
+  }
+  if (!has(DOC) || rows.length === 0) {
+    un('N11 docs 闭包表与 package.json / lock 一致', rows.length === 0 ? `${DOC} 里没有解析到任何「| 包 | 版本 |」行（零样本）→ 未判定` : `${DOC} 不存在 → 未判定`)
+  } else {
+    let direct = []
+    let pkgs = {}
+    try { direct = Object.keys(JSON.parse(read('package.json')).dependencies || {}) } catch { direct = [] }
+    try { pkgs = JSON.parse(read('package-lock.json')).packages || {} } catch { pkgs = {} }
+    const lockOf = (n) => pkgs['node_modules/' + n]
+    const missDirect = direct.filter((d) => !rows.some((r) => r.name === d))
+    const unknown = rows.filter((r) => !lockOf(r.name))
+    const drift = rows.filter((r) => { const e = lockOf(r.name); return e && e.version && e.version !== r.version })
+    ck('N11a docs 闭包表覆盖 package.json 的全部直接依赖', direct.length > 0 && missDirect.length === 0,
+      direct.length === 0 ? 'package.json 的直接依赖为空（零样本）' : missDirect.length ? `缺 ${missDirect.join('、')}` : `${direct.length} 个直接依赖都在表里（表共 ${rows.length} 行）`)
+    ck('N11b docs 闭包表每一行都在 package-lock.json 里有对应包', unknown.length === 0,
+      unknown.length ? `表里有 ${unknown.length} 个包不在 lock 里：${unknown.map((r) => r.name).join('、')}` : `${rows.length} 行全部有对应 lock 条目`)
+    ck('N11c docs 闭包表版本与 package-lock.json 一致', drift.length === 0,
+      drift.length ? drift.map((r) => `${r.name} 表=${r.version} lock=${lockOf(r.name).version}`).join('；') : '全部一致')
+    // N11d（R30REV-01 的红灯）：N11a/b/c 只取「名字 + 版本」两列，许可列零覆盖 —— 把 `entities` 的
+    // **BSD-2-Clause** 改成 MIT，三条断言全绿、判据静默通过。许可列恰恰是这份文档最该被守住的一列。
+    const licNorm = (s) => String(s || '').replace(/\*\*/g, '').replace(/\s+/g, '').toLowerCase()
+    const licRows = rows.filter((r) => { const e = lockOf(r.name); return e && e.license })
+    const licDrift = licRows.filter((r) => licNorm(lockOf(r.name).license) !== licNorm(r.license))
+    if (licRows.length === 0) {
+      un('N11d docs 闭包表许可列与 package-lock.json 一致', 'lock 里没有任何一行带 license 字段（零样本）→ 未判定')
+    } else {
+      ck('N11d docs 闭包表许可列与 package-lock.json 一致', licDrift.length === 0,
+        licDrift.length
+          ? licDrift.map((r) => `${r.name} 表=${r.license} lock=${lockOf(r.name).license}`).join('；')
+          : `${licRows.length} 行许可与 lock 逐条一致（无 license 字段的行 ${rows.length - licRows.length} 个）`)
+    }
+  }
+}
 
 // ---- N10 线上可达（可选）：比内容，不比状态码
 if (LIVE) {
