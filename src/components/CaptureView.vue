@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { MAX_BRIGHT, MIN_BRIGHT } from '../lib/quality'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { createHints } from '../lib/hints'
+import { createHints, uploadFailureHint } from '../lib/hints'
 import { closeFace, detectFace, drawOverlay, emptyFrame, initFace } from '../lib/face'
 import { judge, POSE_KEY, roiStats, STABLE_FRAMES, type Pose } from '../lib/quality'
 import {
@@ -521,11 +521,11 @@ async function submit(fromShoot = false): Promise<void> {
     if (run.reason === 'disposed') return
     // 预算耗尽但一次都没发出去时没有技术消息，退回本地化文案
     uploadError.value = run.error || t('uploadFailed')
-    // 全部尝试都失败：切成明确的失败态并给出重试入口。
-    // 不能只停动画 —— 文案仍是「上传中…」时用户会一直等下去，
-    // 而本次采集的文件只在内存里，刷新页面就全丢了。
+    // 全部尝试都失败：切成明确的失败态并给出重试入口。不能只停动画 —— 文案仍是「上传中…」时
+    // 用户会一直等下去，而本次采集的文件只在内存里，刷新页面就全丢了。
     submitFailed.value = true
-    hints.set('hintUploadFailed')
+    // 归因分流（R28 W28C-02）：4xx 拒绝与网络故障的下一步动作不同（映射见 hints.ts）
+    hints.set(uploadFailureHint(run.permanent))
     sfx.warn()
     dbg('提交最终失败：', uploadError.value, '（原因：', run.reason, '）')
   } finally {

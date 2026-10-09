@@ -27,6 +27,9 @@ export const URGENT_HINTS: MessageKey[] = [
   'hintFinalizing',
   // 提交失败的终态必须立即显示：它同时是「失败」与「有重试入口」的唯一提示
   'hintUploadFailed',
+  // 服务端拒绝（4xx）的终态同理必须立即显示（R28 W28C-02）：它与「网络失败」是两条
+  // 不同的归因，绝不能被打架的姿态提示盖回「保持不动，正在拍摄…」。
+  'hintUploadRejected',
   // 录制段创建失败：该采集点不会有视频，必须立即告知而不是被姿态提示盖掉
   'segmentFailed',
   // 设备断开需要立即显示：否则会被逐帧判定投出的姿态提示盖掉
@@ -37,6 +40,19 @@ export const URGENT_HINTS: MessageKey[] = [
 ]
 export const HINT_BUF = 5
 export const HINT_NEED = 3
+
+// 提交失败要分两种性质说（R28 W28C-02）：4xx 拒绝（文件过大 / 数量超限 / 字段校验失败）与网络故障
+// 是两条不同的路。对前者说「请检查网络」会把用户推去反复点「重新提交」，而那个入口对同一批是
+// 幂等的失败 —— 真正有效的动作只有重新采集。
+const UPLOAD_FAILURE_HINTS = {
+  permanent: 'hintUploadRejected',
+  transient: 'hintUploadFailed',
+} as const
+
+/** 提交失败时的提示键：服务端拒绝与网络故障要给不同的下一步动作。 */
+export function uploadFailureHint(permanent: boolean): MessageKey {
+  return UPLOAD_FAILURE_HINTS[permanent ? 'permanent' : 'transient']
+}
 
 /**
  * 建一个提示状态机。

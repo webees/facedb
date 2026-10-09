@@ -84,7 +84,10 @@ const PB_BASE = rawBase
 const API = `${PB_BASE}/api/collections/captures/records`
 
 /** 4xx（字段校验失败等数据问题）重试没有意义，用独立类型标记后直接抛出。 */
-class PermanentError extends Error {}
+// 永久性错误（请求本身有问题，重试不会改变结果）。导出是为了让上层能**分辨**失败性质：
+// 界面文案不能对「服务端 400 拒绝」和「网络断了」说同一句话（R28 W28C-02）。
+// 注意：导出**不改变**重试语义 —— runUploadBatch 仍按轮数重试，只是把性质记下来。
+export class PermanentError extends Error {}
 
 /**
  * 网络层失败：请求根本没到服务端（DNS 失败 / 连接被拒 / 断网 / CORS 预检失败）。

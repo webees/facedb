@@ -629,9 +629,19 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
   }
   if (m) {
     // 电池的覆盖面：18 阳性 + 3 阴性 + 未判定语义（读不到 / 扫描面为空）+ 提示区 + 自扫
-    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'm14', 'm15', 'm16', 'm17', 'm18', 'n1 ', 'n2 ', 'n3 ', 'u1 ', 'u2 ', 'i1 ', 's1 自扫真实仓库']) {
+    for (const k of ['m1 ', 'm5 ', 'm8 ', 'm13', 'm14', 'm15', 'm16', 'm17', 'm18', 'n1 ', 'n2 ', 'n3 ', 'u1 ', 'u2 ', 'i1 ', 'i2 ', 's1 自扫真实仓库']) {
       if (!m.includes(k)) miss.push(`电池缺场景 ${k.trim()}`)
     }
+    // R28 W28D-05 附带：`git ls-files` 默认把非 ASCII 路径加引号转义（`"docs/\346…md"`）⇒ 闸门读不到，
+    // 把真实存在的文件记成「索引有而文件不在」→ voided → exit 2 假未判定。
+    // 两条断言：① 闸门必须用 `-z`（NUL 分隔的原始路径）；② 不许再出现「无 -z 的 ls-files 读法」。
+    if (!/function gitZ\(args\)/.test(g)) miss.push('闸门没有 gitZ 助手（非 ASCII 路径会被 quotePath 转义 ⇒ 假未判定）')
+    if (!/args\.concat\(\['-z'\]\)/.test(g)) miss.push('闸门的 gitZ 没有追加 -z（路径仍是转义形态）')
+    // 反向断言：所有 ls-files 读法都必须走 gitZ（漏一处就还会转义）。
+    // 用行锚定匹配「execFileSync('git', ['ls-files' …」，允许 `--others` 等选项但不允许直接 split('\n')。
+    const rawLsFiles = (g.match(/execFileSync\('git',\s*\['ls-files'/g) || []).length
+    if (rawLsFiles !== 0) miss.push(`闸门里还有 ${rawLsFiles} 处裸 \`git ls-files\` 读法（必须全部走 gitZ）`)
+    if (!/非 ASCII|quotePath/.test(g)) miss.push('闸门源码里没有说明 quotePath / 非 ASCII 路径的注释（后人会把它改回去）')
     // R25 / W25E-01（P1）：二进制**不许整份跳过** —— 旧形态「前 8KB 有 NUL 就 continue」实测放行含 ghp_ 的文件。
     // R26 / W26E-01…E-09（P1/P2）：v2 的形态是「只扫了一种解读」（只加了一个 UTF-16LE 视图，且要
     // 前 8KB 的 NUL 密度够高、按字节 0 对齐、不解压）。下面这些断言把 v3 的**每一块机制**钉住：
@@ -722,7 +732,7 @@ add({ id: 'S27', covers: ['scripts/publish-leak-scan.mjs', 'scripts/publish-leak
     } finally {
       rmSync(probeDir, { recursive: true, force: true })
     }
-  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（整份文件 NUL）且**二进制里凭据类规则照扫**（禁扩展名白名单回退 / 禁整份跳过）· 多解读视图全套（UTF-16LE/BE × 对齐、UTF-32 门控、手写解码、容错、传统 CJK、压缩解压 + 未判定、归一化、跨行扫描去重）· 未判定 exit 2（读不到 / 扫描面为空 / 压缩内容解不开）· 阻断线默认 P1 · 15 个令牌前缀 · 提示区 · 电池 31 阳性 / 4 阴性 / 4 未判定（含 zip 方法）/ 1 提示区（v3 场景 m19–m31、u3/u4 逐个在位，汇总行现算）· **行为探针（UTF-16BE 令牌真跑一遍闸门）** · npm/CI 接线 · 文档口径一致' }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '2 个文件 · 内容判二进制（整份文件 NUL）且**二进制里凭据类规则照扫**（禁扩展名白名单回退 / 禁整份跳过）· 多解读视图全套（UTF-16LE/BE × 对齐、UTF-32 门控、手写解码、容错、传统 CJK、压缩解压 + 未判定、归一化、跨行扫描去重）· 未判定 exit 2（读不到 / 扫描面为空 / 压缩内容解不开）· 阻断线默认 P1 · 15 个令牌前缀 · 提示区（被忽略的敏感命名文件 + 被忽略的整块路径）· 电池 32 阳性 / 4 阴性 / 4 未判定（含 zip 方法）/ 2 提示区（v3 场景 m19–m31、u3/u4、i2、m16 逐个在位，汇总行现算）· gitZ 路径读法（`-z`，防 quotePath 把非 ASCII 路径转义成「工作区缺失」）· **行为探针（UTF-16BE 令牌真跑一遍闸门）** · npm/CI 接线 · 文档口径一致' }
 } })
 
 // ── S28 仓库判据的变异自检接线与判别力（R22） ──────────────────────────

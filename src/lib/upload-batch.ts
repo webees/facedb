@@ -17,7 +17,7 @@
 // - 退避同样计入预算：剩余时间不够一个注定超时的间隔时，直接进失败态，不让用户白等。
 // - 组件已卸载（`isDisposed()`）时立即停止：后台继续重试既没有意义，
 //   也会在已卸载的组件上发事件。
-import { uploadSession, type PendingFile } from './pb'
+import { uploadSession, PermanentError, type PendingFile } from './pb'
 
 /** 提交策略：轮数、退避基数、整批共享预算 */
 export interface BatchPolicy {
@@ -39,6 +39,13 @@ export interface BatchRun {
   error: string
   /** 未成功时的原因：组件已卸载 / 预算耗尽 / 尝试用尽 */
   reason: BatchReason
+  /**
+   * 最后一次失败是不是**永久性**错误（服务端 4xx 拒绝：文件过大 / 数量超限 / 字段校验失败…）。
+   * 只用于**界面归因**（R28 W28C-02）：对 4xx 说「请检查网络」是错的 —— 网络没问题，
+   * 用户会照着提示反复点「重新提交」，而那个入口对同一批注定失败。
+   * **不改变重试语义**：轮数与退避仍由 policy 决定（本轮只加观测，不动行为）。
+   */
+  permanent: boolean
 }
 
 /**
@@ -58,24 +65,26 @@ export async function runUploadBatch(
 ): Promise<BatchRun> {
   const deadline = Date.now() + policy.budgetMs
   let error = ''
+  let permanent = false
   for (let attempt = 1; attempt <= policy.tries; attempt++) {
-    if (opts.isDisposed()) return { ok: false, attempts: attempt - 1, error, reason: 'disposed' }
-    if (Date.now() >= deadline) return { ok: false, attempts: attempt - 1, error, reason: 'budget' }
+    if (opts.isDisposed()) return { ok: false, attempts: attempt - 1, error, reason: 'disposed', permanent }
+    if (Date.now() >= deadline) return { ok: false, attempts: attempt - 1, error, reason: 'budget', permanent }
     try {
       await uploadSession(sessionId, files, deadline)
-      return { ok: true, attempts: attempt, error: '', reason: 'ok' }
+      return { ok: true, attempts: attempt, error: '', reason: 'ok', permanent: false }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
+      permanent = e instanceof PermanentError
       opts.onAttemptFail?.(attempt, error)
       if (attempt < policy.tries) {
         const wait = policy.backoffMs * attempt
         // 退避也计入预算：等完这一个间隔就没有预算了，那就没必要等
-        if (Date.now() + wait >= deadline) return { ok: false, attempts: attempt, error, reason: 'budget' }
+        if (Date.now() + wait >= deadline) return { ok: false, attempts: attempt, error, reason: 'budget', permanent }
         await new Promise((r) => setTimeout(r, wait))
       }
     }
   }
-  return { ok: false, attempts: policy.tries, error, reason: 'exhausted' }
+  return { ok: false, attempts: policy.tries, error, reason: 'exhausted', permanent }
 }
 
 /**

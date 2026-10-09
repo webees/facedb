@@ -46,14 +46,22 @@ process.chdir(ROOT)
 
 const MAX_SCAN_BYTES = Number(process.env.LEAK_MAX_BYTES || 64 * 1024 * 1024)
 
-const tracked = execFileSync('git', ['ls-files'], { encoding: 'utf8' }).trim().split('\n').filter(Boolean)
+// 【R28 W28D-05 附带】`git ls-files` 默认 `core.quotePath=true`：**非 ASCII 文件名会被加引号并转成
+// 八进制转义**（实测输出 `"RUN/findings/F25-\351\207\207\351\233\206…md"`）⇒ 闸门拿这个字面量去读文件
+// 必然失败，于是把「工作区里好端端存在的文件」记成「索引有而文件不在」→ voided → **exit 2 假未判定**。
+// `-z` 让 git 输出 NUL 分隔的**原始路径字节**（不加引号、不转义），从根上消掉这一类。
+// 注意：`-z` 与 `--directory` 等选项可共存，追加在末尾即可。
+function gitZ(args) {
+  return execFileSync('git', args.concat(['-z']), { encoding: 'utf8' })
+    .split('\0')
+    .filter(Boolean)
+}
+
+const tracked = gitZ(['ls-files'])
 // 【R13-F9 / X8-P1②】只扫 `git ls-files` 会漏掉最危险的一类：「凭据已经写进工作区、但还没 git add」。
 // 这类文件不被推送、却极可能在后续某次 `git add -A` 里被带进去，属发布闸门必须覆盖的面。
 // 口径与 `lib/check-publish-hygiene.mjs` 的 H3 一致（`--others --exclude-standard` = 未跟踪且未被忽略）。
-const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { encoding: 'utf8' })
-  .trim()
-  .split('\n')
-  .filter(Boolean)
+const untracked = gitZ(['ls-files', '--others', '--exclude-standard'])
 const files = [...new Set([...tracked, ...untracked])]
 const untrackedSet = new Set(untracked)
 
@@ -391,13 +399,21 @@ for (const f of files) {
 // 被忽略的敏感文件（提示区，不参与阻断判定）
 let ignoredSensitive = []
 try {
-  ignoredSensitive = execFileSync('git', ['ls-files', '--others', '--ignored', '--exclude-standard'], { encoding: 'utf8' })
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .filter((f) => SENSITIVE_IGNORED.test(f))
+  ignoredSensitive = gitZ(['ls-files', '--others', '--ignored', '--exclude-standard']).filter((f) => SENSITIVE_IGNORED.test(f))
 } catch {
   ignoredSensitive = []
+}
+
+// 【R28 W28D-05】被忽略的**整块路径**此前完全不可见：扫描集是「跟踪文件 + 未跟踪未忽略文件」，
+// 于是 `pb_data/`（真实数据目录，`data.db` + `storage/` 里的照片）、`dist/`、`node_modules/` 这类
+// 路径连一行提示都没有 —— 闸门对它们沉默，而沉默容易被读成「干净」。
+// 这里把「闸门没看的地方」列出来（`--directory` 让整目录塌缩成一条，避免上千行噪声）。
+// **只做可视化，不参与阻断判定**：被忽略的东西不会被推送，加进扫描面反而会改变闸门语义。
+let ignoredEntries = []
+try {
+  ignoredEntries = gitZ(['ls-files', '--others', '--ignored', '--exclude-standard', '--directory'])
+} catch {
+  ignoredEntries = []
 }
 
 const ORDER = ['P0', 'P1', 'P2']
@@ -424,6 +440,18 @@ if (ignoredSensitive.length) {
   console.log('  ℹ️ 被 .gitignore 忽略的敏感命名文件 ' + ignoredSensitive.length + ' 个（未扫描其内容，仅列路径）：')
   for (const f of ignoredSensitive.slice(0, 12)) console.log('      ' + f + '  [未扫描内容]')
   console.log('      这些文件当前不会被推送；但 `git add -f`、改忽略规则、或它们被外部工具改写后入库都会漏掉内容检查。')
+  console.log()
+}
+
+// 【R28 W28D-05】「闸门没看的地方」清单：只列路径，明确说明未扫描。
+if (ignoredEntries.length) {
+  console.log('  ℹ️ 被 .gitignore 忽略的条目 ' + ignoredEntries.length + ' 个（**不参与扫描，也不会被推送**；列出来只为让「闸门没看的地方」可见）：')
+  for (const f of ignoredEntries.slice(0, 12)) {
+    console.log('      ' + f + (f.endsWith('/') ? '  [忽略的目录，未扫描内容]' : '  [忽略的文件，未扫描内容]'))
+  }
+  if (ignoredEntries.length > 12) console.log('      …另有 ' + (ignoredEntries.length - 12) + ' 个')
+  console.log('      注意：真实数据目录（`pb_data/` 下的 `data.db` 与 `storage/` 里的照片）正落在这一类被忽略路径里 ——')
+  console.log('      它们不会被推送，但一旦 `git add -f` 或改 .gitignore，闸门不会替你兜住那一步（没有第二道防线）。')
   console.log()
 }
 

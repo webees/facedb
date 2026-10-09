@@ -336,6 +336,28 @@ const CASES = [
     ignore: ['.env.local'],
     expect: { code: 0, contains: '被 .gitignore 忽略的敏感命名文件' },
   },
+  // ── 提示区（R28 W28D-05）：整块被忽略的路径必须可见 ────────────────────
+  // 场景里 `pb_data/` 是**被忽略的目录**，里面放一个带 ghp_ 令牌的「照片」：
+  // 它不在扫描面内（被忽略的东西不会被推送），所以退出码必须是 0 —— 这正是本条要钉的语义；
+  // 但闸门**必须**把这条路径列进「闸门没看的地方」，否则「沉默」会被读成「干净」。
+  {
+    name: 'i2 被忽略的整块目录（pb_data/ 里的照片）必须出现在「闸门没看的地方」清单里',
+    files: {
+      'src/ok.ts': 'export const x = 1\n',
+      'pb_data/storage/abc123/photo.jpg': 'ghp_' + 'B'.repeat(30) + '\n',
+    },
+    ignore: ['pb_data'],
+    expect: { code: 0, containsAll: ['被 .gitignore 忽略的条目', 'pb_data/', '未扫描内容'] },
+  },
+  // ── 非 ASCII 路径（R28 W28D-05 附带）：`git ls-files` 默认会把这类路径加引号并转义 ─────
+  // 修复前：闸门拿到的是 `"docs/\346\263\204…md"` 这种**转义后的字面量**，读文件必失败 ⇒
+  // 把工作区里真实存在的文件记成「索引有而文件不在」⇒ voided ⇒ exit 2（假未判定）。
+  // 这条用「中文名 + 真令牌」双向钉住：既要扫得到（exit 1 + BEARER 1），又不能因路径被转义而 voided。
+  {
+    name: 'm16 非 ASCII 文件名里的令牌必须被抓（git quotePath 不得让它变成「工作区缺失」）',
+    files: { ['docs/' + '\u6cc4\u9732\u8bf4\u660e.md']: 'ghp_' + 'C'.repeat(30) + '\n' },
+    expect: { code: 1, hit: ['BEARER', 1] },
+  },
 ]
 
 let pass = 0
@@ -361,6 +383,8 @@ for (const c of CASES) {
     else if (got !== 0) problems.push(`规则 ${id} 命中 ${got} 处 ≠ 期望 0 处（假阳性）`)
   }
   if (c.expect.contains && !out.includes(c.expect.contains)) problems.push(`输出里缺少「${c.expect.contains}」`)
+  // containsAll：一条场景要同时钉住多处文案时用（比只钉一处更防「只改了半句」）
+  for (const s of c.expect.containsAll || []) if (!out.includes(s)) problems.push(`输出里缺少「${s}」`)
   if (problems.length === 0) {
     pass++
     console.log(`  ✅ ${c.name}`)

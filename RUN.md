@@ -248,6 +248,18 @@ blendshape 值飙升 → 用户越转头越被判「请睁开眼睛」→ **侧�
 整批重发，已采集的文件仍在内存里；不给入口的话用户只能刷新页面，而刷新会丢掉本次全部采集）。
 另有一个**「重试」按钮**（`v-if="retryable"` → `retry()`）用于「连续多帧识别不到人脸」时重新开始。
 
+**失败要分两种性质说（R28 修复，W28C-02）**：原先无论 4xx 还是网络故障都显示同一句
+「上传失败，请检查网络后点下方「重新提交」」——对 4xx（文件过大 / 数量超限 / 字段校验失败）
+这句是**错的归因**：网络没问题，而「重新提交」对同一批是**幂等的失败**（实测连点 3 次，
+每次都发 3 次请求、每次结果相同），用户会被推进一个永远出不去的循环。
+现在 `src/lib/upload-batch.ts` 的 `BatchRun` 带 **`permanent: boolean`**
+（catch 里 `permanent = e instanceof PermanentError`，5 个 return 出口都带上），
+组件按它分流：`permanent` ⇒ `hintUploadRejected`（「服务端拒绝了这一批…重试不会有变化，
+请点下方「重试」重新采集」），否则仍是 `hintUploadFailed`。
+⚠️ **只加了观测与文案，没改重试语义**：4xx 仍然重试 3 次、网络故障仍然 9 次（判据 A2/A4 钉住）。
+判据：`<运行根>/lib/r28-attribution-verify.mjs`（20 条断言；把真源码用工程自带 typescript 转译后只桩
+`fetch`；BASE 臂用固定提交 `1dc50b2` 的 src 跑同一套，必须报红 —— 基线锚固定提交、不锚 HEAD）。
+
 **两个容易被逐帧逻辑冲掉的提示**：`loop()` 每帧都会 `setHint(verdict.hintKey)`，
 会把「保持不动，正在拍摄…」和「上传中…」覆盖掉（表现为动画一闪而过）。
 所以 `loop()` 里加了条件：`if (!recording.value && !submitting.value) setHint(...)`。
@@ -1006,10 +1018,10 @@ s = s.replaceAll('{' + k + '}', String(v))          // ❌
 旧读数「23 个不同键」只扫 `t('k')` 单引号字面量，既不覆盖上列形态也不查死键，**已作废**。
 
 ```
-中文键 70   英文键 70   ← 完全对称
+中文键 76   英文键 76   ← 完全对称
 仅中文有：无      仅英文有：无
-所有被引用的键（70 个不同键）都有定义   ← 拦住拼错的键
-所有定义的键（70 个）都被引用           ← 拦住死键（无人引用的词条）
+所有被引用的键（76 个不同键）都有定义   ← 拦住拼错的键
+所有定义的键（76 个）都被引用           ← 拦住死键（无人引用的词条）
 ```
 
 **两个方向都要写**：只写「被引用的都有定义」拦不住死键 —— 死键不会被任何分支触发，
@@ -1179,6 +1191,15 @@ elementFromPoint 逐点检测：命中 video 的采样点 0 个
 
 PB 的缩略图基于图片处理库，不含视频解码，`thumb` 参数对视频被直接忽略。
 
+### 缩略图是「按需生成 + 落盘缓存」的（R28 实测，与体积/回收有关）
+
+`thumbs: ["600x0"]` **不会在上传时生成派生文件**：一次提交后记录目录里只有正文与它的 `.attrs`
+边车（每个上传文件恰好 2 个文件）。**第一次**带 `?thumb=600x0` 取图时才生成，落在
+`<记录目录>/thumbs_<原文件名>/600x0_<原文件名>`（实测首次取 → 该目录 +150,689 B 正文 +194 B `.attrs`；
+**再取一次命中缓存，字节零增长**）。删除记录时这些派生文件**一起被删**（4 文件 → 0）。
+⇒ 对存储做容量估算时，「照片数 × 原图大小」是对的，但**若前端或后台会反复取缩略图，
+实际占用会多出约一份缩略图**；`?thumb=` 的调用量本身不产生额外增长（有缓存）。
+
 ### 改法（第 ⑤ 处 PB 补丁）
 
 `ui/src/components/records/RecordFileThumb.svelte` 里，对 video 用 `<video preload="metadata">`：
@@ -1342,7 +1363,7 @@ hint: failed → failedMax
 |---|---|---|
 | `cameraDenied` / `cameraNotFound` / `cameraBusy` / `cameraFailed` | ✅ 安全 | 摄像头未起，`loop()` 因 `videoWidth === 0` 提前 return |
 | `modelFailed` | ✅ 安全 | 在 `onMounted` 里紧跟 `return`，`loop()` 根本没启动（实测：提示保持 5 秒不变） |
-| `failedMax` | ✅ 安全 | 连续失败上限 `MAX_FAILS = 5`；`retryable = fails >= MAX_FAILS`，而 `loop()` 里有 `if (retryable.value) return`，挡在 `setHint` 之前 |
+| `failedMax` | ✅ 安全 | 连续失败上限 `MAX_FAILS = 5`；`retryable` 的判定**不止 `fails >= MAX_FAILS` 一条**（R28 W28C-08 复核：四条件矩阵逐条翻面，`fails=4` 边界正确翻 false；R23 那次的「`camLost` 死锁」已不存在），而 `loop()` 里有 `if (retryable.value) return`，挡在 `setHint` 之前 |
 | `hintUploading` | ✅ 安全 | `submitting` 期间 `loop()` 的覆盖条件是 false |
 | `cameraLost` | ⚠️ **曾有风险** | 摄像头曾正常、画面静止 → `loop()` 在跑 → 被盖掉。已加 `camLost` 标志阻挡 |
 | `hintNoFace` / `hintMultiFace` / `hintTooFar` | — | 本身就是逐帧判定的输出，不算被覆盖 |
@@ -1490,13 +1511,83 @@ PocketBase 的字段约束在 API 上的显示与**实际生效值**不完全一
 | `note` | `max: 0` → **R26 起 `max: 2000`** | **2000 字符**（R26 迁移 `1791281300` 之前是 PB 默认 5000） | `max: 0` 表示"未设置"，PB 对 text 有默认上限 5000；本仓库主动收窄到 2000 |
 | `session_id` | `required: true` | 必填 | 缺省或空串都会 400 |
 | `photos` | `maxSelect: 24` / `maxSize: 20MB` | 一致 | 25 张会 400 |
-| `video` | `maxSelect: 8` / `maxSize: 100MB` | 一致 | 101MB 报 `validation_file_size_limit` |
+| `video` | `maxSelect: 8` / `maxSize: 100MB` | **一致**（104857600 B） | R28 实测：**40 MiB 的 webm 打进 `video` → 200**（记录创建成功、文件落库）；104857600 → 200、104857601 → 400 `validation_file_size_limit`。⚠️ **`maxSize` 是按字段各自生效的**：同一支 40 MiB 文件打进 `photos` → 400 且回包 `params.maxSize` 是 **20971520**（photos 的值）—— 把这条读数当成「任何单个文件的硬闸门」会得出错误结论（W28C-10 就是这么来的，已证伪） |
 | `meta` | `maxSize: 1048576`（1 MB）→ **R26 起 `maxSize: 65536`** | **64 KB**（R26 迁移 `1791281300`） | API 里显示的 `maxSize: 0` 是 json 字段的表层默认值；R26 之前实测硬限 **1 MB**（1048576B = 200 / 1048577B = 400 `validation_json_size_limit`）。真实采集的 meta 量级是**几 KB**（16 文件结构实测 2706~3006 B，随 `deviceInfo` 长度浮动），64 KB ≈ 二十余倍余量 |
 | `submit_id` | **R27 新增**，`max: 64`、可选 | 唯一索引（**部分索引**，见下节） | 空值不参与唯一性判定 |
 
 **`note` 的 5000 上限在后台手工编辑时会撞到**（采集端不写 note，故不影响采集），
 超限报错：`最多允许 5000 个字符`。按**字符**计数而非字节 —— 实测 5000 个汉字（15000 字节）通过，
 5001 个汉字被拒。（R26 起本仓库把上限收窄到 2000，后台手工编辑同样会撞。）
+
+**⚠️ MIME 是「按内容嗅探」判的，不是按 multipart 的 `Content-Type`**（R28 实测，装置教训）：
+一支 40 MiB 的**全零稀疏**文件，即使 curl 显式写了 `type=video/webm`，仍被回
+`validation_invalid_mime_type`（Go 的 `http.DetectContentType` 把它判成 `application/octet-stream`）。
+构造大文件夹具时必须写入**真实 magic**（webm 需要完整的 EBML 头 + DocType `webm`，
+生成器见 `$RUN/tmp/W28-A/gen-video.mjs`）—— 否则「体积边界」的读数会被 MIME 拒绝挡在前面，
+看起来像「体积上限比实际更小」。
+
+**⚠️ 单文件 `maxSize` 是逐字段生效的，不存在「整请求的单一硬闸门」**（R28 实测）：
+同一支 40 MiB 文件，打进 `video` → **200**，打进 `photos` → **400** 且 `params.maxSize=20971520`。
+报错里的 `params.maxSize` 只说明**被打的那个字段**的上限，不能反推「所有文件都被它挡」。
+
+## 存储占用、配额与限速（第 74 轮实测）
+
+一次匿名 `POST /api/collections/captures/records` 会写多少、删了能不能回收、有没有闸门挡着 ——
+这四组读数全部来自一次性实例（空 `pb_data` + `webees-facedb-pocketbase:0.40.4-zh`），
+**生产 `pb_data` 未被触碰**。
+
+### 落盘形态：每个上传文件 = 正文 + 一个 `.attrs` 边车
+
+```
+/pb_data/storage/<collectionId>/<recordId>/<storedName>          ← 正文（原始字节，无转码）
+/pb_data/storage/<collectionId>/<recordId>/<storedName>.attrs    ← 220~242 B 的元数据边车
+```
+
+`.attrs` 里是 `content_type` + `metadata.original-filename` + base64 的 `md5`。
+**没有额外副本、也没有上传期派生文件**（容器里没有 ImageMagick/convert/vips/ffmpeg；
+`thumbs: ["600x0"]` 是**取图时**才生成，见前文缩略图一节）。
+⚠️ 小文件场景下边车的占比很可观：40 个 1 KiB 文件上传 40,960 B，实际占 54,823 B / 80 个文件
+（正文 + `.attrs` 各一份）。做容量估算时别只算上传字节。
+
+### 回收：删记录 / 删文件字段都会立即回收，且**不留孤儿**
+
+- 超管 `DELETE` 记录 → `204`，该记录目录下正文 + `.attrs` 一起消失（实测 4 文件 433,047 B → 2 文件
+  216,804 B），记录目录本身也被移除；随后带 token 取文件 `404`。
+- `PATCH {"photos": []}` → 被移出的文件**立即回收**（335,199 B + 223 B 同时消失）。
+- 把已删文件名再送回 → `400`。
+- **被拒绝的提交不留文件**：note 超长 / meta 超限 / session_id 超长 / 文件数超限 / 单文件超大
+  五种拒绝形态下，storage 文件数**恒为拒绝前的值**（无部分写入、无半条记录、无孤儿行）。
+- **PB 没有孤儿清扫命令**（CLI 只有 `migrate` / `serve` / `superuser` / `update`，二进制里无
+  clean/orphan/gc 模块，端点只有 `POST /api/files/token` 与 `GET /api/files/{c}/{id}/{f}`）——
+  注入一个孤儿文件后经三类操作仍在。要精确回收只能用数据目录备份回滚。
+
+### 配额：per-file 与 maxSelect 都被强制，**但「一条记录的总量」没有任何上限**
+
+- per-file 上限与 `maxSelect`（photos 24 / video 8）都是**闭区间**：20,971,520 B → 200 / 20,971,521 B → 400；
+  24 个 → 200 / 25 个 → 400。两者同时越界时**数量上限先判**。
+- **PB 层没有单记录总大小上限**：一条记录 24 × 20 MiB = 503,316,480 B（480 MiB）→ `200`（约 2 秒）。
+- 据此推算**单记录上限 ≈ 24 × 20 MiB + 8 × 100 MiB = 1,342,177,280 B（1280 MiB）**，
+  记录数不限。**这是「匿名接口可达」的量级** —— 若部署在公网，请自己加卷配额或前置限流。
+
+### 限速：规则在，但**整体关闭**（`enabled: false`）
+
+超管 `GET /api/settings` 读到 `rateLimits.enabled = false`，`excludedIPs` 为空，规则四条：
+
+| label | 窗口 | 上限 |
+|---|---|---|
+| `*:auth` | 3s | 2 |
+| `*:create` | 5s | 20 |
+| `/api/batch` | 1s | 3 |
+| `/api/` | 10s | 300 |
+
+（上表是**语义读数**；该字段在 API 里用 Go 的 duration 写法，不是 `"3s"` 这样的字符串。
+要原样取值请自己 `GET /api/settings` 复核。）
+
+实测：**40 次连续匿名 create（各 1 KiB）在 89 ms 内全部 `200`**（2.2 ms/次）。
+工程仓全仓 `rateLimit` / 限速相关零命中 ⇒ 限速是**部署期设置**，不在代码里。
+开启步骤（**属外部操作，本轮只文档化、未改生产设置**）：PB 后台 `Settings → Rate limits`
+把 `enabled` 打开并按上表核对规则，或在 `serve` 前面挂反代限流。
+⚠️ 打开前先确认客户端行为：本工程的提交有外层 3 次 × 内层 3 次重试，规则太紧会把正常重试打成 429。
 
 ## 提交幂等键 `submit_id`（第 73 轮新增）
 
@@ -1559,8 +1650,18 @@ PocketBase 对**缺失的 text 字段存空字符串 `""`，不是 NULL**（实�
   客户端有自检（`perFile.length !== batch.length` 抛错），服务端零校验（W27A-03 / W27B-02 / W27B-03）。
 - `segmentOk` 与 video 是否存在：两者矛盾（`segmentOk:true` 但没有视频、或有视频却 `false`）都 200（W27B-04）。
 - 落库文件名与 `meta.perFile[i].file`：PB 会重命名，实测 **0/16 完全相等**，对应只能靠**位置/idx**（W27B-01）。
-- 回退路径的文件清理：`migrate down` 把 file 字段移出 schema 后**已落盘文件不会随之删除**，
-  且 PB 没有孤儿清扫命令（W27C-02/03/07）—— 要回收只能用数据目录备份回滚。
+- 回退路径的文件清理：**分两种情况，不能一概而论**（R28 W28B-04 实测修正，原文只写了第一种）。
+  ① 只回退 **file 字段相关**的迁移（字段被移出 schema）时，**已落盘文件不会随之删除**；
+  ② 但回退到**创建集合的那支迁移之前**时，PB 删集合会**连同该集合的 storage 目录一起删掉**
+  —— 实测 `Reverted 1759600000_created_capture_collections.js` 之后 captures 表不存在、
+  该集合目录下文件 8 → 0（1,232,631 B → 0 B），记录也随之消失。
+  两种情况下 PB 都**没有孤儿清扫命令**（W27C-02/03/07）—— 要精确回收只能用数据目录备份回滚。
+- **回退不是清理路径：重启即重放**（R28 W28B-06，P1）。回退到 8 条迁移、captures 表已不存在之后，
+  以 `--automigrate=false` 重启一次 ⇒ 已应用迁移回到 **30**、captures 集合与规则**原样复活**（GET 200），
+  只有记录与文件不复活（storage 0 B）。**`--automigrate=false` 挡不住启动重放**（该参数只管
+  Admin UI 改动自动生成迁移文件，`serve` 启动时按迁移目录补应用是 PB 的固定行为）。
+  推论（**机制推断，R28 未直接实测**）：要让服务停在旧 schema 上，得同时不挂 `pb_migrations`。
+  结论：**别把回退当清理手段**，要清理就备份数据目录后重建。
 - PB 0.40 的 `migrate down` 在**非 tty** 下打印「命令已取消」却**退出码 0**：脚本里不能只看退出码，
   必须看输出里有没有 `Reverted <文件>`（W27C-08）。
 - **执行型迁移判据（`$RUN/lib/check-migration-invariants-exec.mjs`）的记录面是桩**：它的模拟器里
@@ -2037,6 +2138,8 @@ sqlite3 'file:<data.db>?mode=ro' \
   `users` 立刻又被删掉（实测：`migrate down 9` 后宿主 sqlite 读「集合 captures users · 迁移行数 18」，
   起一次 `serve` 后变回「集合 captures · 迁移行数 27」）。**`--automigrate=false` 挡不住它** ——
   在 PocketBase 里该参数管的是 Admin UI 自动生成迁移，不是启动时应用已有迁移。
+  （R28 W28B-06 在「回退到集合创建之前」这一更极端形态上再次实测：8 → 30 行、captures 集合与规则
+  原样复活，只有记录与文件不复活 —— 见上文「服务端仍然不校验的东西」里的 P1 条目。）
 - 另外三条实测：`migrate down 9` 会把 `captures` 的**记录一起丢掉**（表被重建，行数 1 → 0）；zh 构建
   **不支持** `migrate history`（打印 `不支持的命令: "history"`）；对**运行中**的实例执行
   `superuser upsert/update` 不生效（库内哈希已更新、登录仍 400），必须 `docker restart` 之后才认。
@@ -2061,7 +2164,7 @@ mkdir -p /tmp/migcheck && docker run --rm \
 
 | 坑 | 实测表现 | 正确做法 |
 |---|---|---|
-| `migrate up <n>` 的 `<n>` 不生效 | `migrate up 1` 一次应用了**全部工程迁移**（测量时为 19 个 `pb_migrations/*.js`，打印 19 行 `Applied`；R26 起工程迁移共 **21 个**，同一个坑不变） | 要「只应用前 k 条」的中间态，只能把前 k 个迁移文件拷进暂存目录再对全新数据目录 up（**前缀暂存法**） |
+| `migrate up <n>` 的 `<n>` 不生效 | `migrate up 1` 一次应用了**全部工程迁移**（测量时为 19 个 `pb_migrations/*.js`，打印 19 行 `Applied`；R27 起工程迁移共 **22 个**，同一个坑不变） | 要「只应用前 k 条」的中间态，只能把前 k 个迁移文件拷进暂存目录再对全新数据目录 up（**前缀暂存法**） |
 | `migrate down` 没有 stdin 时**退出码仍是 0** | 只打印 `The command has been cancelled`，零 schema 变化，却看着像成功 | 判成功必须 grep 输出里的 `Reverted <文件名>`，不能只看退出码 |
 | down 体抛错时**退出码仍是 0** | PB 打印 `Error` 行但继续执行后续迁移，退出码 0 | 同上：判失败必须 grep `Error`，CI 只判退出码会漏掉回滚失败 |
 
@@ -2075,13 +2178,15 @@ mkdir -p /tmp/migcheck && docker run --rm \
 | 紧接着再 `down 1` | **还是它**，且 `_migrations` 行数**不再变化**（纯空操作） |
 | `down 2` | `[1640988000_aux_init.go, 1778828400_normalize_indexes.go]` |
 | `down 16` / `down 17` | 分别删掉 16/17 行，但 `Reverted` 只打印 15/16 行（差 1） |
-| 空库全量 `up`（测量时 27 行；R26 起 29 行）后 `down 1` | **正常**：回退最新一条（测量当时是 `1791281100_restrict_session_id_control_chars.js`；R26 起最新是 `1791281300_bound_capture_note_and_meta.js`） |
+| 空库全量 `up`（测量时 27 行；R26 起 29 行；**R28 实测 30 行** = 22 个工程迁移 + 8 个二进制内建 `.go` 迁移）后 `down 1` | **正常**：回退最新一条（测量当时是 `1791281100_restrict_session_id_control_chars.js`；R27 起最新是 `1791281400_capture_submit_id.js`） |
 | 空目录直接 `down 1` | **正常**：回退 `1778828400_normalize_indexes.go` |
 
 → 异常**只在既有生产库上**出现。能同时解释全部观测的唯一模型：走链顺序是「`1640988000_aux_init.go` 排第一，其余按 `applied` 降序；`_migrations` 里**文件已不存在**的行被静默跳过（不报错、不删记录、也不占 N）」。
 上游源码 `core/migrations_runner.go` 的 `lastAppliedMigrations` 是**纯 `applied DESC`**（`OrderBy("substr(applied||'0000000000000000', 0, 17) DESC")`）；把该 SQL（含 `file IN names` 过滤）在真实生产库上复算，`limit 2` 得到 `[1778828400_normalize_indexes.go, 1763020353_update_default_auth_alert_templates.go]`，与二进制实际行为**不一致**。**成因未查证**（疑与汉化 fork 的二进制有关：镜像内二进制 `--version` 只打印 `(untracked)`、无 vcs 信息）。此处只登记**实测行为**：**不要用 `down N` 去撤销某一条特定迁移**，要撤某条就用「前缀暂存法」（见上表）；也**不要**据此改源码或加硬断言。
 
-**幽灵记录（正常现象，不是缺陷）**：生产库 `_migrations` 有 28 行而仓库只有 19 个 `.js`，多出的那一行是 `1791206104_deleted_employees.js` —— 该迁移改名为 `1791206415_…` 之前已被应用过，改名后 PB 把新名字当新迁移重跑（up 体用 `try { … } catch { return }` 幂等跳过），而**旧名字的记录永远留在表里**：`down 27`（一路到底）之后表里**只剩这一行**。任何「`_migrations` 行数 == 迁移文件数」的断言都会误报。
+**幽灵记录（正常现象，不是缺陷）**：生产库 `_migrations` 有 28 行而**测量当时**仓库只有 19 个 `.js`（R28 起仓库是 22 个 —— 生产库的行数不会因为仓库新增文件而变，新增文件只会在下次 `up` 时追加行），多出的那一行是 `1791206104_deleted_employees.js` —— 该迁移改名为 `1791206415_…` 之前已被应用过，改名后 PB 把新名字当新迁移重跑（up 体用 `try { … } catch { return }` 幂等跳过），而**旧名字的记录永远留在表里**：`down 27`（一路到底）之后表里**只剩这一行**。任何「`_migrations` 行数 == 迁移文件数」的断言都会误报。
+
+**⚠️ `_migrations` 读法（R28 实测）**：它**不是** API 集合 —— `GET /api/collections/_migrations/records` 即使带超管 token 也返回 `404 {"message":"缺少集合上下文。"}`。要读行数只能把 `data.db`（连同 `-wal`/`-shm`）从容器里 `docker cp` 出来再用宿主的 `sqlite3` 查 `SELECT COUNT(*) FROM _migrations`；空数据目录 + `0.40.4-zh` 上该值是 **30**（= 22 个工程迁移 + 8 个内建 `.go`：`1640988000_aux_init.go`、`1640988000_init.go`、`1717233556..559_v0.23_migrate{,2,3,4}.go`、`1763020353_update_default_auth_alert_templates.go`、`1778828400_normalize_indexes.go`）。
 
 **⚠️ `_migrations` 行数是基座相关的，不是常量**（R20 实测，三个读数各有口径）：
 
@@ -2340,6 +2445,11 @@ R18-E2 实测（`down 1` 后读表）：`users` 重建为 `fields=10 id=_pb_user
 修复是 `pb_migrations/1791281200_protect_capture_files.js`：把 `photos` 与 `video` 两个 file 字段置
 `protected: true`（down 还原 `false`）。**受保护之后取文件要带 file token**（集合的 `fileToken` 或对应记录权限），
 后台（Admin UI）自带，前端本来也不取 —— 全仓 grep `api/files` / `photoUrl` 是 0 命中，所以这项收紧对功能面零影响。
+
+**取受保护文件的正确姿势（R28 W28B-08 实测）**：先 `POST /api/files/token`（带上自己的凭据）拿到 JWT，
+再请求 `/api/files/<集合>/<记录 id>/<文件名>?token=<JWT>`。**带 `Authorization: <超管 token>` 头直接取文件恒 `404`**
+（文件端点只认 `?token=`）。另外**记录响应里不含 `fileToken` 字段** —— 别指望从记录 JSON 里读到它，
+要自己调 `/api/files/token`。删除记录后同一个 URL 立刻 `404`（含缩略图）。
 
 判据：`<运行根>/lib/r26-file-exposure-verify.mjs` 共 **15 项**（A/B/C 三组查暴露面，D/E 两组查下面的输入上限），
 两臂成对 —— BASE 臂（基线提交的

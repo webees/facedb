@@ -6,7 +6,9 @@
 #   多阶段 + static-web-server:alpine      66.6MB  ← 当前（docker images 口径、arm64，2026-10-07 实测；
 #                                                      同口径下删掉死 wasm 模块前为 80MB。体积必须连口径一起写）
 #
-# 关键认识：dist 只有 27.4MB（12 个文件合计 27,408,705 字节；39.5MB 是删掉死 wasm 变体之前的读数），
+# 关键认识：dist 只有 27.4MB（13 个文件合计 27,433,280 字节；12 个文件 / 27,408,705 字节是 R23 删死 wasm 之后、
+# R24 抽 CaptureFooter.vue 之前的读数；39.5MB 是删掉死 wasm 变体之前的读数。文件数与字节和都是快照不是断言，
+# 真正钉住产物的是 dist/SHA256SUMS 与 `npm run verify:size`）。
 # 镜像的大头从来不是产物，而是「托管它的服务器」。
 # 两个口径都实测过（2026-10-07，arm64）：
 #   docker images 的 Size          nginx:1.27-alpine 78.2MB   static-web-server:2-alpine 58.6MB
