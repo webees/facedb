@@ -21,7 +21,6 @@
 | 依赖 | 许可 | 用途 |
 |---|---|---|
 | [@mediapipe/tasks-vision](https://github.com/google-ai-edge/mediapipe) | Apache-2.0 | 人脸关键点检测（FaceLandmarker） |
-| [pocketbase](https://github.com/pocketbase/pocketbase) | MIT | 后端与 JS SDK |
 | [vue](https://github.com/vuejs/core) | MIT | 前端框架 |
 | [Rsbuild](https://github.com/web-infra-dev/rsbuild) | MIT | 构建工具 |
 | [Tailwind CSS](https://github.com/tailwindlabs/tailwindcss) | MIT | 样式 |
@@ -34,10 +33,14 @@
 
 ### 运行期闭包（`npm ls --prod --all` 实测，2026-10-08）
 
-**口径**：`npm ls --prod --all` 在工程根实跑，输出 **32 个唯一包** = 3 个直接依赖
-（`@mediapipe/tasks-vision`、`pocketbase`、`vue`）+ **29 个传递包**。每个包的 `license` 值都是从
+**口径**：`npm ls --prod --all` 在工程根实跑，输出 **31 个唯一包** = 2 个直接依赖
+（`@mediapipe/tasks-vision`、`vue`）+ **29 个传递包**（R30 重测；早期读数是 32 = 3 直接 + 29，
+多出的那个直接依赖 `pocketbase` 已从 `package.json` 移除，见下方备注 2）。每个包的 `license` 值都是从
 `node_modules/<pkg>/package.json` 的 `license` 字段**实读**的，不是从上游仓库猜的。
-下表按包名排序，与上表重复的三个直接依赖也一并列出以便核数。
+下表按包名排序，与上表重复的两个直接依赖也一并列出以便核数。
+**两种口径别混**：本表是「装出来的树」（`npm ls --prod --all`，31 个）；`THIRD-PARTY-NOTICES.md` 的自动生成块是
+「lock 的非 dev 闭包」（24 个）—— 差额来自 lock 里被标 `dev` 的旁支（`@emnapi/*`、`@napi-rs/*`、`@tybys/*`、`tslib`、`typescript`），
+它们装在 `node_modules` 里但不属于 lock 的运行时闭包。
 
 ⚠️ 两点口径提醒：`Rsbuild` / `Tailwind CSS` / `@rsbuild/plugin-vue` / `@tailwindcss/postcss` / `vue-tsc`
 是 `devDependencies`，`--prod` 树里**根本不出现**（它们的许可仍见上表）；`typescript` 既是
@@ -72,7 +75,6 @@
 | `magic-string` | 0.30.21 | MIT |
 | `nanoid` | 3.3.19 | MIT |
 | `picocolors` | 1.1.1 | **ISC** |
-| `pocketbase` | 0.28.1 | MIT |
 | `postcss` | 8.5.28 | MIT |
 | `source-map-js` | 1.2.2 | **BSD-3-Clause** |
 | `tslib` | 2.8.1 | **0BSD** |
@@ -84,9 +86,10 @@
 1. **`entities` / `picocolors` / `source-map-js` / `tslib` 是闭包里唯一的四个非 MIT/Apache 许可**
    （BSD-2-Clause / ISC / BSD-3-Clause / 0BSD，四者都是宽松许可、均允许商用与再分发，
    义务只是保留版权与许可声明）。**0BSD 是四个里最宽松的** —— 它连署名义务都没有。
-2. **`pocketbase` 被 npm 标为 `extraneous`**：它仍在工作区 `package.json` 的 `dependencies` 里，
-   但 `node_modules/pocketbase` 已不再被 lock 的根依赖声明覆盖（有一笔移除该**死依赖**的在途改动，
-   尚未提交）。**判「它现在算不算依赖」要读 `package.json`，别读本文。**
+2. **`pocketbase` 已不是本仓库的依赖（R30 修正）**：它曾作为「后端与 JS SDK」登记在本表与上表，
+   但 `package.json` 的 `dependencies` 现在只有 `@mediapipe/tasks-vision` 与 `vue`，`package-lock.json` 顶层也没有它，
+   `node_modules/pocketbase` 目录不存在（移除该**死依赖**的改动已落地）。本文档曾写「有一笔在途改动尚未提交」，那是当时的事实，现已过期。
+   **判「它现在算不算依赖」要读 `package.json`，别读本文。**
 3. **`@mediapipe/tasks-vision` 的 `package.json` 里没有任何 `dependencies` / `optionalDependencies` /
    `peerDependencies` 字段** —— 它把 WASM 运行时随包分发（`wasm/`），所以那 6 个 `@emnapi/*`、
    `@napi-rs/*`、`@tybys/*`、`tslib` 是 npm 从 lock 里带出来的旁支，不是 MediaPipe 的声明依赖。
@@ -129,7 +132,10 @@ Apache-2.0 第 4 条要求再分发时随附许可副本；上游包内不带原
 
 - 仓库根新增 [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)：含 **Apache-2.0 全文**（9195 字符，
   取自本机 `node_modules/typescript/LICENSE.txt` —— 该文件即 Apache-2.0 标准全文）、MIT 全文、
-  随镜像分发的 wasm/模型文件清单，以及由 `lib/r20-thirdparty-gen.mjs` 从 lock 生成的运行期闭包表。
+  随镜像分发的 wasm/模型文件清单，以及运行期闭包表（**口径**：`package-lock.json` 的非 dev 闭包，24 个包；
+  与本文上表的 `npm ls --prod --all` 口径不同，后者是 31 个 —— 差额来自 lock 里被标 `dev` 的旁支）。
+  生成器 `lib/r20-thirdparty-gen.mjs` **已不在本仓库**（运行根脚本未入库），改依赖后需按同一口径重新生成，
+  再由 `npm run verify:notices` 校验该块与 lock 逐条一致。
 - `rsbuild.config.ts` 的 `output.copy` 把它复制进 `dist/THIRD-PARTY-NOTICES.md`；`dist` 是 web 容器的
   静态根（`Dockerfile` 的 `COPY --from=build /app/dist /public`），因此它随镜像被分发，
   可在 `https://<host>/THIRD-PARTY-NOTICES.md` 读到。

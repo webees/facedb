@@ -37,7 +37,7 @@ http://localhost:3000/202610050513
 ```
 
 - 网址路径即**采集编号**，经前端剥控制符（`\p{Cc}`）与 trim 后存为记录的 `session_id`
-- 采集页在全部采集点完成后 `emit('done', results)`，`results` 是 `{ pose, filename }` 列表，条目数**等于本次真实上传的文件数**（每采集点 1 张照片或 1 段视频；视频步为 1 段 `*_video_*.webm`）。唯一的消费者 `src/App.vue` 忽略该 payload，故它只是对外契约，不参与落库（不是原样：前后空白与控制符会被去掉；超长或含非法字符会在**上传阶段**被后端拒绝）
+- 采集页在全部采集点完成后 `emit('done', results)`，`results` 是 `{ pose, filename }` 列表，条目数**等于本次真实上传的文件数**（5 个拍照步各出 2 张连拍照片 + 6 个采集点各出 1 段 `*_video_*.webm`，共 10 张照片 + 6 段视频 = 16 个文件；活体步只录视频、不出照片）。唯一的消费者 `src/App.vue` 忽略该 payload，故它只是对外契约，不参与落库（不是原样：前后空白与控制符会被去掉；超长或含非法字符会在**上传阶段**被后端拒绝）
 - 编号可以是任意非空字符串（时间戳、任务号、工号都行），但**有格式与长度约束**：前端只剥控制符并 trim；后端 `captures.session_id` 另有 pattern（禁首尾空白与分隔符、禁控制符）与 **200 个码点**上限（实测 201 码点 = 400 `validation_max_text_constraint`）
 - 不带编号打开（`http://localhost:3000/`）显示「链接中缺少采集编号」
 - 采集完成后页面提供「再采一次」（同一编号重采）
@@ -158,7 +158,7 @@ blendshape 值飙升 → 用户越转头越被判「请睁开眼睛」→ **侧�
 原先上界 45° 会让转到 50° 的用户被判「请回正」，而那其实已满足「转到位」。
 `MAX_YAW = 70`（原 45）只在极端侧脸（人脸特征不足以识别）时拦截。
 
-**其余判定阈值**（同为 `src/lib/quality.ts` 导出，实测值）：
+**其余判定阈值**（取自 `src/lib/quality.ts`；其中 `BLINK` 与 `ROI_MAX` 是模块私有常量、**未 export**，脚本从源码读出后断言，实测值）：
 
 | 常量 | 值 | 作用 |
 |---|---|---|
@@ -173,7 +173,7 @@ blendshape 值飙升 → 用户越转头越被判「请睁开眼睛」→ **侧�
 
 **方向提示**：低于区间下界时，正区间提示「继续转」、负区间提示「回正」；高于上界时反之。
 早期版本在「右转转过头」时会提示「请再向右转」，导致用户越转越过——已修正
-（可用 `<运行根>/lib/legacy/verify-yaw-hints.mjs` 复跑 5 个姿态 × 13 个角度的提示矩阵）。
+（可用 `<运行根>/lib/legacy/verify-yaw-hints.mjs` 复跑 3 个姿态 × 17 个角度的提示矩阵（`cases` 3 项 × `angles` 17 项 = 51 格））。
 
 **达标判定（滑动窗口 + 滞后 + 上锁）**：`held` 计数达到 `STABLE_FRAMES` 即拍；
 失败时**递减而非清零**（landmark 抖动不会让进度来回跳），并用 `armed` 标志上锁，
@@ -517,7 +517,9 @@ CSP 里还会追加 `https://pb.example.com wss://pb.example.com`。因此**任�
 **产物必须与源码同源（R23 第四次重锚补的前提）**：判据此前只钉「产物长什么样」，不钉「产物是不是这份源码
 构建的」。收口期我拿一份**陈旧 `dist`** 重锚了入口 chunk 名 ⇒ 本地 `verify:size` 16/16 全绿、**CI 一跑就红**
 （同一个提交在干净检出里重建得到另一个 chunk 名）。修法是把喂给打包器的源码输入（`index.html` +
-`package.json` + `src/**`，共 16 个文件）的 sha256 记进判据的 `SOURCE_FINGERPRINT`，启动时重算、不一致即
+`package.json` + `src/**`，共 18 个文件 = `index.html` + `package.json` + `src/**` 16 个；**口径 = 已入库文件**
+—— 判据枚举的是工作区 `src/` 下**当时存在**的文件，所以工作区若多出未入库的新文件，输入数会随之变大（R30 时
+工作区多一个未跟踪的新文件 ⇒ 19 个输入、指纹与 HEAD 口径不同）的 sha256 记进判据的 `SOURCE_FINGERPRINT`，启动时重算、不一致即
 **未判定（exit 2）**；变异体 `m8a-src-copied-control`（原样复制 src，必须仍绿）与 `m8b-src-drift`（改一行
 src 不改产物，必须未判定）成对证明这道前提有判别力。**含义**：任何改完源码没重新构建就重锚的读数都不可信
 ——重锚前先 `rm -rf dist && npm run build`。这条前提反过来也说明「本地绿」不构成收敛证据，**必须在干净检出
@@ -565,7 +567,7 @@ docker image inspect -f '{{.Size}}' <镜像>   # 字节
 | `ghcr.io/muchobien/pocketbase:0.28.1`（历史，R19 及以前） | `sha256:c11d164acd6266e31d2b5e88160b7bb3902c472c1ec90e0f403f56e802f23935` |
 
 > 两行都列出来是因为**「仓库态」这一列必须是文件实况**：`pb-bin/Dockerfile` 的 `FROM` 在工作区里
-> 已改成 `0.40.4@sha256:9390b7b6…`，但那是**未提交的在途改动**，`HEAD`（`868da0d`）上仍是
+> 已改成 `0.40.4@sha256:9390b7b6…`，但那是**未提交的在途改动**，`868da0d`（写作时的 `HEAD`，此后 `main` 已前进）上仍是
 > `0.28.1@sha256:c11d164a…`。要判断当前仓库态，`grep '^FROM' pb-bin/Dockerfile` 与
 > `git show HEAD:pb-bin/Dockerfile | grep '^FROM'` 各读一次，别拿本文当结论。
 
@@ -798,7 +800,7 @@ count==0 → count>1 → faceRatio → 姿态兜底（含 roll）→ 目标 yaw 
 
 ## 人脸尺寸门槛 MIN_FACE_RATIO 的实测边界
 
-判定式在 `quality.ts:79`：
+判定式在 `quality.ts:124`（HEAD 行号；工作区因外部在途改动为 `:150`）：
 
 ```ts
 if (vw <= 0 || f.faceWidthPx < vw * MIN_FACE_RATIO) return no('hintTooFar')
@@ -2184,7 +2186,7 @@ mkdir -p /tmp/migcheck && docker run --rm \
 → 异常**只在既有生产库上**出现。能同时解释全部观测的唯一模型：走链顺序是「`1640988000_aux_init.go` 排第一，其余按 `applied` 降序；`_migrations` 里**文件已不存在**的行被静默跳过（不报错、不删记录、也不占 N）」。
 上游源码 `core/migrations_runner.go` 的 `lastAppliedMigrations` 是**纯 `applied DESC`**（`OrderBy("substr(applied||'0000000000000000', 0, 17) DESC")`）；把该 SQL（含 `file IN names` 过滤）在真实生产库上复算，`limit 2` 得到 `[1778828400_normalize_indexes.go, 1763020353_update_default_auth_alert_templates.go]`，与二进制实际行为**不一致**。**成因未查证**（疑与汉化 fork 的二进制有关：镜像内二进制 `--version` 只打印 `(untracked)`、无 vcs 信息）。此处只登记**实测行为**：**不要用 `down N` 去撤销某一条特定迁移**，要撤某条就用「前缀暂存法」（见上表）；也**不要**据此改源码或加硬断言。
 
-**幽灵记录（正常现象，不是缺陷）**：生产库 `_migrations` 有 28 行而**测量当时**仓库只有 19 个 `.js`（R28 起仓库是 22 个 —— 生产库的行数不会因为仓库新增文件而变，新增文件只会在下次 `up` 时追加行），多出的那一行是 `1791206104_deleted_employees.js` —— 该迁移改名为 `1791206415_…` 之前已被应用过，改名后 PB 把新名字当新迁移重跑（up 体用 `try { … } catch { return }` 幂等跳过），而**旧名字的记录永远留在表里**：`down 27`（一路到底）之后表里**只剩这一行**。任何「`_migrations` 行数 == 迁移文件数」的断言都会误报。
+**幽灵记录（正常现象，不是缺陷）**：生产库 `_migrations` **R30 实测 31 行** = 仓库 22 个 `.js` + 二进制内建 8 个 `.go` + **1 行幽灵** `1791206104_deleted_employees.js`（集合差集见 `evidence/R30-LEAD-migrations-setdiff.log`；早期读数是「28 行而仓库 19 个 `.js`」，行数不会因为仓库新增文件而变，新增文件只会在下次 `up` 时追加行）。多出的那一行是 `1791206104_deleted_employees.js` —— 该迁移改名为 `1791206415_…` 之前已被应用过，改名后 PB 把新名字当新迁移重跑（up 体用 `try { … } catch { return }` 幂等跳过），而**旧名字的记录永远留在表里**：`down 27`（一路到底）之后表里**只剩这一行**。任何「`_migrations` 行数 == 迁移文件数」的断言都会误报。
 
 **⚠️ `_migrations` 读法（R28 实测）**：它**不是** API 集合 —— `GET /api/collections/_migrations/records` 即使带超管 token 也返回 `404 {"message":"缺少集合上下文。"}`。要读行数只能把 `data.db`（连同 `-wal`/`-shm`）从容器里 `docker cp` 出来再用宿主的 `sqlite3` 查 `SELECT COUNT(*) FROM _migrations`；空数据目录 + `0.40.4-zh` 上该值是 **30**（= 22 个工程迁移 + 8 个内建 `.go`：`1640988000_aux_init.go`、`1640988000_init.go`、`1717233556..559_v0.23_migrate{,2,3,4}.go`、`1763020353_update_default_auth_alert_templates.go`、`1778828400_normalize_indexes.go`）。
 
@@ -2585,7 +2587,7 @@ bash <运行根>/lib/legacy/pb-rebuild-deploy.sh
 由 `pb-bin/Dockerfile` 经中间 stage 按 `ARG TARGETARCH` 选一份 COPY 进本地镜像。
 **镜像标签与 `FROM` 都按双态读**：部署态是 `webees-facedb-pocketbase:0.40.4-zh`、
 `FROM ghcr.io/muchobien/pocketbase:0.40.4@sha256:9390b7b63ce114dbab577be72e6ef75f718a19083866607fcbdd1b915632b943`；
-仓库态读文件 —— 工作区已改成这一版，但那 4 个文件仍是**未提交的在途改动**，`HEAD`（`868da0d`）上
+仓库态读文件 —— 工作区已改成这一版，但那 4 个文件仍是**未提交的在途改动**，`868da0d`（写作时的 `HEAD`，此后 `main` 已前进）上
 还是 `webees-facedb-pocketbase:0.28.1-zh` / `FROM ghcr.io/muchobien/pocketbase:0.28.1@sha256:c11d164acd6266e31d2b5e88160b7bb3902c472c1ec90e0f403f56e802f23935`。
 构建期按架构逐项断言 sha256 / md5 / size / ELF `e_machine` 全部命中白名单，
 且 `TARGETARCH` 必须在 `PB_ALLOWED_ARCH`（`arm64 amd64`）内，任一不符即 `REFUSED:`。
@@ -2693,7 +2695,7 @@ docker compose build pocketbase && docker compose up -d --force-recreate pocketb
 
 ```bash
 npm run verify            # 仓库自检：资源指纹 / 迁移不变量 / 文案键对称 / 二进制指纹 / 关键常量
-npm run verify:selfcheck  # 变异自检：证明上面每一项断言真的有判别力（1 个阴性对照 + 34 个变异）
+npm run verify:selfcheck  # 变异自检：证明上面每一项断言真的有判别力（36 条用例 = 1 个阴性对照 + 31 个变异体 + 4 个零样本前提对照）
 npm run verify:hygiene    # 配置卫生：.gitattributes / .editorconfig 的零命中规则与哈希资产保护
 npm run verify:hygiene-selftest  # 上面这条的零样本与健壮性自检（9 场景 + 2 阴性对照）
 npm run typecheck         # vue-tsc --noEmit

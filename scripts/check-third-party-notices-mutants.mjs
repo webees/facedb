@@ -1,6 +1,6 @@
 // R20-F7 判据的变异自检（判别力验证）
 //
-// 目的：证明 `scripts/check-third-party-notices.mjs` 的 9 条断言**各自**都能被对应的缺陷判红，
+// 目的：证明 `scripts/check-third-party-notices.mjs` 的 12 条断言**各自**都能被对应的缺陷判红（R30 由 9 条扩到 12 条），
 // 且未变异的副本全绿、缺 dist 时判「未判定（exit 2）」而不是通过。
 //
 // 做法：不硬链、不改工程 —— 每个变异体在 /tmp 下建一棵**只含判据所需文件**的临时树
@@ -27,6 +27,7 @@ const FILES = [
   'package-lock.json',
   'rsbuild.config.ts',
   'docs/THIRD-PARTY.md',
+  'package.json',
 ]
 
 const variants = [
@@ -50,6 +51,19 @@ const variants = [
   ['m6-placeholder', (t) => [t.replace('### 5.2 MIT License', '<!-- VUE-MIT-TEXT -->\n\n### 5.2 MIT License'), 'NOTICE']],
   ['m7-no-dist', null, { skipDist: true }],
   ['m8-dist-drift', null, { distMutate: (t) => t.replace('第三方软件声明', '第三方软件声明X') }],
+  // R30-LEAD-13：N11 的三个变异体（各自只让 N11 的对应一条红）
+  ['m9-docs-fake-pkg', (t) => [t.replace(/^(\| \`vue\` \|)/m, '| `lodash` | 4.17.21 | MIT |\n$1'), 'DOC']],
+  ['m10-docs-version-drift', (t) => [t.replace(/^(\| \`vue\` \| )[0-9][^ |]*( \|)/m, '$19.9.9$2'), 'DOC']],
+  ['m11-pkg-add-dep', (t) => {
+    // 该变异体会被先以 NOTICE 文本调用一次（用于取目标名），故必须先判文本类型
+    if (!t.trimStart().startsWith('{')) return [t, 'PKG']
+    const j = JSON.parse(t)
+    j.dependencies = { ...(j.dependencies || {}), lodash: '^4.17.21' }
+    return [JSON.stringify(j, null, 2) + '\n', 'PKG']
+  }],
+  // m12（R30REV-01 的红灯）：许可列原先零覆盖 —— 把 `entities` 的 **BSD-2-Clause** 改成 MIT，
+  // N11a/b/c 三条全绿、判据静默通过。N11d 落地后这条必须让 N11 红。
+  ['m12-docs-license-drift', (t) => [t.replace(/^(\| \`entities\` \| [^|]+\| )\*\*BSD-2-Clause\*\*( \|)/m, '$1MIT$2'), 'DOC']],
 ]
 
 let pass = 0
@@ -66,7 +80,8 @@ for (const [name, mutate, opts = {}] of variants) {
   if (mutate) {
     const notmods = mutate(readFileSync(path.join(dir, 'THIRD-PARTY-NOTICES.md'), 'utf8'))
     const [text, which = 'NOTICE'] = notmods
-    const target = which === 'NOTICE' ? 'THIRD-PARTY-NOTICES.md' : which === 'RSBUILD' ? 'rsbuild.config.ts' : 'docs/THIRD-PARTY.md'
+    const target = which === 'NOTICE' ? 'THIRD-PARTY-NOTICES.md' : which === 'RSBUILD' ? 'rsbuild.config.ts'
+      : which === 'PKG' ? 'package.json' : 'docs/THIRD-PARTY.md'
     // mutate 里对 rsbuild/config、docs 的替换需要各自原文：这里按目标重取一次
     if (which !== 'NOTICE') {
       const orig = readFileSync(path.join(dir, target), 'utf8')
@@ -85,8 +100,9 @@ for (const [name, mutate, opts = {}] of variants) {
 
   const r = spawnSync('node', [JUDGE], { cwd: dir, env: { ...process.env, STD_ROOT: dir }, encoding: 'utf8' })
   const out = (r.stdout || '') + (r.stderr || '')
-  const failedNames = [...out.matchAll(/\[FAIL\] (N\d)/g)].map((m) => m[1])
-  const undecided = [...out.matchAll(/\[\?\?\]\s+(N\d)/g)].map((m) => m[1])
+  // R30-LEAD-13：断言名改成 N\d+（原先 N\d 会把 N11 截成 N1，与 N1 撞名）
+  const failedNames = [...out.matchAll(/\[FAIL\] (N\d+)/g)].map((m) => m[1])
+  const undecided = [...out.matchAll(/\[\?\?\]\s+(N\d+)/g)].map((m) => m[1])
   results.push({ name, rc: r.status, failedNames: [...new Set(failedNames)], undecided: [...new Set(undecided)] })
 }
 
@@ -101,6 +117,10 @@ const EXPECT = {
   'm6-placeholder': { rc: 1, fails: ['N9'] },
   'm7-no-dist': { rc: 2, fails: [], undecided: ['N7'] },
   'm8-dist-drift': { rc: 1, fails: ['N7'] },
+  'm9-docs-fake-pkg': { rc: 1, fails: ['N11'] },
+  'm10-docs-version-drift': { rc: 1, fails: ['N11'] },
+  'm11-pkg-add-dep': { rc: 1, fails: ['N11'] },
+  'm12-docs-license-drift': { rc: 1, fails: ['N11'] },
 }
 
 console.log('=== R20-F7 判据变异自检 ===')
