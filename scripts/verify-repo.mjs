@@ -266,14 +266,32 @@ function checkMigrations() {
 function checkI18n() {
   console.log('\n=== i18n 文案键 ===')
   const src = read('src/lib/i18n.ts')
+  // 【R29 加固】原实现把 en 段切到**文件末尾**（`next` 为 null ⇒ j = src.length），于是
+  // en 块之后任何 4 空格缩进的 `key:` 行都被算成 en 的键：只要在文件后面追加一个含同名键的
+  // 对象，「zh 有而 en 真的缺」的键就会被静默补上 ⇒ 假绿（R28 那类缺陷的下一个形态）。
+  // 改为先在**语言对象范围内**（`{ zh: {` … `} as const`）切段；边界缺失时判失败而不是跳过。
+  // 语言对象起始锚：真实文件是 `const M = {\n  zh: {`（两空格缩进），fixture 同形；
+  // 也接受同一行写法 `{ zh: {`。
+  const objStart = src.includes('  zh: {') ? src.indexOf('  zh: {') : src.indexOf('{ zh: {')
+  const objEnd = src.indexOf('} as const')
+  check('i18n 词典结构可解析（找到 `zh: {` 与 `} as const`）',
+    objStart >= 0 && objEnd > objStart,
+    `objStart=${objStart} objEnd=${objEnd}（结构不符按失败处理，不得跳过）`)
+  if (objStart < 0 || objEnd <= objStart) return
+  const lang = src.slice(objStart, objEnd)
   const section = (name, next) => {
-    const i = src.indexOf(`  ${name}: {`)
-    const j = next ? src.indexOf(`  ${next}: {`) : src.length
-    return i < 0 || j < 0 ? '' : src.slice(i, j)
+    const i = lang.indexOf(`  ${name}: {`)
+    const j = next ? lang.indexOf(`  ${next}: {`) : lang.length
+    return i < 0 || j < 0 ? '' : lang.slice(i, j)
   }
   const keys = (body) => [...body.matchAll(/^\s{4}([A-Za-z_$][\w$]*)\s*:/gm)].map((m) => m[1])
   const zh = keys(section('zh', 'en'))
   const en = keys(section('en', null))
+  // 词典之外的孤立文案键：原实现下不可见（被并进 en 键集）
+  const outside = [...src.slice(objEnd).matchAll(/^\s{4}([A-Za-z_$][\w$]*)\s*:\s*['"`]/gm)].map((m) => m[1])
+  check('词典（`} as const`）之外没有孤立文案键',
+    outside.length === 0,
+    outside.length ? `词典之外发现 ${outside.length} 个孤立键：${outside.slice(0, 5).join(', ')}` : '无孤立键')
   if (zh.length === 0 || en.length === 0) {
     check('zh / en 键集合可解析', false, `解析到 zh=${zh.length} en=${en.length}（源文件存在却解析不出键，按失败处理）`)
     return
@@ -596,7 +614,9 @@ function runSelfCheck() {
       '})',
       '',
     ].join('\n'))
-    put('src/lib/i18n.ts', "const M = {\n  zh: {\n    a: '甲',\n  },\n  en: {\n    a: 'A',\n  },\n}\n")
+    // R29：真实文件以 `} as const` 收尾，fixture 必须同形 —— 否则「词典结构可解析」这条
+    // 前提在阴性对照里恒红，整个 i18n 组失去判别力（R29 加固后新增该前提）。
+    put('src/lib/i18n.ts', "const M = {\n  zh: {\n    a: '甲',\n  },\n  en: {\n    a: 'A',\n  },\n} as const\n")
     put('src/lib/quality.ts', DOCUMENTED_CONSTANTS.map((n) => `export const ${n} = 1`).join('\n') + '\n')
     put('src/lib/capture.ts', 'export const POSE_MAX_MS = 1\n')
     put('src/lib/pb.ts', 'export const UPLOAD_BUDGET_MS = 1\n')
@@ -639,7 +659,7 @@ function runSelfCheck() {
     { name: 'M1 资源指纹被改一位', expectFail: ['登记文件的 SHA-256 与尺寸全部一致'], mutate: () => put('public/SHA256SUMS', `# 说明\n${'0'.repeat(63)}1     ${asset.length}  asset.bin\n`) },
     { name: 'M2 清单删掉一条（文件仍在）', expectFail: ['目录下资源全部已登记（反向断言）'], mutate: () => put('public/SHA256SUMS', '# 说明\n') },
     { name: 'M3 迁移引入 cascadeDelete=true', expectFail: ['没有迁移把 cascadeDelete 置为 true'], mutate: () => put('pb_migrations/1799900000_bad.js', 'migrate((app) => {\n  const o = { "cascadeDelete": true }\n}, (app) => {\n  const p = 1\n})\n') },
-    { name: 'M4 英文侧键名与中文不一致', expectFail: ['zh / en 键集合一致且无重复键'], mutate: () => put('src/lib/i18n.ts', "const M = {\n  zh: {\n    a: '甲',\n  },\n  en: {\n    b: 'A',\n  },\n}\n") },
+    { name: 'M4 英文侧键名与中文不一致', expectFail: ['zh / en 键集合一致且无重复键'], mutate: () => put('src/lib/i18n.ts', "const M = {\n  zh: {\n    a: '甲',\n  },\n  en: {\n    b: 'A',\n  },\n} as const\n") },
     { name: 'M5 RUN.md 漏掉一个关键常量', expectFail: ['关键常量在 RUN.md 中均有记述'], mutate: () => put('RUN.md', '# 手册\nimg-src script src stylesheet iframe src\n' + DOCUMENTED_CONSTANTS.slice(1).map((n) => `- ${n}`).join('\n') + '\n') },
     // R22：CSP 检查组的判别力（img-src 被摘掉 / default-src 被引入 / src 里新出现 <img>）
     { name: 'M8 CSP 里的 img-src 被摘掉', expectFail: ['CSP 声明了 img-src（图片通道唯一防线）'],
@@ -723,6 +743,16 @@ function runSelfCheck() {
     { name: 'M29 package.json 是非法 JSON（node --check 无法运行 ⇒ 判未判定，不许记成迁移语法错误）',
       expectCode: 2, expectFail: [], expectAbsent: ['全部迁移可被 node 解析'],
       mutate: () => put('package.json', '{ "name": "facedb", ') },
+    // R29：i18n 判据自身的两个盲区（原实现把 en 段切到文件末尾）
+    // M30：词典（`} as const`）之后出现 4 空格缩进的 `key: '…'` —— 孤立文案键，必须点名。
+    { name: 'M30 词典之外出现孤立文案键（`} as const` 之后的 4 空格键行）',
+      expectFail: ['词典（`} as const`）之外没有孤立文案键'],
+      mutate: () => put('src/lib/i18n.ts', "const M = {\n  zh: {\n    a: '甲',\n  },\n  en: {\n    a: 'A',\n  },\n} as const\nconst LATER = {\n    zzz: 'x',\n}\n") },
+    // M31：假绿形态 —— zh 有 b、en 真的缺 b，但文件后面另一个对象在 4 空格缩进处写了 b。
+    // 旧实现会把该 b 并进 en 键集 ⇒ 两侧「一致」⇒ 静默通过。修复后必须报不对称（且点名孤立键）。
+    { name: 'M31 zh 有键而 en 缺失、文件后面的对象替它“补名”（旧实现下的假绿形态）',
+      expectFail: ['zh / en 键集合一致且无重复键', '词典（`} as const`）之外没有孤立文案键'],
+      mutate: () => put('src/lib/i18n.ts', "const M = {\n  zh: {\n    a: '甲',\n    b: '乙',\n  },\n  en: {\n    a: 'A',\n  },\n} as const\nconst LATER = {\n    b: 'B',\n}\n") },
   ]
 
   console.log('=== 变异自检（验证每一项断言有判别力）===')
@@ -763,7 +793,7 @@ const SECTION_MIN_CHECKS = {
   // 会让整组尝试条数不变：摘掉越界断言后 解析/前向/反向 仍是 3 条）。
   'public/ 资源指纹': 4,
   'pb_migrations': 6,
-  'i18n': 1,
+  'i18n': 3,
   'pb-bin 指纹': 3,
   'RUN.md 常量': 3,
   // R23：7 → 12（新增 script-src 取值 / wasm-unsafe-eval / style-src 取值 / frame-src 取值 /
@@ -776,7 +806,7 @@ const SECTION_MIN_CHECKS = {
 }
 // 全局下限：新增/删除检查必须显式改这个字面量（改它是一次可被 review 的改动）。
 // R23：25 → 30（CSP 组新增 5 条取值类断言）。R25：30 → 33（新增「启动兜底框的转义」组 3 条）。
-const MIN_TOTAL_CHECKS = 33
+const MIN_TOTAL_CHECKS = 35
 
 if (process.argv.includes('--self-check')) {
   runSelfCheck()
