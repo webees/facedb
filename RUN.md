@@ -1563,6 +1563,18 @@ PocketBase 的字段约束在 API 上的显示与**实际生效值**不完全一
   clean/orphan/gc 模块，端点只有 `POST /api/files/token` 与 `GET /api/files/{c}/{id}/{f}`）——
   注入一个孤儿文件后经三类操作仍在。要精确回收只能用数据目录备份回滚。
 
+### 只读挂载矩阵（R31 实测）：三种「只读」行为完全不同，别当成一回事
+
+| 挂载形态 | 启动 | 迁移 | 写记录 | 说明 |
+|---|---|---|---|---|
+| `pb_migrations:ro` + 空 `--dir` | ✅ HEALTH 200 | ✅ 首次启动应用 30 条（22 支工程 `.js` + 8 支内置 `.go`） | ✅ | 重启后 **30 → 30 不重放**；迁移目录文件的 mtime/size 指纹前后一致 —— PB **不向 `:ro` 迁移目录写任何内容**。生产 compose 用的就是这个形态 |
+| `pb_data:ro` | ❌ **启动即崩** | — | — | 全部输出只有一行 `unable to open database file (14)`，health 探测 25 次全 `000`（连「服务器已启动」都没有）。这不是「降级只读服务」，而是**根本起不来**；对照臂 `:rw` 同一份库 HEALTH 200 且可写。崩溃前不留半条记录 |
+| `storage:ro`（数据目录本身可写） | ✅ HEALTH 200 | ✅ | ⚠️ **纯 JSON 提交 200；带文件的提交 400** | 响应体是 `{"data":{},"message":"创建记录失败.","status":400}` —— **不点名任何 `validation_*` code**；容器内 `touch /pb_data/storage/x` 报 `Read-only file system`；**纯 JSON 那条 +1 条记录（`totalItems` 0→1，无文件可写所以没落盘），带文件那条 400 不落库**（storage 目录树 0 文件、无半条记录）。对照臂 `:rw` 同一 PNG 提交 200（落盘 70 B + 221 B `.attrs`，`totalItems` 1→3） |
+
+⚠️ 前端若要区分「存储不可写」与普通校验失败，只能靠「`400` 且 `data` 是空对象」这一**形状** ——
+服务端既不回 `validation_*`，日志也不打印底层 `EROFS`。反过来，部署时**不要**把 `pb_data` 挂成
+只读（会直接起不来），要限写就限 `storage` 子目录或给它单独的卷配额。
+
 ### 配额：per-file 与 maxSelect 都被强制，**但「一条记录的总量」没有任何上限**
 
 - per-file 上限与 `maxSelect`（photos 24 / video 8）都是**闭区间**：20,971,520 B → 200 / 20,971,521 B → 400；
@@ -2189,6 +2201,18 @@ mkdir -p /tmp/migcheck && docker run --rm \
 **幽灵记录（正常现象，不是缺陷）**：生产库 `_migrations` **R30 实测 31 行** = 仓库 22 个 `.js` + 二进制内建 8 个 `.go` + **1 行幽灵** `1791206104_deleted_employees.js`（集合差集见 `evidence/R30-LEAD-migrations-setdiff.log`；早期读数是「28 行而仓库 19 个 `.js`」，行数不会因为仓库新增文件而变，新增文件只会在下次 `up` 时追加行）。多出的那一行是 `1791206104_deleted_employees.js` —— 该迁移改名为 `1791206415_…` 之前已被应用过，改名后 PB 把新名字当新迁移重跑（up 体用 `try { … } catch { return }` 幂等跳过），而**旧名字的记录永远留在表里**：`down 27`（一路到底）之后表里**只剩这一行**。任何「`_migrations` 行数 == 迁移文件数」的断言都会误报。
 
 **⚠️ `_migrations` 读法（R28 实测）**：它**不是** API 集合 —— `GET /api/collections/_migrations/records` 即使带超管 token 也返回 `404 {"message":"缺少集合上下文。"}`。要读行数只能把 `data.db`（连同 `-wal`/`-shm`）从容器里 `docker cp` 出来再用宿主的 `sqlite3` 查 `SELECT COUNT(*) FROM _migrations`；空数据目录 + `0.40.4-zh` 上该值是 **30**（= 22 个工程迁移 + 8 个内建 `.go`：`1640988000_aux_init.go`、`1640988000_init.go`、`1717233556..559_v0.23_migrate{,2,3,4}.go`、`1763020353_update_default_auth_alert_templates.go`、`1778828400_normalize_indexes.go`）。
+
+**✅ R26/R27 新增的 4 支迁移逐支往返复测（R31 实测，一次性实例 18312，判定一律用 `migrate` 输出文本）**：
+
+| 迁移 | `down` 后（`Reverted <文件>` 已出现） | 再 `up` 后 |
+|---|---|---|
+| `1791281400_capture_submit_id.js` | 计数 30 → 29；`submit_id` 字段与 `idx_captures_submit_id` **双双消失** | 两者同回 |
+| `1791281300_bound_capture_note_and_meta.js` | `note.max` 2000 → **0**、`meta.maxSize` 65536 → **0** | 回 2000 / 65536 |
+| `1791281200_protect_capture_files.js` | photos / video 的 `protected` 1 → **0**（`maxSize` 未动） | 回 1 |
+| `1791281100_restrict_session_id_control_chars.js` | `pattern` 由 `\p{Cc}` 版还原为上一版 `[^\s\p{Z}\x00-\x1F\x7F]` 形态（与文件 down 体逐字符一致） | 回 `\p{Cc}` 版 |
+
+⇒ 这四支的 `down` **都是真还原**（不是空操作、也不是只还原一半）。阴性对照：`true |` 与 `echo n`
+两种无确认输入均 `rc=0`、stdout 只有「命令已取消」、计数仍 30 —— 再次确认**退出码不能当判据**。
 
 **⚠️ `_migrations` 行数是基座相关的，不是常量**（R20 实测，三个读数各有口径）：
 
