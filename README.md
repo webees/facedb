@@ -15,8 +15,9 @@
 - **自动拍摄**：5 个照片采集点各连拍 2 张 JPEG（合计 10 张，质量 0.92），六个采集点
   各录 1 段 WebM（合计 6 段），一并打包为一条 PocketBase 记录，按链接里的
   **采集编号**（`session_id`）分组。
-- **批量上传**：一次请求上传整批文件，共 90 秒预算、最多 3 次尝试，失败可原地重试
-  （照片与视频不会因为一次网络抖动而全部丢弃）。
+- **批量上传**：一次请求上传整批文件，共用 90 秒**墙钟**预算；内外两层重试相乘
+  （外层 3 轮 × 内层 3 次 = 最坏 9 次尝试），预算耗尽即停，失败可原地重试
+  （照片与视频不会因为一次网络抖动而全部丢弃）。「最多 3 次」只在单层成立，见 `RUN.md` 的口径更正。
 - **无遥测**：三层拦截（CSP、`index.html` 内联拦截、`block-telemetry` 运行期补丁）阻断
   MediaPipe 自身可能发起的 Google 遥测请求。
 
@@ -26,7 +27,7 @@
 | --- | --- |
 | 前端 | Vue 3.5 + TypeScript 5.9 + Rsbuild 2 + Tailwind CSS v4 |
 | 本地推理 | `@mediapipe/tasks-vision` 1.0.1（FaceLandmarker，GPU 优先并回退到 CPU，wasm 与模型随前端一起发布） |
-| 后端 | PocketBase 0.28.1（本地化构建，SQLite 存储，`pb_migrations/` 为唯一 schema 来源） |
+| 后端 | PocketBase（本地化构建，SQLite 存储，`pb_migrations/` 为唯一 schema 来源）。**版本有两套口径**：`pb-bin/` 脚本产出的基线是 `0.28.1-zh`，而当前部署态跑的是 `0.40.4-zh`（`docker compose` 指定的 tag） |
 | 静态服务 | `static-web-server`（生产容器内运行的是**构建产物**，不是 dev server） |
 | 部署 | Docker Compose：`web`（:3000）+ `pocketbase`（:8090） |
 

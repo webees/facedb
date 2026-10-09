@@ -474,7 +474,10 @@ MediaPipe（TensorFlow Lite Tasks）会向其遥测端点上报使用数据，�
 > **本表只登记口径差异，不是产物大小的权威**（R32/W32-G-03）：唯一权威是判据里的常量
 > （`scripts/check-dist-size-budget.mjs` 的 `WEB_GZIP_BASELINE_BYTES` / `RAW_TOTAL_BASELINE_BYTES` / `EXPECTED_FILE_COUNT`），
 > 它们随源码变动被**重锚**；复读当前值用 `node <运行根>/lib/size-reanchor.mjs --root <工程根>`（**不带 `--write` 就是只读读数**）。
-> 表里每行都必须连着日期读：R28 在当时的 HEAD 上实测宿主 `dist` = **13 文件 / 27,433,280 字节**、web gzip **97,510 字节**，与判据常量相等。
+> 表里每行都必须连着日期读：R28 在当时的 HEAD 上实测宿主 `dist` = **13 文件 / 27,433,280 字节**、web gzip **97,510 字节**。
+> **这两个数与当前判据常量不相等**（R33/W33-D-02 实测更正）：常量已被重锚为 `RAW_TOTAL_BASELINE_BYTES = 27,435,077`、
+> `WEB_GZIP_BASELINE_BYTES = 98,270`（差 1,797 B / 760 B），因为 R29 之后源码又改过而产物重建过。
+> 凡是「与判据常量相等」这类断言都要当场复读常量再写；跨 R 的数字只作历史快照。
 > 产物文件数：**13 个**（宿主 `dist` 与镜像内 `/public` 一致）。历史上写的「12 个文件」是 R20-F7 之前的读数 ——
 > 第 13 个是 `THIRD-PARTY-NOTICES.md`（17,084 字节），由提交 `55f576b` 引入并经 `rsbuild.config.ts` 的 `output.copy` 拷进产物。
 > 产物有两种口径，同一份产物差 590 字节：`find /public -type f -exec cat {} + | wc -c` = 文件字节和、
@@ -2226,13 +2229,13 @@ mkdir -p /tmp/migcheck && docker run --rm \
 | 口径 | 0.28.1 | 0.40.4 |
 |---|---|---|
 | 空目录全量 `migrate up` | **25 行**（测量当时） | **30 行** = **22** 条工程迁移 + 8 条内置 `.go`（R28 实测；R20 测量当时是 19 + 8 = 27 行，差的两条就是那之后新增的工程迁移） |
-| 生产 `pb_data/data.db`（0.28.1 时代创建） | 28 行 | 28 行（**未被重放**，逐字节不变） |
+| 生产 `pb_data/data.db` | 28 行（R20/R21 旧读数） | **31 行**（R28 首测、R33-LEAD-04 复核：末条 = `1791281400_capture_submit_id.js`；0.28.x 时代创建后未被重放） |
 
 0.40.4 比 0.28.1 多出的两条内置迁移是
 `1763020353_update_default_auth_alert_templates.go` 与 `1778828400_normalize_indexes.go`
 （`evidence/W20-B-10-base028-compare.log`；22 + 8 = 30 行的复测见 R28 的
-`evidence/R28-LEAD-migrations-rows.log` 与 `-rows2.log`）。生产库那 28 行里含早期已删除迁移的历史记录，
-所以「生产库 28」既不等于 25、也不等于 30 —— **凡把 `_migrations` 行数当基座无关常量写的句子都要改成分基座陈述**。
+`evidence/R28-LEAD-migrations-rows.log` 与 `-rows2.log`、`evidence/R33-LEAD-prod-migrations.log`）。生产库那 31 行里含早期已删除迁移的历史记录（幽灵行），
+所以「生产库 31」既不等于 25、也不等于 30 —— **凡把 `_migrations` 行数当基座无关常量写的句子都要改成分基座陈述**。
 
 **③ 改名后的迁移必须幂等。**
 
@@ -2343,7 +2346,7 @@ docker compose run --rm pocketbase superuser upsert <邮箱> <密码> ❌ 反例
 ### `_migrations` 行数按基座陈述
 
 见上一节的表：空库全量 `migrate up` 在 0.28.1 是 **25 行**（测量当时）、0.40.4 是 **30 行**（R28 实测），
-生产库是 **28 行**（0.28.1 时代创建，0.40.4 下未被重放）。**不要在文档或脚本里把它写成基座无关的常量，
+生产库是 **31 行**（0.28.x 时代创建，0.40.4 下未被重放；读数见上表，此处不再复述构成）。**不要在文档或脚本里把它写成基座无关的常量，
 也不要在别处复述这两个数的构成 —— 唯一出处就是上一节的表**（该数随仓库迁移数增长）。
 
 ## 照片与视频规格
