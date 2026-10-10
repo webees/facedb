@@ -1989,7 +1989,7 @@ SPA 回退会把不存在的路径交给 `index.html`，于是返回 200 加一�
 
 ```
 npm run verify:notices            # 需要 dist：先 npm run build；dist 不存在判「未判定」exit 2，不判通过
-npm run verify:notices-selftest   # 9 个变异体，必须 9/9 被抓
+npm run verify:notices-selftest   # 13 个变异体，必须 13/13 被抓
 node scripts/check-third-party-notices.mjs --live http://localhost:3000   # 按 sha256 比对线上副本
 ```
 

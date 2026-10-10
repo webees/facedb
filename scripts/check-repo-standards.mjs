@@ -1241,12 +1241,14 @@ add({ id: 'S38', covers: ['.github/workflows/ci.yml', 'scripts/verify-standards-
     { script: 'verify:publish-selftest', file: 'scripts/publish-leak-scan-selftest.mjs', claim: /变异自检\s*(\d+)\s*\/\s*(\d+)/, pair: true },
   ]
   const rows = []
+  const wants = new Map()
   for (const b of BATTERIES) {
     if (!has(b.file)) { miss.push(`电池文件不存在：${b.file}`); continue }
     // 必须行锚定：变异体的 apply 里也含 'EXPECTED_VARIANTS = NN' 字面量（裸搜索会读到它）。
     const decl = read(b.file).match(/^\s*const EXPECTED_VARIANTS\s*=\s*(\d+)/m)
     if (!decl) { miss.push(`${b.file} 没有 EXPECTED_VARIANTS 声明（条数没有事实源，只能靠人手同步 CI 文本）`); continue }
     const want = Number(decl[1])
+    wants.set(b.script, want)
     const name = stepName(b.script)
     if (!name) { miss.push(`CI 里找不到 npm run ${b.script} 的步骤名（数字无人对拍）`); continue }
     const claimed = [...name.matchAll(new RegExp(b.claim.source, 'g'))].flatMap((m) => m.slice(1).filter(Boolean).map(Number))
@@ -1257,7 +1259,42 @@ add({ id: 'S38', covers: ['.github/workflows/ci.yml', 'scripts/verify-standards-
     if (!pairOk) miss.push(`${b.script}：CI 步骤名里两个数字不一致（${claimed.join(' / ')}）`)
     rows.push(`${b.script}=${want}${okNums && pairOk ? ' ✓' : ' ✗'}（CI 写 ${claimed.join('/')}）`)
   }
-  return { ok: miss.length === 0, detail: miss.length ? miss.join('、') : `${rows.length}/${BATTERIES.length} 个电池的条数与 CI 步骤名一致：${rows.join(' · ')}` }
+  // ② 文档里的同一数字也必须对拍（R36 实测：CONTRIBUTING 写 86 而电池已 90、RUN.md 写 9 而电池已 13）。
+  //    文档不在 CI 步骤名的覆盖内，此前只能靠人手同步 —— 漂移了就没人发现。
+  const DOC_CLAIMS = [
+    { file: 'CONTRIBUTING.md', script: 'verify:standards-selftest', re: /（(\d+)\s*个变异体必须全部被抓到）/ },
+    { file: 'RUN.md', script: 'verify:notices-selftest', re: /#\s*(\d+)\s*个变异体，必须\s*\d+\s*\/\s*\d+\s*被抓/ },
+    // 分项式提法：总数与「1 个阴性对照 + M 个变异体 + 4 个零样本前提对照」必须自洽
+    { file: 'RUN.md', script: 'verify:selfcheck', re: /（(\d+)\s*条用例\s*=\s*1\s*个阴性对照\s*\+\s*(\d+)\s*个变异体\s*\+\s*4\s*个零样本前提对照）/, breakdown: true },
+    // 本判据自己的条目数（R36 实测 CONTRIBUTING 写 37 而实际已 40）：数字来源 = 本文件里 `add({ id: 'S<n>'` 的声明数
+    { file: 'CONTRIBUTING.md', script: 'verify:standards', re: /npm run verify:standards\s+#\s*(\d+)\s*项/, stdCount: true },
+  ]
+  // 本判据声明的 S 条目（静态清点；运行期 CHECKS.length 在 S38 之后还会增长，不能用）
+  const stdDecls = [...read('scripts/check-repo-standards.mjs').matchAll(/^add\(\{ id: '(S\d+)'/gm)].map((m) => m[1])
+  const stdIds = new Set(stdDecls)
+  for (const d of DOC_CLAIMS) {
+    let want = wants.get(d.script)
+    if (d.stdCount) {
+      if (stdDecls.length === 0) { miss.push('数不出本判据声明的 S 条目（零样本 ⇒ 不判通过）'); continue }
+      if (stdIds.size !== stdDecls.length) miss.push(`本判据有重复的 S id：${stdDecls.filter((x, i) => stdDecls.indexOf(x) !== i).join('、')}`)
+      want = stdIds.size
+    }
+    if (want === undefined) { miss.push(`${d.file} 的对拍缺少电池声明：${d.script}`); continue }
+    if (!has(d.file)) { miss.push(`缺 ${d.file}（文档里的条数无人对拍）`); continue }
+    const hits = [...read(d.file).matchAll(new RegExp(d.re.source, 'g'))]
+    if (hits.length === 0) { miss.push(`${d.file} 里找不到可对拍的数字（${d.re.source}）—— 别把声明删了当通过`); continue }
+    for (const h of hits) {
+      const nums = h.slice(1).map(Number)
+      if (nums[0] !== want) miss.push(`${d.file} 写 ${nums[0]}，而 ${d.script} 声明 ${want}`)
+      if (d.breakdown) {
+        const sum = 1 + nums[1] + 4
+        if (sum !== nums[0]) miss.push(`${d.file} 的分项不自洽：1 + ${nums[1]} + 4 = ${sum} ≠ 总数 ${nums[0]}`)
+        if (nums[1] !== want - 5) miss.push(`${d.file} 的分项与电池不符：变异体 ${nums[1]} 条，电池 ${want} 条应当拆成 ${want - 5} 条变异体`)
+      }
+    }
+    rows.push(`${d.file}:${d.script}=${want}`)
+  }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('、') : `${rows.length}/${BATTERIES.length + DOC_CLAIMS.length} 处提法与电池声明一致：${rows.join(' · ')}` }
 } })
 
 // ── S39 双架构二进制清单的单一事实源（R35） ────────────────────────────────
@@ -1320,6 +1357,53 @@ add({ id: 'S39', covers: ['pb-bin/SHA256SUMS', 'pb-bin/Dockerfile', 'pb-bin/pock
     ? miss.join('、')
     : `两架构登记与常量逐项一致 · FROM 按 digest 固定（${[...new Set(froms)].length} 个）· 未知架构 REFUSED` +
       (probe.length ? ` · 磁盘核对：${probe.join(' · ')}` : ` · 磁盘核对：未判定（${unj.join('、')}）`)
+  return { ok: miss.length === 0, detail }
+} })
+
+// ── S40 构建入口唯一且与调用方式无关（R36） ────────────────────────────────
+// R36 实测（W36-A-03）：给 rsbuild 传**绝对** `--root` 会让产物变样 —— 27,434,029 B / 摘要
+// `d8b74185…`（对照 `npm run build` 的 27,434,032 B / `5931b106…`）：index chunk 43,392→43,391 B、
+// lib-vue 66,026→66,024 B，且 `m.` 前缀的 chunk 变成 `v.`；**相对** `--root` 与 `npm run build` 一致。
+// 而体积判据把 13 个文件名、4 个 chunk 名与字节数都钉死了 ⇒ 一旦有人改用绝对 `--root` 取产物，
+// 判据会报红，人却容易读成「产物漂移/重锚需求」。这里把「入口唯一」变成机械断言：
+//   ① package.json 的 scripts.build 必须是 `rsbuild build`（不带 --root、不经 npx/包装器）；
+//   ② CI 的每个构建步骤与 Dockerfile 的每个构建 RUN 都必须写 `npm run build`；
+//   ③ 三处都不许给 rsbuild 传绝对路径的 `--root`。
+// 零样本纪律：三处都找不到构建步骤时判失败（不能因「找不到」而通过）。
+add({ id: 'S40', covers: ['package.json', '.github/workflows/ci.yml', 'Dockerfile'], name: '构建入口唯一：package.json/CI/Dockerfile 三处都走 `npm run build`，且没有用绝对路径给 rsbuild 传 --root（绝对 --root 会改产物字节）', run() {
+  const miss = []
+  if (!has('package.json')) return { ok: false, detail: '缺 package.json（构建入口没有事实源）' }
+  let pkg
+  try { pkg = JSON.parse(read('package.json')) } catch (e) { return { ok: false, detail: 'package.json 不是合法 JSON：' + e.message } }
+  const build = String((pkg.scripts || {}).build ?? '')
+  if (build !== 'rsbuild build') miss.push(`package.json 的 scripts.build 是 \`${build || '(缺失)'}\`，期望 \`rsbuild build\`（改入口就等于换产物）`)
+  const BUILDISH = /\brsbuild\b|\bnpm run build\b/
+  const collect = (text, re) => [...text.matchAll(re)].map((m) => m[1].trim()).filter((l) => BUILDISH.test(l))
+  let ciBuilds = []
+  if (!has('.github/workflows/ci.yml')) miss.push('缺 .github/workflows/ci.yml（CI 的构建入口无人对拍）')
+  else {
+    ciBuilds = collect(read('.github/workflows/ci.yml'), /^\s*(?:-\s*)?run:\s*(.+)$/gm)
+    if (ciBuilds.length === 0) miss.push('CI 里没有任何构建步骤（零样本 ⇒ 不判通过）')
+    for (const l of ciBuilds) if (l !== 'npm run build') miss.push(`CI 的构建步骤不是 \`npm run build\`：\`${l}\``)
+  }
+  let dfBuilds = []
+  if (!has('Dockerfile')) miss.push('缺 Dockerfile（镜像的构建入口无人对拍）')
+  else {
+    dfBuilds = collect(read('Dockerfile'), /^RUN\s+(.+)$/gm)
+    if (dfBuilds.length === 0) miss.push('Dockerfile 里没有任何构建 RUN（零样本 ⇒ 不判通过）')
+    for (const l of dfBuilds) if (l !== 'npm run build') miss.push(`Dockerfile 的构建 RUN 不是 \`npm run build\`：\`${l}\``)
+  }
+  const absRoot = []
+  for (const rel of ['package.json', '.github/workflows/ci.yml', 'Dockerfile']) {
+    if (!has(rel)) continue
+    read(rel).split('\n').forEach((line, i) => {
+      if (/rsbuild/.test(line) && /--root[= ]\s*['"]?\//.test(line)) absRoot.push(`${rel}:${i + 1}`)
+    })
+  }
+  if (absRoot.length) miss.push(`用绝对路径给 rsbuild 传 --root（R36 实测会改产物字节与 chunk 名）：${absRoot.join('、')}`)
+  const detail = miss.length
+    ? miss.join('、')
+    : `package.json build=\`rsbuild build\` · CI 构建步骤 ${ciBuilds.length} 处全为 \`npm run build\` · Dockerfile 构建 RUN ${dfBuilds.length} 处全为 \`npm run build\` · 绝对 --root 0 处`
   return { ok: miss.length === 0, detail }
 } })
 

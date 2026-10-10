@@ -412,10 +412,24 @@ const M = [
   // TARGETARCH=amd64 会走 REFUSED 分支（S39 的 consts 表少一架构 ⇒ 必红）。
   { id: 'M88', target: 'pb-bin/Dockerfile', expect: 'S39', desc: 'Dockerfile 少了 amd64 的 want_* 常量块（另一个架构的分架构断言整段消失 ⇒ 必须报红）',
     apply: () => mutate('pb-bin/Dockerfile', (t) => t.replace(/^\s*amd64\)\s*want_machine=\d+;[^\n]*\n/gm, '')) },
+  // R36：`verify:standards` 自己有多少个 S 条目，此前只在 CONTRIBUTING 里手写（实测写 37 而实际已 40）。
+  { id: 'M93', target: 'CONTRIBUTING.md', expect: 'S38', desc: 'CONTRIBUTING 里复述的 `verify:standards` 条目数被改小（文档与实际 S 条目数漂移 ⇒ 必须报红）',
+    apply: () => mutate('CONTRIBUTING.md', (t) => t.replace(/(npm run verify:standards\s+#\s*)(\d+)(\s*项)/, (m, a, n, b) => `${a}${Number(n) - 1}${b}`)) },
+  // R36：文档里的电池条数此前无人对拍（S38 只对拍 CI 步骤名）。两条变异分别打在两份文档上，
+  // 且都用「取到数字再减 1」的形态，不写死字面量（否则计数一变就退化成「变异未生效」—— R35-LEAD-11 的教训）。
+  { id: 'M89', target: 'CONTRIBUTING.md', expect: 'S38', desc: 'CONTRIBUTING 里复述的变异体条数被改小（文档与电池声明漂移 ⇒ 必须报红）',
+    apply: () => mutate('CONTRIBUTING.md', (t) => t.replace(/（(\d+) 个变异体必须全部被抓到）/, (m, n) => `（${Number(n) - 1} 个变异体必须全部被抓到）`)) },
+  { id: 'M90', target: 'RUN.md', expect: 'S38', desc: 'RUN.md 里复述的许可电池条数被改小（文档与电池声明漂移 ⇒ 必须报红）',
+    apply: () => mutate('RUN.md', (t) => t.replace(/(#\s*)(\d+)(\s*个变异体，必须\s*)\d+(\s*\/\s*)\d+(\s*被抓)/, (m, a, n, b, c, d) => `${a}${Number(n) - 1}${b}${Number(n) - 1}${c}${Number(n) - 1}${d}`)) },
+  // R36：构建入口唯一性（S40）。两条变异分别打「CI 绕过 npm script」与「npm script 自己带绝对 --root」。
+  { id: 'M91', target: '.github/workflows/ci.yml', expect: 'S40', desc: 'CI 的构建步骤绕过 npm script 直接用 rsbuild（构建入口不再唯一 ⇒ 必须报红）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/^(\s*run:\s*)npm run build\s*$/gm, '$1npx rsbuild build --root $PWD')) },
+  { id: 'M92', target: 'package.json', expect: 'S40', desc: 'package.json 的 build 脚本带上绝对 --root（产物字节与 chunk 名会变 ⇒ 必须报红）',
+    apply: () => mutate('package.json', (t) => t.replace('"build": "rsbuild build"', '"build": "rsbuild build --root /tmp"')) },
 ]
 
 // R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
-const EXPECTED_VARIANTS = 90
+const EXPECTED_VARIANTS = 95
 if (M.length !== EXPECTED_VARIANTS) {
   console.log(`\u26d4 \u672a\u5224\u5b9a\uff08exit 2\uff09\uff1a\u53d8\u5f02\u4f53\u58f0\u660e ${EXPECTED_VARIANTS} \u6761\uff0c\u5b9e\u9645 ${M.length} \u6761`)
   process.exit(2)
