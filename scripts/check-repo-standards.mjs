@@ -21,6 +21,9 @@ const R = (rel) => path.join(ROOT, rel)
 const read = (rel) => readFileSync(R(rel), 'utf8')
 const has = (rel) => existsSync(R(rel))
 const sh = (cmd, args, opts = {}) => spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', ...opts })
+// R38-LEAD-02：spawn 自身失败（如环境里没有 ruby）必须与「内容缺陷」区分开，
+// 否则 spawnSync 返回 { status: null, stderr: null } 会被报成『YAML 非法：null』。
+const shErr = (r) => (r && r.error ? (r.error.code || r.error.message || 'spawn 失败') : null)
 const tracked = sh('git', ['ls-files']).stdout.split('\n').filter(Boolean)
 
 // 【R22-21】大小写不敏感文件系统造成的「本地绿、CI 红」：
@@ -204,7 +207,14 @@ add({ id: 'S10', covers: ['.github/PULL_REQUEST_TEMPLATE.md'], name: 'PR 模板�
 const YAML_CODE = 'require "yaml";require "json";require "date";d=YAML.safe_load(File.read(ARGV[0]),aliases:true,permitted_classes:[Date,Time]);puts JSON.generate(d)'
 function parseYaml(rel) {
   const r = sh('ruby', ['-ryaml', '-rjson', '-rdate', '-e', YAML_CODE, R(rel)])
-  if (r.status !== 0) return { err: 'YAML 非法：' + (r.stderr || '').split('\n').find((l) => l.includes('Error')) || r.stderr }
+  const envErr = shErr(r)
+  // 前提不成立（找不到 ruby 等）不是内容缺陷：单独报，且点名是环境问题（R38-LEAD-02）
+  if (envErr) return { premise: true, err: `前提不成立：无法执行 ruby（${envErr}）—— 解析 ${rel} 需要系统 ruby；这是环境问题，不是内容缺陷` }
+  if (r.status !== 0) {
+    const line = (r.stderr || '').split('\n').find((l) => l.includes('Error'))
+    const fallback = (r.stderr || '').trim().split('\n').slice(-1)[0] || `ruby 退出码 ${r.status} 且无输出`
+    return { err: 'YAML 非法：' + (line || fallback) }
+  }
   try { return { doc: JSON.parse(r.stdout) } } catch (e) { return { err: '解析结果不是 JSON：' + e.message } }
 }
 function formCheck(rel) {
@@ -460,7 +470,7 @@ add({ id: 'S23', covers: ['RUN.md'], name: 'RUN.md 提到的文件路径都真�
 } })
 
 // ── S24 每个受管文件都被某条断言以具体文件名覆盖（前向断言） ──────────
-add({ id: 'S24', covers: [], name: '仓库根与 .github 下的每个受管文件都被本判据的某条断言覆盖（新文件没人查即红）', run() {
+add({ id: 'S24', covers: [], name: '仓库根、.github、scripts、docs、pb-bin 下的每个受管文件都被本判据的某条断言覆盖（新文件没人查即红）', run() {
   const onDisk = (rel) => {
     const out = []
     const walkDir = (d, prefix) => {
@@ -479,7 +489,7 @@ add({ id: 'S24', covers: [], name: '仓库根与 .github 下的每个受管文�
     .filter((e) => e.isFile() && (/\.md$/i.test(e.name) || e.name === 'LICENSE'))
     .map((e) => e.name)
 
-  const watched = [...onDisk('.github'), ...rootDocs, ...onDisk('scripts')]
+  const watched = [...onDisk('.github'), ...rootDocs, ...onDisk('scripts'), ...onDisk('docs'), ...onDisk('pb-bin')]
   // 只认【具体文件】的归属声明：通配会让「新加文件没人管」永远看不出来。
   const covered = new Set()
   for (const c of CHECKS) for (const v of c.covers || []) if (!v.includes('*')) covered.add(v)
@@ -492,7 +502,7 @@ add({ id: 'S24', covers: [], name: '仓库根与 .github 下的每个受管文�
   // 【R25 / W25E-03（P2）】零样本纪律：三个受管来源全空时 `missing` 恒为空 ⇒ 打出
   // `[OK] S24 | … | 0 个受管文件全部有归属` 的空真命题（W25-E 实测：受管面为空 ⇒ 通过 5、失败 0、exit 0）。
   // 逐来源点名，避免「只有一个来源被掏空」也被算成有样本。
-  const emptySources = [['.github', onDisk('.github')], ['根文档', rootDocs], ['scripts', onDisk('scripts')]]
+  const emptySources = [['.github', onDisk('.github')], ['根文档', rootDocs], ['scripts', onDisk('scripts')], ['docs', onDisk('docs')], ['pb-bin', onDisk('pb-bin')]]
     .filter(([, arr]) => arr.length === 0).map(([n]) => n)
   if (emptySources.length) {
     return { ok: false, detail: `受管来源为空：${emptySources.join('、')} —— 没有样本，覆盖面不完整，不得判通过` }
@@ -1536,6 +1546,75 @@ add({ id: 'S42', covers: ['scripts/verify-build-reproducible.mjs'], name: '可�
     : `装置纪律在位（mkdtemp 落点 · 清理 · cp -al 硬链 · 拒绝软链）· 未判定出口 ${premiseUndecided} 处 · 零样本分支在位 · 产物入口内容哈希被点名 · 行为臂 6 条（含软链臂与两处前提臂，且逐臂校验末行点名的前提）· 前提豁免封顶 EXPECTED_PREMISE_MAX = 1 且留痕 · 判据侧绝对 --root 开关在位 · 变异电池覆盖 S41/S42`
   return { ok: miss.length === 0, detail }
 } })
+
+// ── S43 研究报告防清空（R38 / W38C-02：整份清空后 9 条判据全绿） ──────────────
+// 为什么单独立一条：docs/ 不在 S24 的来源枚举里，该文档又是纯正文、无任何判据读它 ——
+// 「把它删光」在今天的判据面上完全不可见。这条只守**结构与规模**（防清空、防大段删除），
+// 不冒充语义正确性：结论是否仍成立仍需人读。
+add({ id: 'S43', covers: ['docs/face-ui-research.md'], name: '研究报告的结构与规模被看住（防整份清空或大段删除）', run() {
+  const rel = 'docs/face-ui-research.md'
+  if (!has(rel)) return { ok: false, detail: `${rel} 不存在（它是 README 与 RUN.md 引用的调研底稿）` }
+  const t = read(rel)
+  const miss = []
+  const lines = t.split('\n').length
+  if (lines < 500) miss.push(`正文只有 ${lines} 行（下限 500）—— 疑似被清空或大段删除`)
+  for (const h of ['## 1. GitHub 项目清单', '## 2. 具体实现方案', '## 3. 验收清单']) {
+    if (!t.includes(h)) miss.push(`缺一级章节：${h}`)
+  }
+  const h3 = (t.match(/^### /gm) || []).length
+  if (h3 < 15) miss.push(`三级小标题只有 ${h3} 个（下限 15）`)
+  const rows = (t.match(/^\|/gm) || []).length
+  if (rows < 10) miss.push(`表格行只有 ${rows} 行（下限 10）`)
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : `${lines} 行 · ${h3} 个三级小标题 · ${rows} 行表格 · 三个一级章节在场` }
+} })
+
+// ── S44 pb-bin 重建说明防清空（R38 / W38C-03：只留指纹表时 6 条判据全绿） ─────
+// 指纹表由 check-pbbin-fingerprint 深查，但「重建步骤整段被删」此前无人看。
+add({ id: 'S44', covers: ['pb-bin/README.md'], name: 'pb-bin 重建说明的正文被看住（防只剩指纹表）', run() {
+  const rel = 'pb-bin/README.md'
+  if (!has(rel)) return { ok: false, detail: `${rel} 不存在` }
+  const t = read(rel)
+  const miss = []
+  const bodyLines = t.split('\n').filter((l) => !l.startsWith('|')).filter((l) => l.trim() !== '').length
+  if (bodyLines < 30) miss.push(`非表格正文只有 ${bodyLines} 行（下限 30）—— 疑似只剩指纹表`)
+  for (const [what, s] of [['arm64 二进制名', 'pocketbase-zh-linux-arm64'], ['amd64 二进制名', 'pocketbase-zh-linux-amd64'], ['摘要清单引用', 'SHA256SUMS']]) {
+    if (!t.includes(s)) miss.push(`缺${what}：${s}`)
+  }
+  if (!/docker build/.test(t)) miss.push('缺重建命令（docker build）')
+  const rows = (t.match(/^\|/gm) || []).length
+  if (rows < 6) miss.push(`指纹表只有 ${rows} 行（下限 6）`)
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : `${bodyLines} 行正文 · ${rows} 行指纹表 · 两架构名与清单引用在场` }
+} })
+
+// ── S45 文档引用的产物 chunk 名必须与体积判据锁定值一致（R38 / W38C-05） ──────
+// 为什么单独立一条：docs/THIRD-PARTY.md 写的是**现在时断言**（「同目录下只有 lib-vue.<hash>.js.LICENSE.txt」），
+// 而权威值在 scripts/check-dist-size-budget.mjs 的 HASHED_CHUNKS 里；两边漂移时没有任何判据看得见
+// （W38-C 实测：文档写 8351304052、判据锁 0518959aef，改坏这一句零判据变红）。
+// RUN.md 里同类字样是编年叙事（带「当时」类措辞），故本条只守文档、不守 RUN.md。
+add({ id: 'S45', covers: ['docs/THIRD-PARTY.md'], name: '文档引用的产物 chunk 名与体积判据锁定值一致（防文档自称断言漂移）', run() {
+  const jrel = 'scripts/check-dist-size-budget.mjs'
+  if (!has(jrel)) return { ok: false, detail: `${jrel} 不存在，取不到权威 chunk 名单` }
+  const jt = read(jrel)
+  const jsBlock = (jt.match(/const HASHED_CHUNKS = \{([\s\S]*?)\n\}/) || [])[1] || ''
+  const cssBlock = (jt.match(/const LOCKED_SHA256 = \{([\s\S]*?)\n\}/) || [])[1] || ''
+  const locked = new Set([...jsBlock.matchAll(/'([^']+)'\s*:/g)].map((m) => m[1].split('/').pop()))
+  for (const m of cssBlock.matchAll(/'([^']+\.css)'\s*:/g)) locked.add(m[1].split('/').pop())
+  if (locked.size === 0) return { ok: false, detail: '没能从体积判据里解析出锁定 chunk 名单（判据被改形 ⇒ 本条失去前提，未判定而非通过）' }
+  const rel = 'docs/THIRD-PARTY.md'
+  if (!has(rel)) return { ok: false, detail: `${rel} 不存在` }
+  const t = read(rel)
+  const miss = []
+  let hits = 0
+  for (const line of t.split('\n')) {
+    for (const name of line.match(/[A-Za-z][\w-]*\.[0-9a-f]{10}\.(?:js|css)/g) || []) {
+      hits += 1
+      if (!locked.has(name)) miss.push(`${rel}：${name} 不在体积判据锁定名单里（判据锁的是 ${[...locked].join('、')}）`)
+    }
+  }
+  if (hits === 0) miss.push(`${rel} 里没有一处可核对的 chunk 名（把整句删掉就没得比，故要求至少一处）`)
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : `${hits} 处 chunk 名与体积判据锁定值一致` }
+} })
+
 
 for (const c of CHECKS) {
   let r

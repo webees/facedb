@@ -53,7 +53,9 @@ export default defineConfig({
   // PostCSS 由 Rsbuild 自动读取项目根的 postcss.config.mjs，无需在此配置。
   tools: {
     rspack: {
-      // MediaPipe 的 UMD 包内含动态 require（vision_bundle.mjs:1），属第三方库已知告警。
+      // MediaPipe 的 UMD 包内含**表达式动态 import**（vision_bundle.mjs 偏移 55951），属第三方库已知告警。
+      // 措辞更正（R38 / W38A-06）：此前写「动态 require」是错的 —— 实测 vision_bundle.{cjs,mjs,js}
+      // 里 `require(` 出现 0 次，真正触发 rspack 的 Critical dependency 告警的是动态 import。
       //
       // 这里把匹配收窄到该来源，而不是通配 /Critical dependency/ ——
       // 实测（不屏蔽时）全量告警只有这 1 条、且来自 node_modules，

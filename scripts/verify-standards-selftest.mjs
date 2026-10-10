@@ -446,10 +446,18 @@ const M = [
     apply: () => mutate('scripts/verify-build-reproducible.mjs', (t) => t.replace(/const ARM_B = process\.env\.REPRO_ARM_B \|\| 'relative'/, "const ARM_B = 'relative'")) },
   { id: 'M97', target: 'scripts/verify-build-reproducible-selftest.mjs', expect: 'S42', desc: '自检电池里的软链 node_modules 行为臂被整条删掉（装置纪律只剩文本检查 ⇒ 必须报红）',
     apply: () => mutate('scripts/verify-build-reproducible-selftest.mjs', (t) => t.replace(/^  run\('臂5[^\n]*\n/m, '')) },
+  { id: 'M103', target: 'docs/face-ui-research.md', expect: 'S43', desc: '把调研报告整份清空（该文档此前零判据覆盖）',
+    apply: () => mutate('docs/face-ui-research.md', () => ['# 调研报告', '', '（内容待补）', ''].join(String.fromCharCode(10))) },
+  { id: 'M104', target: 'pb-bin/README.md', expect: 'S44', desc: '删光 pb-bin 重建说明正文，只留指纹表（此前 6 条判据全绿）',
+    apply: () => mutate('pb-bin/README.md', (t) => t.split(String.fromCharCode(10)).filter((l) => l.startsWith('|') || l.trim() === '').join(String.fromCharCode(10))) },
+  { id: 'M105', target: 'docs/THIRD-PARTY.md', expect: 'S45', desc: '把文档里引用的 lib-vue 侧车哈希改成不存在的值（文档自称断言与体积判据漂移）',
+    apply: () => mutate('docs/THIRD-PARTY.md', (t) => t.replace(new RegExp('(lib-vue[.])[0-9a-f]{10}([.]js[.]LICENSE[.]txt)'), (m, a, b) => a + '0000000000' + b)) },
+  { id: 'M106', target: 'docs/R38-probe.md', expect: 'S24', desc: '在 docs/ 下新增一份没有任何断言认领的文档（S24 来源此前不含 docs/）',
+    apply: () => { writeFileSync(join(WT, 'docs/R38-probe.md'), ['# 探针文档', '', 'S24 必须点名它没有任何断言覆盖。', ''].join(String.fromCharCode(10))) } },
 ]
 
 // R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
-const EXPECTED_VARIANTS = 102
+const EXPECTED_VARIANTS = 106
 if (M.length !== EXPECTED_VARIANTS) {
   console.log(`\u26d4 \u672a\u5224\u5b9a\uff08exit 2\uff09\uff1a\u53d8\u5f02\u4f53\u58f0\u660e ${EXPECTED_VARIANTS} \u6761\uff0c\u5b9e\u9645 ${M.length} \u6761`)
   process.exit(2)
