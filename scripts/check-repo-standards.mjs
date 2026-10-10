@@ -1633,6 +1633,9 @@ add({ id: 'S46', covers: ['rsbuild.config.ts'], name: 'PUBLIC_PB_URL 取值到 C
   const js = src.slice(start, tail + 2)
     .replace(/function pbUrlOrThrow\(v: string\): URL \{/, 'function pbUrlOrThrow(v) {')
     .replace(/function derivePbConnectSrc\(raw: string \| undefined\): string \{/, 'function derivePbConnectSrc(raw) {')
+    // 函数体内的局部变量类型标注也要剥掉（R39：加「只接受源」守卫时引入了 `let u: URL;`，
+    // 不剥掉的话 new Function 直接 `Unexpected token ':'` ⇒ 本条失去前提、判红）。
+    .replace(/let u: URL;/, 'let u;')
   let derive
   try { derive = new Function(`${js}; return derivePbConnectSrc`)() } catch (e) { return { ok: false, detail: `派生实现去类型后仍无法求值：${e.message}` } }
   const cases = [
@@ -1640,7 +1643,10 @@ add({ id: 'S46', covers: ['rsbuild.config.ts'], name: 'PUBLIC_PB_URL 取值到 C
     ['', 'ok', ''],
     ['   ', 'ok', ''],
     ['https://pb.example.com', 'ok', ' https://pb.example.com wss://pb.example.com'],
-    ['https://pb.example.com/facedb', 'ok', ' https://pb.example.com wss://pb.example.com'],
+    ['https://pb.example.com/facedb', 'throw', ''],
+    ['https://pb.example.com/facedb/', 'throw', ''],
+    ['http://a.example.com?x=1', 'throw', ''],
+    ['http://127.0.0.1:18401;', 'throw', ''],
     ['http://192.168.1.5:8090', 'ok', ' http://192.168.1.5:8090 ws://192.168.1.5:8090'],
     ['  http://192.168.1.5:8090  ', 'ok', ' http://192.168.1.5:8090 ws://192.168.1.5:8090'],
     ['pb.example.com', 'throw', ''],
@@ -1657,7 +1663,7 @@ add({ id: 'S46', covers: ['rsbuild.config.ts'], name: 'PUBLIC_PB_URL 取值到 C
     if (want === 'throw' ? got === null : got === expect) hit += 1
     else bad.push(`${JSON.stringify(input)} 期望 ${want}${want === 'ok' ? `="${expect}"` : ''}，实得 ${got === null ? `不抛（应为抛错）` : `"${got}"`}${msg ? `（抛错文案：${msg.slice(0, 60)}）` : ''}`)
   }
-  return { ok: bad.length === 0, detail: bad.length ? bad.join('；') : `${hit}/${cases.length} 格取值符合断言（空值不追加 · 绝对地址追加同源 + ws 源 · 不可解析与非 http(s) 方案在构建期失败）` }
+  return { ok: bad.length === 0, detail: bad.length ? bad.join('；') : `${hit}/${cases.length} 格取值符合断言（空值不追加 · 纯源绝对地址追加同源 + ws 源 · 不可解析/非 http(s) 方案/带路径查询在构建期失败）` }
 } })
 
 for (const c of CHECKS) {

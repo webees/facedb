@@ -675,6 +675,18 @@ OCI runtime exec failed: exec: "node": executable file not found in $PATH
 **网关侧必须配套**：`/api/*` 与 `/_/*` 分流到 PocketBase，其余交给采集页。
 改网关路由时若漏掉 `/api` 前缀映射，前端会静默 404。
 
+**部署基路径必须是域名根**（R39 实测，真构建 + 真浏览器）。产物里所有资源引用都是**根绝对**：
+`/static/js/...`、`src/lib/face.ts` 的 `/wasm` 与 `/face_landmarker.task`，以及 `index.html` 里三条手写的
+`preload`。把页面挂在 `/facedb/` 这类子路径下，资源整片 404（带 SPA 回退时变成 200 + HTML ⇒
+`Uncaught SyntaxError: Unexpected token '<'`）；只开 `output.assetPrefix` **修不了一半** —— chunk/css 换了前缀，
+上面三处手写字面量不变，页面能打开而人脸模型 404，用户只看到「人脸模型加载失败，请刷新页面重试」。
+要支持子路径部署，这三处必须一起改。同一组实测还确认两件事：①后端不在 8090 时**必须在构建期用
+`PUBLIC_PB_URL` 配带方案的绝对地址，且只写源**（`http://host:8090` 这种形态）—— 带路径的写法在运行期
+被原样拼成 `<路径>/api/collections/...`，PB 回 404 且**库里零写入**而界面显示成功（构建期已改为直接
+失败）；CSP 的 `*:8090` 是硬编码字面量，端口对不上时请求被 CSP 拦、后端侧收不到任何请求，看起来像网络不通；②页面走 https 而后端是**局域网私网地址的 http** 时，
+混合内容策略**不会**拦（实测同一页面上公网 http 被 blocked、局域网 http 放行）—— 明文上传照常发生，
+与上文的 `connect-src` 敞口同源。
+
 ## 审计断言工具（防假通过）
 
 审计脚本自己也会假通过，最常见的形态是「过滤后集合为空 → 报通过」——
