@@ -181,6 +181,13 @@ add({ id: 'S8', covers: ['CHANGELOG.md'], name: 'CHANGELOG 引用的版本 tag �
   // 反引号包起来的 `releases/tag/...` 是占位符，不是真链接；去掉反引号与省略号再判
   const refs = [...t.matchAll(/releases\/tag\/([^\s)`]+)/g)].map((m) => m[1]).filter((r) => !/^\.+$/.test(r))
   const bad = refs.filter((r) => !tags.includes(r))
+  // 【v0.1.0 发布时实测】CI 的 actions/checkout 默认 fetch-depth: 1 且不取 tag ⇒ `git tag -l` 为空，
+  // 于是「链接指向真实 tag」这条断言在 CI 里要么误红、要么被含糊声明放过。这里点名环境原因，
+  // 并让 S47 去管「checkout 必须取 tag」的接线：两边合起来才既不会静默通过、也不会误判内容违规。
+  const shallow = sh('git', ['rev-parse', '--is-shallow-repository']).stdout.trim() === 'true'
+  if (bad.length && tags.length === 0 && shallow) {
+    return { ok: false, detail: '浅克隆里没有任何 tag 引用，tag 链接无法核验（CI 的 checkout 需要 fetch-depth: 0 或 fetch-tags: true）—— 这既不是内容通过，也不是内容违规' }
+  }
   // 尚未发布时，文档必须显式声明「还没打 tag」——否则读者会以为这些链接可直接打开。
   const disclaimed = /(尚未打\s*tag|未打\s*tag|not yet tagged)/.test(t)
   if (bad.length && disclaimed) return { ok: true, detail: `${bad.length} 个链接指向尚未创建的 tag，文档已显式声明「尚未打 tag」` }
@@ -1664,6 +1671,33 @@ add({ id: 'S46', covers: ['rsbuild.config.ts'], name: 'PUBLIC_PB_URL 取值到 C
     else bad.push(`${JSON.stringify(input)} 期望 ${want}${want === 'ok' ? `="${expect}"` : ''}，实得 ${got === null ? `不抛（应为抛错）` : `"${got}"`}${msg ? `（抛错文案：${msg.slice(0, 60)}）` : ''}`)
   }
   return { ok: bad.length === 0, detail: bad.length ? bad.join('；') : `${hit}/${cases.length} 格取值符合断言（空值不追加 · 纯源绝对地址追加同源 + ws 源 · 不可解析/非 http(s) 方案/带路径查询在构建期失败）` }
+} })
+
+// ── S47 CI 的 checkout 必须取到 tag ─────────────────────────────────────
+// 背景（v0.1.0 发布时在真 CI 上暴露）：S8 用 `git tag -l` 判断 CHANGELOG 里的 tag 链接是否真实存在，
+// 而 actions/checkout 默认 fetch-depth: 1 且不取 tag ⇒ CI 里 `git tag -l` 为空，S8 变成误红。
+// 这条断言把「CI 必须取 tag」变成机器判据：删掉 with.fetch-depth/fetch-tags 就报红。
+add({ id: 'S47', name: 'CI 的 checkout 取到 tag（否则 CHANGELOG 的 tag 链接断言在 CI 里无法核验）', run() {
+  const rels = yamlFilesUnder('.github/workflows')
+  if (rels.length === 0) return { ok: false, detail: '.github/workflows 下没有工作流 —— 不得判通过' }
+  const miss = []
+  let n = 0
+  for (const rel of rels) {
+    const lines = read(rel).split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      if (!/uses:\s*actions\/checkout@/.test(lines[i])) continue
+      n++
+      // 该 step 的正文 = 从这一行到下一个 `- ` 列表项之前（避免把后续 step 的 with 读成这个 checkout 的）
+      const rest = lines.slice(i + 1)
+      const end = rest.findIndex((l) => /^\s*- /.test(l))
+      const body = (end === -1 ? rest : rest.slice(0, end)).join('\n')
+      const depth = /fetch-depth:\s*0\b/.test(body)
+      const tags = /fetch-tags:\s*true\b/.test(body)
+      if (!depth && !tags) miss.push(`${rel}:${i + 1} 的这个 checkout 没取 tag（加 fetch-depth: 0 或 fetch-tags: true）`)
+    }
+  }
+  if (n === 0) return { ok: false, detail: '没有任何 actions/checkout 步骤 —— 零样本，不得判通过' }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : `${n} 个 checkout 步骤都取到 tag` }
 } })
 
 for (const c of CHECKS) {
