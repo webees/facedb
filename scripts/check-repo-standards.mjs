@@ -1490,6 +1490,14 @@ add({ id: 'S42', covers: ['scripts/verify-build-reproducible.mjs'], name: '可�
       if (!self.includes(s)) miss.push(`自检电池缺「${why}」`)
     }
     if (!/tailOk/.test(self)) miss.push('前提臂必须校验末行点名的前提（否则标签与真实分支可以不一致）')
+    // R36-LEAD-17：臂3（绝对 --root 改产物）是**平台相关**的 —— GitHub Linux runner 上两次构建逐字节相同。
+    // 故它改成「前提臂」：现象不出现判未判定。这条豁免必须①留痕（打出「前提不成立」）、②有封顶（EXPECTED_PREMISE_MAX），
+    // 否则「前提豁免」会变成新的静默通过通道；同时判据侧的绝对 --root 开关必须在场，否则臂3 永远收不到现象。
+    if (!/^\s*const EXPECTED_PREMISE_MAX = 1\s*$/m.test(self)) miss.push('前提豁免必须有封顶常量 EXPECTED_PREMISE_MAX = 1（不然前提豁免会把断言一条条吃掉）')
+    if (!self.includes('前提不成立')) miss.push('前提臂现象不出现时必须打出「前提不成立」一行（不许静默）')
+    if (!/premise: true/.test(self)) miss.push('前提臂的读数必须带 premise 标记（否则封顶判据读不到）')
+    if (!/REPRO_ARM_B: 'absolute'/.test(self)) miss.push('必须有臂真用绝对 --root 调判据（否则平台现象无从出现）')
+    if (!/REPRO_ARM_B/.test(t)) miss.push('判据自身必须支持 REPRO_ARM_B 绝对 --root 开关（否则那条臂打不到东西）')
   }
   // 变异体必须真打在 S41/S42 上，否则这两条断言会退化成「文案在位即通过」
   const mut = has('scripts/verify-standards-selftest.mjs') ? read('scripts/verify-standards-selftest.mjs') : ''
@@ -1499,7 +1507,7 @@ add({ id: 'S42', covers: ['scripts/verify-build-reproducible.mjs'], name: '可�
   }
   const detail = miss.length
     ? miss.join('、')
-    : `装置纪律在位（mkdtemp 落点 · 清理 · cp -al 硬链 · 拒绝软链）· 未判定出口 ${premiseUndecided} 处 · 零样本分支在位 · 产物入口内容哈希被点名 · 行为臂 6 条（含软链臂与两处前提臂，且逐臂校验末行点名的前提）· 变异电池覆盖 S41/S42`
+    : `装置纪律在位（mkdtemp 落点 · 清理 · cp -al 硬链 · 拒绝软链）· 未判定出口 ${premiseUndecided} 处 · 零样本分支在位 · 产物入口内容哈希被点名 · 行为臂 6 条（含软链臂与两处前提臂，且逐臂校验末行点名的前提）· 前提豁免封顶 EXPECTED_PREMISE_MAX = 1 且留痕 · 判据侧绝对 --root 开关在位 · 变异电池覆盖 S41/S42`
   return { ok: miss.length === 0, detail }
 } })
 

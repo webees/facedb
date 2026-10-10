@@ -436,12 +436,14 @@ const M = [
     apply: () => mutate('package.json', (t) => t.replace('"verify:repro-selftest": "node scripts/verify-build-reproducible-selftest.mjs"', '"verify:repro-selftest": "node scripts/verify-repo.mjs"')) },
   // R36REV-RL-02/RL-03：S42 的字符串断言能被「保留文本、架空语义」绕过（M94 只改文本形态）。
   // 这条打的是**行为臂本身被删**：软链臂一旦消失，「软链树没有判别力」这件事就只能靠文本检查 —— 必须报红。
+  { id: 'M98', target: 'scripts/verify-build-reproducible.mjs', expect: 'S42', desc: '判据侧绝对 --root 开关被架空（REPRO_ARM_B 常量失效 ⇒ 平台现象无从出现，臂3 变成永远收不到东西的前提臂）',
+    apply: () => mutate('scripts/verify-build-reproducible.mjs', (t) => t.replace(/const ARM_B = process\.env\.REPRO_ARM_B \|\| 'relative'/, "const ARM_B = 'relative'")) },
   { id: 'M97', target: 'scripts/verify-build-reproducible-selftest.mjs', expect: 'S42', desc: '自检电池里的软链 node_modules 行为臂被整条删掉（装置纪律只剩文本检查 ⇒ 必须报红）',
     apply: () => mutate('scripts/verify-build-reproducible-selftest.mjs', (t) => t.replace(/^  run\('臂5[^\n]*\n/m, '')) },
 ]
 
 // R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
-const EXPECTED_VARIANTS = 99
+const EXPECTED_VARIANTS = 100
 if (M.length !== EXPECTED_VARIANTS) {
   console.log(`\u26d4 \u672a\u5224\u5b9a\uff08exit 2\uff09\uff1a\u53d8\u5f02\u4f53\u58f0\u660e ${EXPECTED_VARIANTS} \u6761\uff0c\u5b9e\u9645 ${M.length} \u6761`)
   process.exit(2)
