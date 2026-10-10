@@ -3,9 +3,8 @@
 本文件记录本项目的显著变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-> 本文件随首个公开版本 v0.1.0 建立。此前的提交历史里**尚未打 tag**（`git tag -l` 曾为空），
-> 因此 `releases/tag/v0.1.0` 与 `compare/...` 这类链接要到该 tag 推送后才生效；
-> 每次发版后，本段应改为指向最近一次发布的说明。
+> 当前发布：**[v0.1.0](https://github.com/webees/facedb/releases/tag/v0.1.0)**（2026-10-10）。
+> `compare/<旧>...<新>` 形式要两端都存在 tag 才可用；本仓库的 tag 从 v0.1.0 开始，之前的提交历史没有 tag。
 
 ## [0.1.0] - 2026-10-10
 
