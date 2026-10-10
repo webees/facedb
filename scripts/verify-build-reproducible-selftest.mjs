@@ -89,6 +89,9 @@ const run = (name, env, expect, why, expectTail, premiseOnZero) => {
   return { name, code, expect, ok, premise: false, tail }
 }
 
+const ARM3_HOOK = process.env.SELFTEST_ARM3_RELATIVE === '1'
+const ARM3_ENV = ARM3_HOOK ? {} : { REPRO_ARM_B: 'absolute' }
+
 info('[INFO] ' + '可复现性判据自检：6 臂成对对照（干净 / 内容漂移 / 绝对检出路径 / 缺 node_modules / 软链 node_modules / 缺 src）')
 const results = [
   run('臂1 干净两臂', {}, 0, '同一源码两次独立构建必须逐字节相同'),
@@ -96,9 +99,8 @@ const results = [
   // 臂3 是前提臂：现象出现（macOS 实测 9 个文件差异）必须 exit 1；现象不出现（GitHub Linux runner 实测逐字节相同）
   // 判未判定 —— 不判通过、也不判失败，必须打出「前提不成立」一行（R36-LEAD-17）。
   // 测试钩子 SELFTEST_ARM3_RELATIVE=1 把 B 臂退回相对 --root，用于在本机演练「前提不成立」那条分支。
-  process.env.SELFTEST_ARM3_RELATIVE === '1'
-    ? run('臂3 B 臂用绝对 --root（钩子已退回相对 ⇒ 演练前提不成立分支）', {}, 1, '绝对检出路径会改产物（R36-LEAD-07）', undefined, true)
-    : run('臂3 B 臂用绝对 --root', { REPRO_ARM_B: 'absolute' }, 1, '绝对检出路径会改产物（R36-LEAD-07）', undefined, true),
+  // 臂名与环境在数组外先算好：同一臂号在正文里只出现一次，否则「按臂号集合清点」的机械核验会失真（R36-LEAD-18）。
+  run('臂3 B 臂用绝对 --root' + (ARM3_HOOK ? '（钩子已退回相对 ⇒ 演练前提不成立分支）' : ''), ARM3_ENV, 1, '绝对检出路径会改产物（R36-LEAD-07）', undefined, true),
   run('臂4 合成树缺 node_modules', { REPRO_ROOT: bareNoNm }, 2, '前提不成立必须 exit 2', '没有 node_modules'),
   run('臂5 合成树 node_modules 是软链', { REPRO_ROOT: bareSymlink }, 2, '软链树没有判别力，必须拒绝给结论', '软链'),
   run('臂6 合成树缺 src/', { REPRO_ROOT: bareNoSrc }, 2, '前提不成立必须 exit 2', '没有 src'),

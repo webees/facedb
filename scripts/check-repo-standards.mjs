@@ -1484,8 +1484,10 @@ add({ id: 'S42', covers: ['scripts/verify-build-reproducible.mjs'], name: '可�
   if (!self) miss.push('缺 scripts/verify-build-reproducible-selftest.mjs（没有行为臂，装置纪律只能靠文本检查）')
   else {
     if (!/^\s*const EXPECTED_SCENES = 6\s*$/m.test(self)) miss.push('自检电池的 EXPECTED_SCENES 必须声明为 6（干净 / 内容漂移 / 绝对路径 / 缺 node_modules / 软链 node_modules / 缺 src）')
-    const arms = [...self.matchAll(/run\('臂(\d)/g)].length
-    if (arms < 6) miss.push(`自检电池只有 ${arms} 条臂（至少 6 条：两处前提必须各有各的臂）`)
+    // 臂计数按**臂号集合**判，不按出现次数判：次数判会被「同一臂号写两次」补平（R36-LEAD-18）。
+    const armIds = [...new Set([...self.matchAll(/run\('臂(\d)/g)].map((m) => m[1]))].sort()
+    const missingArms = ['1', '2', '3', '4', '5', '6'].filter((n) => !armIds.includes(n))
+    if (missingArms.length) miss.push(`自检电池缺臂 ${missingArms.join('、')}（现有序号：${armIds.join('、')}；两处前提必须各有各的臂）`)
     for (const [s, why] of [['没有 node_modules', '缺 node_modules 臂必须点名缺的是 node_modules'], ['软链', '必须有软链 node_modules 臂（R23-25：软链树没有判别力）'], ['没有 src', '缺 src 臂必须与缺 node_modules 臂分开']]) {
       if (!self.includes(s)) miss.push(`自检电池缺「${why}」`)
     }
@@ -1497,7 +1499,10 @@ add({ id: 'S42', covers: ['scripts/verify-build-reproducible.mjs'], name: '可�
     if (!self.includes('前提不成立')) miss.push('前提臂现象不出现时必须打出「前提不成立」一行（不许静默）')
     if (!/premise: true/.test(self)) miss.push('前提臂的读数必须带 premise 标记（否则封顶判据读不到）')
     if (!/REPRO_ARM_B: 'absolute'/.test(self)) miss.push('必须有臂真用绝对 --root 调判据（否则平台现象无从出现）')
-    if (!/REPRO_ARM_B/.test(t)) miss.push('判据自身必须支持 REPRO_ARM_B 绝对 --root 开关（否则那条臂打不到东西）')
+    // 断言**那一行常量本身**：只测 /REPRO_ARM_B/ 会被文件头注释里的同名字符串满足，
+    // 于是「把常量退回 'relative'」这种让开关失效的改动能整条溜过（R36-LEAD-18）。
+    if (!/^\s*const ARM_B = process\.env\.REPRO_ARM_B \|\| 'relative'\s*$/m.test(t)) miss.push("判据自身的绝对 --root 开关必须写成 `const ARM_B = process.env.REPRO_ARM_B || 'relative'`（行锚定；否则开关可被架空而 S42 看不见）")
+    if (!/ARM_B === 'absolute'/.test(t)) miss.push("判据必须按 ARM_B === 'absolute' 真的给 B 臂加 --root")
   }
   // 变异体必须真打在 S41/S42 上，否则这两条断言会退化成「文案在位即通过」
   const mut = has('scripts/verify-standards-selftest.mjs') ? read('scripts/verify-standards-selftest.mjs') : ''
