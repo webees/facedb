@@ -3,7 +3,7 @@
 本文件记录本项目的显著变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-> 当前发布：**[v0.1.2](https://github.com/webees/facedb/releases/tag/v0.1.2)**（v0.1.2 尚未打 tag，随本条目一并发布）。
+> 当前发布：**[v0.1.2](https://github.com/webees/facedb/releases/tag/v0.1.2)**（2026-10-11）。
 > `compare/<旧>...<新>` 形式要两端都存在 tag 才可用；本仓库的 tag 从 v0.1.0 开始，之前的提交历史没有 tag。
 >
 > 注：v0.1.0 之后重建后端镜像会因指纹常量与磁盘二进制不符而失败（见 [0.1.1]），重建请用 v0.1.1 或更新。
