@@ -118,9 +118,14 @@ const restore = (rel) => {
   if (ORIG.get(rel) === null) rmSync(abs, { force: true })
   else writeFileSync(abs, ORIG.get(rel))
 }
+const SELFTEST_BUDGET_MS = Number(process.env.SELFTEST_BUDGET_MS || 0) // 0 = 不设预算
+const T0 = Date.now()
 const runJudge = () => {
+  const t = Date.now()
   const r = spawnSync(process.execPath, [JUDGE], { env: { ...process.env, STD_ROOT: WT, CK_LOG: '' }, encoding: 'utf8', timeout: 600000 })
-  return { code: r.status, out: r.stdout + r.stderr }
+  // R34（W34-C 实测）：判据子进程被信号杀死时 status 为 null —— 旧代码把这种情形印成
+  // 「（该断言没报红）」并计为「没抓到」，一次外部 timeout 就能造出假阴性（82/83、exit 124）。
+  return { code: r.status, signal: r.signal || null, ms: Date.now() - t, out: r.stdout + r.stderr }
 }
 
 const M = [
@@ -390,20 +395,34 @@ const M = [
 ]
 
 let caught = 0
+const undetermined = []
 say('')
 for (const m of M) {
   load(m.target)
+  if (SELFTEST_BUDGET_MS > 0 && Date.now() - T0 > SELFTEST_BUDGET_MS) {
+    undetermined.push(`${m.id}（未跑：已用 ${Date.now() - T0} ms 超过自设预算 ${SELFTEST_BUDGET_MS} ms）`)
+    say(`⚠️ 未判定 ${m.id}：超出自设预算，本变异体没有结论`)
+    continue
+  }
   try { m.apply() } catch (e) {
     say(`❌ ${m.id} 变异体未生效：${e.message}`)
     restore(m.target)
     continue
   }
-  const r = runJudge()
+  const killed = process.env.SELFTEST_FAKE_KILL === m.id
+  const r = killed ? { code: null, signal: 'SIGKILL（模拟）', ms: 0, out: '' } : runJudge()
+  if (r.code === null) {
+    // 装置给不出结论：判据子进程被信号终止，既不算抓到也不算没抓到。
+    undetermined.push(`${m.id}（判据子进程被信号终止：${r.signal || '未知信号'}，${r.ms} ms）`)
+    say(`⚠️ 未判定 ${m.id}：判据子进程被信号终止（${r.signal || '未知信号'}）—— 不判「没抓到」`)
+    restore(m.target)
+    continue
+  }
   const hit = r.out.split('\n').filter((l) => l.startsWith('[FAIL]') && l.includes(m.expect)).map((l) => l.trim().slice(0, 120))
   // staysGreen：改法语义等价（或刻意不改坏），该断言**不许报红**；其余变异体必须报红。
   const ok = m.staysGreen ? r.code === 0 && hit.length === 0 : r.code === 1 && hit.length > 0
   say(`${ok ? '✅' : '❌'} ${m.id} 期望 ${m.expect} ${m.staysGreen ? '不报红（阴性对照型）' : '命中'}：${m.desc}`)
-  say(`     exit=${r.code} ${hit.join(' ｜ ') || (m.staysGreen ? '（正确地没报红）' : '（该断言没报红）')}`)
+  say(`     exit=${r.code} ${r.ms}ms ${hit.join(' ｜ ') || (m.staysGreen ? '（正确地没报红）' : '（该断言没报红）')}`)
   if (ok) caught++
   restore(m.target)
 }
@@ -419,4 +438,10 @@ const ok = caught === M.length && neg.code === 0 && cleanOk
 say(ok
   ? `✅ 变异自检 ${caught}/${M.length} 全部命中，且阴性对照绿，副本已清理`
   : `❌ 变异自检 ${caught}/${M.length}，阴性对照 exit=${neg.code}${cleanOk ? '' : '，副本清理未完成（见上）'}`)
-process.exit(ok ? 0 : 1)
+if (undetermined.length > 0) {
+  say('')
+  say(`⚠️ 未判定：${undetermined.length} 个变异体没有结论 —— 本次不构成通过（exit 2）`)
+  for (const u of undetermined) say(`     · ${u}`)
+}
+
+process.exit(undetermined.length > 0 ? 2 : (ok ? 0 : 1))
