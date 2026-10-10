@@ -95,8 +95,8 @@ const DIST = distFlag >= 0 ? path.resolve(argv[distFlag + 1]) : path.join(ROOT, 
 // 上限仍按同一推导式派生（web gzip +0.5%、原始总字节 +2%），不是把容差放宽。
 const WEB_GZIP_BASELINE_BYTES = 97700
 const WEB_GZIP_CAP_BYTES = 98188
-const RAW_TOTAL_BASELINE_BYTES = 27433784
-const RAW_TOTAL_CAP_BYTES = 27982460
+const RAW_TOTAL_BASELINE_BYTES = 27434032
+const RAW_TOTAL_CAP_BYTES = 27982713
 const EXPECTED_FILE_COUNT = 13
 
 // —— 源码指纹：产物必须是**当前源码**构建出来的 ——
@@ -108,7 +108,7 @@ const EXPECTED_FILE_COUNT = 13
 // **未判定（exit 2）**，提示先 `rm -rf dist && npm run build` 再重锚。
 // 覆盖输入：`index.html`、`package.json`、`src/**`（递归、按路径排序）。不含 node_modules
 // （软链/真实目录各有 N0 前提）与 `dist/`（那是被检查对象）。
-const SOURCE_FINGERPRINT = '50569f1cf17ab34b6110f14fb15b4539c65851f4eb229dd643e7d3250426e1d4'
+const SOURCE_FINGERPRINT = '933f93f118fe8017d85e14cd3abf6e4f8df2348aaf406a532814557150b98814'
 
 // 阈值自洽（防手抄错，尤其是 27978237.9 这类取整）：常量必须等于由基线派生的取整结果。
 const DERIVED = {
