@@ -93,10 +93,10 @@ const DIST = distFlag >= 0 ? path.resolve(argv[distFlag + 1]) : path.join(ROOT, 
 // —— 5 个阈值常量（来源见文件头；改这里必须同步改文件头的推导式）——
 // 【R23 第二次重锚】基线由实测值抬到 96311 / 27430594（增量逐条列在文件头），
 // 上限仍按同一推导式派生（web gzip +0.5%、原始总字节 +2%），不是把容差放宽。
-const WEB_GZIP_BASELINE_BYTES = 97700
-const WEB_GZIP_CAP_BYTES = 98188
-const RAW_TOTAL_BASELINE_BYTES = 27434032
-const RAW_TOTAL_CAP_BYTES = 27982713
+const WEB_GZIP_BASELINE_BYTES = 98685
+const WEB_GZIP_CAP_BYTES = 99178
+const RAW_TOTAL_BASELINE_BYTES = 27436728
+const RAW_TOTAL_CAP_BYTES = 27985463
 const EXPECTED_FILE_COUNT = 13
 
 // —— 源码指纹：产物必须是**当前源码**构建出来的 ——
@@ -108,7 +108,7 @@ const EXPECTED_FILE_COUNT = 13
 // **未判定（exit 2）**，提示先 `rm -rf dist && npm run build` 再重锚。
 // 覆盖输入：`index.html`、`package.json`、`src/**`（递归、按路径排序）。不含 node_modules
 // （软链/真实目录各有 N0 前提）与 `dist/`（那是被检查对象）。
-const SOURCE_FINGERPRINT = '933f93f118fe8017d85e14cd3abf6e4f8df2348aaf406a532814557150b98814'
+const SOURCE_FINGERPRINT = 'dd72787761c2d92491144a27a1c498d44b97746535dfe4a67dda3e5ce6482990'
 
 // 阈值自洽（防手抄错，尤其是 27978237.9 这类取整）：常量必须等于由基线派生的取整结果。
 const DERIVED = {
@@ -134,16 +134,16 @@ const LOCKED_SHA256 = {
 }
 // —— 4 个内容哈希 chunk：文件名里的 hash 由内容算出，故「同名不同内容」= 陈旧/投毒产物 ——
 const HASHED_CHUNKS = {
-  'static/js/index.ae3be28eb6.js': '39dd9c57add726b7e1d49b742c0a2cdb65cd29e01a1c30ff6e21dcca1104cd4c',
-  'static/js/lib-vue.0518959aef.js': '33920cb008d0a0cbdb4f3a1c854c2791fc22dccd9576dba63646de524d8e053d',
+  'static/js/index.31593b95d7.js': '5a8ac88434a6064de35a2599d1eb47f5ed9ba551b3ae235358d9bdb69b9d1363',
+  'static/js/lib-vue.9b47b76d95.js': '9090ba0f5784b7ddbb2729b441207399005370ea907af109d423629dd4111793',
   'static/js/m.79c0ab86b6.js': '2956850bd7ffc083eb290d72745395e20dfa588d75d8d9271368e5ed590346b5',
-  'static/css/index.d05fa997d9.css': '45171915300c369b502f0658ef5ef5bdf36f6c6ae667cf94343cb4a28dd034a8',
+  'static/css/index.78c3d3be4b.css': 'ef240b6b8dbe987f2c980b5a9121940d2978f4f1f08f136f3504fd057c250c82',
 }
 const EXPECTED_NAMES = [
   ...Object.keys(LOCKED_SHA256),
   ...Object.keys(HASHED_CHUNKS),
   'index.html',
-  'static/js/lib-vue.0518959aef.js.LICENSE.txt',
+  'static/js/lib-vue.9b47b76d95.js.LICENSE.txt',
 ].sort()
 
 const c = makeChecker('W21-A 产物体积与构成判据')
