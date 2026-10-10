@@ -45,6 +45,9 @@ docker compose up -d --build  # 采集端 → http://localhost:3000/<采集编�
 它决定这批数据在后台的分组，规则：**1–200 个 Unicode 码点，首尾不得为空白或分隔符，
 不得包含控制字符**（不合规会被后端以 400 拒绝）。
 
+生产部署的要点（`pb-bin` 指纹必须与二进制一致、`PUBLIC_PB_URL` 只写源、`pb_migrations` 只读挂载、
+上线前打开后台速率限制）见 [CHANGELOG](CHANGELOG.md) 里当前版本的发布说明与 `RUN.md`。
+
 ## 目录结构
 
 ```
