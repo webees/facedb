@@ -1477,6 +1477,20 @@ add({ id: 'S42', covers: ['scripts/verify-build-reproducible.mjs'], name: '可�
   for (const [re, why] of need) if (!re.test(t)) miss.push(`缺「${why}」`)
   const premiseUndecided = [...t.matchAll(/undecided\(/g)].length
   if (premiseUndecided < 5) miss.push(`只找到 ${premiseUndecided} 处未判定出口（缺 package.json / src / node_modules / 软链 / 空产物 至少 5 条前提）`)
+  // R36REV-RL-02/RL-03：上面的字符串断言能被「保留文本、架空语义」绕过（把守卫写成 `if (false && …)` 仍是全绿）。
+  // 真正抓住这种事的是**行为臂**：自检电池里必须有软链臂、缺 node_modules 臂、缺 src 臂各自独立，
+  // 且每条前提臂都要断言**末行点名了缺的那个前提**（否则「标签写的分支」与「真实走的分支」可以不一致）。
+  const self = has('scripts/verify-build-reproducible-selftest.mjs') ? read('scripts/verify-build-reproducible-selftest.mjs') : ''
+  if (!self) miss.push('缺 scripts/verify-build-reproducible-selftest.mjs（没有行为臂，装置纪律只能靠文本检查）')
+  else {
+    if (!/^\s*const EXPECTED_SCENES = 6\s*$/m.test(self)) miss.push('自检电池的 EXPECTED_SCENES 必须声明为 6（干净 / 内容漂移 / 绝对路径 / 缺 node_modules / 软链 node_modules / 缺 src）')
+    const arms = [...self.matchAll(/run\('臂(\d)/g)].length
+    if (arms < 6) miss.push(`自检电池只有 ${arms} 条臂（至少 6 条：两处前提必须各有各的臂）`)
+    for (const [s, why] of [['没有 node_modules', '缺 node_modules 臂必须点名缺的是 node_modules'], ['软链', '必须有软链 node_modules 臂（R23-25：软链树没有判别力）'], ['没有 src', '缺 src 臂必须与缺 node_modules 臂分开']]) {
+      if (!self.includes(s)) miss.push(`自检电池缺「${why}」`)
+    }
+    if (!/tailOk/.test(self)) miss.push('前提臂必须校验末行点名的前提（否则标签与真实分支可以不一致）')
+  }
   // 变异体必须真打在 S41/S42 上，否则这两条断言会退化成「文案在位即通过」
   const mut = has('scripts/verify-standards-selftest.mjs') ? read('scripts/verify-standards-selftest.mjs') : ''
   for (const id of ['S41', 'S42']) {
@@ -1485,7 +1499,7 @@ add({ id: 'S42', covers: ['scripts/verify-build-reproducible.mjs'], name: '可�
   }
   const detail = miss.length
     ? miss.join('、')
-    : `装置纪律在位（mkdtemp 落点 · 清理 · cp -al 硬链 · 拒绝软链）· 未判定出口 ${premiseUndecided} 处 · 零样本分支在位 · 产物入口内容哈希被点名 · 变异电池覆盖 S41/S42`
+    : `装置纪律在位（mkdtemp 落点 · 清理 · cp -al 硬链 · 拒绝软链）· 未判定出口 ${premiseUndecided} 处 · 零样本分支在位 · 产物入口内容哈希被点名 · 行为臂 6 条（含软链臂与两处前提臂，且逐臂校验末行点名的前提）· 变异电池覆盖 S41/S42`
   return { ok: miss.length === 0, detail }
 } })
 
