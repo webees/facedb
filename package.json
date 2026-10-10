@@ -34,10 +34,12 @@
     "verify:notices": "node scripts/check-third-party-notices.mjs",
     "verify:notices-selftest": "node scripts/check-third-party-notices-mutants.mjs",
     "verify:size": "node scripts/check-dist-size-budget.mjs",
+    "verify:repro": "node scripts/verify-build-reproducible.mjs",
+    "verify:repro-selftest": "node scripts/verify-build-reproducible-selftest.mjs",
     "verify:size-selftest": "node scripts/check-dist-size-budget-mutants.mjs",
     "verify:standards-selftest": "node scripts/verify-standards-selftest.mjs",
     "verify:all": "npm run verify && npm run verify:publish && npm run verify:standards && npm run verify:hygiene && npm run verify:types && npm run typecheck",
-    "verify:ci": "npm run verify && npm run verify:publish && npm run verify:standards && npm run verify:hygiene && npm run verify:types && npm run verify:types-selftest && npm run typecheck && npm run build && npm run verify:size && npm run verify:notices && npm run verify:standards-selftest && npm run verify:selfcheck && npm run verify:notices-selftest && npm run verify:size-selftest && npm run verify:publish-selftest && npm run verify:hygiene-selftest"
+    "verify:ci": "npm run verify && npm run verify:publish && npm run verify:standards && npm run verify:hygiene && npm run verify:types && npm run verify:types-selftest && npm run typecheck && npm run build && npm run verify:size && npm run verify:notices && npm run verify:repro && npm run verify:repro-selftest && npm run verify:standards-selftest && npm run verify:selfcheck && npm run verify:notices-selftest && npm run verify:size-selftest && npm run verify:publish-selftest && npm run verify:hygiene-selftest"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",

@@ -1241,12 +1241,14 @@ add({ id: 'S38', covers: ['.github/workflows/ci.yml', 'scripts/verify-standards-
     { script: 'verify:publish-selftest', file: 'scripts/publish-leak-scan-selftest.mjs', claim: /变异自检\s*(\d+)\s*\/\s*(\d+)/, pair: true },
   ]
   const rows = []
+  const wants = new Map()
   for (const b of BATTERIES) {
     if (!has(b.file)) { miss.push(`电池文件不存在：${b.file}`); continue }
     // 必须行锚定：变异体的 apply 里也含 'EXPECTED_VARIANTS = NN' 字面量（裸搜索会读到它）。
     const decl = read(b.file).match(/^\s*const EXPECTED_VARIANTS\s*=\s*(\d+)/m)
     if (!decl) { miss.push(`${b.file} 没有 EXPECTED_VARIANTS 声明（条数没有事实源，只能靠人手同步 CI 文本）`); continue }
     const want = Number(decl[1])
+    wants.set(b.script, want)
     const name = stepName(b.script)
     if (!name) { miss.push(`CI 里找不到 npm run ${b.script} 的步骤名（数字无人对拍）`); continue }
     const claimed = [...name.matchAll(new RegExp(b.claim.source, 'g'))].flatMap((m) => m.slice(1).filter(Boolean).map(Number))
@@ -1257,7 +1259,42 @@ add({ id: 'S38', covers: ['.github/workflows/ci.yml', 'scripts/verify-standards-
     if (!pairOk) miss.push(`${b.script}：CI 步骤名里两个数字不一致（${claimed.join(' / ')}）`)
     rows.push(`${b.script}=${want}${okNums && pairOk ? ' ✓' : ' ✗'}（CI 写 ${claimed.join('/')}）`)
   }
-  return { ok: miss.length === 0, detail: miss.length ? miss.join('、') : `${rows.length}/${BATTERIES.length} 个电池的条数与 CI 步骤名一致：${rows.join(' · ')}` }
+  // ② 文档里的同一数字也必须对拍（R36 实测：CONTRIBUTING 写 86 而电池已 90、RUN.md 写 9 而电池已 13）。
+  //    文档不在 CI 步骤名的覆盖内，此前只能靠人手同步 —— 漂移了就没人发现。
+  const DOC_CLAIMS = [
+    { file: 'CONTRIBUTING.md', script: 'verify:standards-selftest', re: /（(\d+)\s*个变异体必须全部被抓到）/ },
+    { file: 'RUN.md', script: 'verify:notices-selftest', re: /#\s*(\d+)\s*个变异体，必须\s*\d+\s*\/\s*\d+\s*被抓/ },
+    // 分项式提法：总数与「1 个阴性对照 + M 个变异体 + 4 个零样本前提对照」必须自洽
+    { file: 'RUN.md', script: 'verify:selfcheck', re: /（(\d+)\s*条用例\s*=\s*1\s*个阴性对照\s*\+\s*(\d+)\s*个变异体\s*\+\s*4\s*个零样本前提对照）/, breakdown: true },
+    // 本判据自己的条目数（R36 实测 CONTRIBUTING 写 37 而实际已 40）：数字来源 = 本文件里 `add({ id: 'S<n>'` 的声明数
+    { file: 'CONTRIBUTING.md', script: 'verify:standards', re: /npm run verify:standards\s+#\s*(\d+)\s*项/, stdCount: true },
+  ]
+  // 本判据声明的 S 条目（静态清点；运行期 CHECKS.length 在 S38 之后还会增长，不能用）
+  const stdDecls = [...read('scripts/check-repo-standards.mjs').matchAll(/^add\(\{ id: '(S\d+)'/gm)].map((m) => m[1])
+  const stdIds = new Set(stdDecls)
+  for (const d of DOC_CLAIMS) {
+    let want = wants.get(d.script)
+    if (d.stdCount) {
+      if (stdDecls.length === 0) { miss.push('数不出本判据声明的 S 条目（零样本 ⇒ 不判通过）'); continue }
+      if (stdIds.size !== stdDecls.length) miss.push(`本判据有重复的 S id：${stdDecls.filter((x, i) => stdDecls.indexOf(x) !== i).join('、')}`)
+      want = stdIds.size
+    }
+    if (want === undefined) { miss.push(`${d.file} 的对拍缺少电池声明：${d.script}`); continue }
+    if (!has(d.file)) { miss.push(`缺 ${d.file}（文档里的条数无人对拍）`); continue }
+    const hits = [...read(d.file).matchAll(new RegExp(d.re.source, 'g'))]
+    if (hits.length === 0) { miss.push(`${d.file} 里找不到可对拍的数字（${d.re.source}）—— 别把声明删了当通过`); continue }
+    for (const h of hits) {
+      const nums = h.slice(1).map(Number)
+      if (nums[0] !== want) miss.push(`${d.file} 写 ${nums[0]}，而 ${d.script} 声明 ${want}`)
+      if (d.breakdown) {
+        const sum = 1 + nums[1] + 4
+        if (sum !== nums[0]) miss.push(`${d.file} 的分项不自洽：1 + ${nums[1]} + 4 = ${sum} ≠ 总数 ${nums[0]}`)
+        if (nums[1] !== want - 5) miss.push(`${d.file} 的分项与电池不符：变异体 ${nums[1]} 条，电池 ${want} 条应当拆成 ${want - 5} 条变异体`)
+      }
+    }
+    rows.push(`${d.file}:${d.script}=${want}`)
+  }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('、') : `${rows.length}/${BATTERIES.length + DOC_CLAIMS.length} 处提法与电池声明一致：${rows.join(' · ')}` }
 } })
 
 // ── S39 双架构二进制清单的单一事实源（R35） ────────────────────────────────
@@ -1320,6 +1357,162 @@ add({ id: 'S39', covers: ['pb-bin/SHA256SUMS', 'pb-bin/Dockerfile', 'pb-bin/pock
     ? miss.join('、')
     : `两架构登记与常量逐项一致 · FROM 按 digest 固定（${[...new Set(froms)].length} 个）· 未知架构 REFUSED` +
       (probe.length ? ` · 磁盘核对：${probe.join(' · ')}` : ` · 磁盘核对：未判定（${unj.join('、')}）`)
+  return { ok: miss.length === 0, detail }
+} })
+
+// ── S40 构建入口唯一且与调用方式无关（R36） ────────────────────────────────
+// R36 实测（W36-A-03）：给 rsbuild 传**绝对** `--root` 会让产物变样 —— 27,434,029 B / 摘要
+// `d8b74185…`（对照 `npm run build` 的 27,434,032 B / `5931b106…`）：index chunk 43,392→43,391 B、
+// lib-vue 66,026→66,024 B，且 `m.` 前缀的 chunk 变成 `v.`；**相对** `--root` 与 `npm run build` 一致。
+// 而体积判据把 13 个文件名、4 个 chunk 名与字节数都钉死了 ⇒ 一旦有人改用绝对 `--root` 取产物，
+// 判据会报红，人却容易读成「产物漂移/重锚需求」。这里把「入口唯一」变成机械断言：
+//   ① package.json 的 scripts.build 必须是 `rsbuild build`（不带 --root、不经 npx/包装器）；
+//   ② CI 的每个构建步骤与 Dockerfile 的每个构建 RUN 都必须写 `npm run build`；
+//   ③ 三处都不许给 rsbuild 传绝对路径的 `--root`。
+// 零样本纪律：三处都找不到构建步骤时判失败（不能因「找不到」而通过）。
+add({ id: 'S40', covers: ['package.json', '.github/workflows/ci.yml', 'Dockerfile'], name: '构建入口唯一：package.json/CI/Dockerfile 三处都走 `npm run build`，且没有用绝对路径给 rsbuild 传 --root（绝对 --root 会改产物字节）', run() {
+  const miss = []
+  if (!has('package.json')) return { ok: false, detail: '缺 package.json（构建入口没有事实源）' }
+  let pkg
+  try { pkg = JSON.parse(read('package.json')) } catch (e) { return { ok: false, detail: 'package.json 不是合法 JSON：' + e.message } }
+  const build = String((pkg.scripts || {}).build ?? '')
+  if (build !== 'rsbuild build') miss.push(`package.json 的 scripts.build 是 \`${build || '(缺失)'}\`，期望 \`rsbuild build\`（改入口就等于换产物）`)
+  const BUILDISH = /\brsbuild\b|\bnpm run build\b/
+  const collect = (text, re) => [...text.matchAll(re)].map((m) => m[1].trim()).filter((l) => BUILDISH.test(l))
+  let ciBuilds = []
+  if (!has('.github/workflows/ci.yml')) miss.push('缺 .github/workflows/ci.yml（CI 的构建入口无人对拍）')
+  else {
+    ciBuilds = collect(read('.github/workflows/ci.yml'), /^\s*(?:-\s*)?run:\s*(.+)$/gm)
+    if (ciBuilds.length === 0) miss.push('CI 里没有任何构建步骤（零样本 ⇒ 不判通过）')
+    for (const l of ciBuilds) if (l !== 'npm run build') miss.push(`CI 的构建步骤不是 \`npm run build\`：\`${l}\``)
+  }
+  let dfBuilds = []
+  if (!has('Dockerfile')) miss.push('缺 Dockerfile（镜像的构建入口无人对拍）')
+  else {
+    dfBuilds = collect(read('Dockerfile'), /^RUN\s+(.+)$/gm)
+    if (dfBuilds.length === 0) miss.push('Dockerfile 里没有任何构建 RUN（零样本 ⇒ 不判通过）')
+    for (const l of dfBuilds) if (l !== 'npm run build') miss.push(`Dockerfile 的构建 RUN 不是 \`npm run build\`：\`${l}\``)
+  }
+  const absRoot = []
+  for (const rel of ['package.json', '.github/workflows/ci.yml', 'Dockerfile']) {
+    if (!has(rel)) continue
+    read(rel).split('\n').forEach((line, i) => {
+      if (/rsbuild/.test(line) && /--root[= ]\s*['"]?\//.test(line)) absRoot.push(`${rel}:${i + 1}`)
+    })
+  }
+  if (absRoot.length) miss.push(`用绝对路径给 rsbuild 传 --root（R36 实测会改产物字节与 chunk 名）：${absRoot.join('、')}`)
+  const detail = miss.length
+    ? miss.join('、')
+    : `package.json build=\`rsbuild build\` · CI 构建步骤 ${ciBuilds.length} 处全为 \`npm run build\` · Dockerfile 构建 RUN ${dfBuilds.length} 处全为 \`npm run build\` · 绝对 --root 0 处`
+  return { ok: miss.length === 0, detail }
+} })
+
+// ── S41 构建可复现性判据在场且被接线（R36）────────────────────────────
+// 为什么必须单独一条：R36 实测「同一源码两次构建产物不同」此前**没有任何判据能判**——
+// CI 每个 job 只构建一次；体积判据只锁 4 个 chunk 的 sha256，而 dist/index.html 的内容
+// 在农村全绿的情况下可以被改一个字节（长度不变 ⇒ gzip 与总字节都不动）。
+add({ id: 'S41', covers: ['scripts/verify-build-reproducible.mjs', 'scripts/verify-build-reproducible-selftest.mjs', 'scripts/lib/build-index.mjs', 'package.json', '.github/workflows/ci.yml'], name: '构建可复现性判据在场且被接线：脚本真做两次独立构建并比对产物名册，判据自检与 CI 步骤都在', run() {
+  const miss = []
+  const VER = 'scripts/verify-build-reproducible.mjs'
+  const SEL = 'scripts/verify-build-reproducible-selftest.mjs'
+  const IDX = 'scripts/lib/build-index.mjs'
+  for (const rel of [VER, SEL, IDX]) if (!has(rel)) miss.push(`缺 ${rel}（没有判据/没有自检就没有判别力）`)
+  if (!has('package.json')) miss.push('缺 package.json')
+  else {
+    let pkg = null
+    try { pkg = JSON.parse(read('package.json')) } catch (e) { miss.push('package.json 不是合法 JSON：' + e.message) }
+    const scripts = ((pkg || {}).scripts || {})
+    const want = { 'verify:repro': `node ${VER}`, 'verify:repro-selftest': `node ${SEL}` }
+    for (const [k, v] of Object.entries(want)) {
+      const got = String(scripts[k] ?? '')
+      if (got !== v) miss.push(`package.json 的 scripts['${k}'] 是 \`${got || '(缺失)'}\`，期望 \`${v}\``)
+    }
+  }
+  const ciRel = '.github/workflows/ci.yml'
+  if (!has(ciRel)) miss.push(`缺 ${ciRel}（接线面无人对拍）`)
+  else {
+    const runs = [...read(ciRel).matchAll(/^\s*(?:-\s*)?run:\s*(.+)$/gm)].map((m) => m[1].trim())
+    for (const s of ['verify:repro', 'verify:repro-selftest']) {
+      const n = runs.filter((r) => r === `npm run ${s}`).length
+      if (n === 0) miss.push(`CI 里没有 \`npm run ${s}\` 步骤（零样本 ⇒ 不判通过：判据存在但从不跑）`)
+      if (n > 1) miss.push(`CI 里 \`npm run ${s}\` 出现 ${n} 次（应恰 1 次）`)
+    }
+  }
+  if (has(VER)) {
+    const t = read(VER)
+    const buildCalls = [...t.matchAll(/\bbuild\(/g)].length
+    if (buildCalls < 2) miss.push(`判据只调用了 ${buildCalls} 次构建（两次独立构建是这条断言的全部意义）`)
+    if (!/A\.rosterHash === B\.rosterHash|A\.rosterHash !== B\.rosterHash/.test(t)) miss.push('判据里没有「两臂名册相等」的比较表达式')
+    if (!/diffRosters/.test(t)) miss.push('判据没有按文件点出差异（只报一个总哈希无法定位）')
+  }
+  if (has(SEL)) {
+    const s = read(SEL)
+    for (const [re, why] of [[/EXPECTED_SCENES\s*=\s*\d+/, '自检没有场景条数声明（条数被改小就无声退化）'], [/exit=/, '自检不打印每臂读数'], [/REPRO_TAMPER/, '自检没有内容漂移臂'], [/REPRO_ARM_B/, '自检没有绝对检出路径臂']]) {
+      if (!re.test(s)) miss.push(`判据自检缺「${why}」`)
+    }
+  }
+  const detail = miss.length
+    ? miss.join('、')
+    : `判据 ${VER} + 自检 ${SEL} + 名册模块 ${IDX} 在场 · package.json 有 verify:repro 与 verify:repro-selftest · CI 各有 1 步跑它们 · 判据调用构建 2 次并比对名册与逐文件差异`
+  return { ok: miss.length === 0, detail }
+} })
+
+// ── S42 可复现性判据的装置纪律与空样本分支（R36）──────────────────────
+// 判据本身也会假绿：R24/R32 的教训是「固定 /tmp 落点」「软链 node_modules」都会让读数不可采信。
+add({ id: 'S42', covers: ['scripts/verify-build-reproducible.mjs'], name: '可复现性判据的装置前提与零样本分支在场：按次唯一落点、拒绝软链 node_modules、空产物判未判定、缺前提判未判定', run() {
+  const VER = 'scripts/verify-build-reproducible.mjs'
+  if (!has(VER)) return { ok: false, detail: `缺 ${VER}（没有判据可查）` }
+  const t = read(VER)
+  const miss = []
+  const need = [
+    [/mkdtempSync\s*\(/, '按次唯一的临时落点（固定路径会被并发互删）'],
+    [/rmSync\(dest/, '临时副本必须清理'],
+    [/cp['"],\s*\['-al'/, 'node_modules 必须用硬链目录复制（软链会改 chunk 名，R23-25）'],
+    [/isSymbolicLink\(\)/, '必须显式拒绝软链 node_modules（否则结论不可采信）'],
+    [/零样本/, '空产物必须有零样本分支（否则空跑也算通过）'],
+    [/exit 2/, '前提不成立必须 exit 2（与「通过」可区分）'],
+    [/diffRosters/, '必须按文件点差异'],
+    [/index\.html/, '必须单独点出产物入口的内容哈希（原体积判据只锁 4 个 chunk）'],
+  ]
+  for (const [re, why] of need) if (!re.test(t)) miss.push(`缺「${why}」`)
+  const premiseUndecided = [...t.matchAll(/undecided\(/g)].length
+  if (premiseUndecided < 5) miss.push(`只找到 ${premiseUndecided} 处未判定出口（缺 package.json / src / node_modules / 软链 / 空产物 至少 5 条前提）`)
+  // R36REV-RL-02/RL-03：上面的字符串断言能被「保留文本、架空语义」绕过（把守卫写成 `if (false && …)` 仍是全绿）。
+  // 真正抓住这种事的是**行为臂**：自检电池里必须有软链臂、缺 node_modules 臂、缺 src 臂各自独立，
+  // 且每条前提臂都要断言**末行点名了缺的那个前提**（否则「标签写的分支」与「真实走的分支」可以不一致）。
+  const self = has('scripts/verify-build-reproducible-selftest.mjs') ? read('scripts/verify-build-reproducible-selftest.mjs') : ''
+  if (!self) miss.push('缺 scripts/verify-build-reproducible-selftest.mjs（没有行为臂，装置纪律只能靠文本检查）')
+  else {
+    if (!/^\s*const EXPECTED_SCENES = 6\s*$/m.test(self)) miss.push('自检电池的 EXPECTED_SCENES 必须声明为 6（干净 / 内容漂移 / 绝对路径 / 缺 node_modules / 软链 node_modules / 缺 src）')
+    // 臂计数按**臂号集合**判，不按出现次数判：次数判会被「同一臂号写两次」补平（R36-LEAD-18）。
+    const armIds = [...new Set([...self.matchAll(/run\('臂(\d)/g)].map((m) => m[1]))].sort()
+    const missingArms = ['1', '2', '3', '4', '5', '6'].filter((n) => !armIds.includes(n))
+    if (missingArms.length) miss.push(`自检电池缺臂 ${missingArms.join('、')}（现有序号：${armIds.join('、')}；两处前提必须各有各的臂）`)
+    for (const [s, why] of [['没有 node_modules', '缺 node_modules 臂必须点名缺的是 node_modules'], ['软链', '必须有软链 node_modules 臂（R23-25：软链树没有判别力）'], ['没有 src', '缺 src 臂必须与缺 node_modules 臂分开']]) {
+      if (!self.includes(s)) miss.push(`自检电池缺「${why}」`)
+    }
+    if (!/tailOk/.test(self)) miss.push('前提臂必须校验末行点名的前提（否则标签与真实分支可以不一致）')
+    // R36-LEAD-17：臂3（绝对 --root 改产物）是**平台相关**的 —— GitHub Linux runner 上两次构建逐字节相同。
+    // 故它改成「前提臂」：现象不出现判未判定。这条豁免必须①留痕（打出「前提不成立」）、②有封顶（EXPECTED_PREMISE_MAX），
+    // 否则「前提豁免」会变成新的静默通过通道；同时判据侧的绝对 --root 开关必须在场，否则臂3 永远收不到现象。
+    if (!/^\s*const EXPECTED_PREMISE_MAX = 1\s*$/m.test(self)) miss.push('前提豁免必须有封顶常量 EXPECTED_PREMISE_MAX = 1（不然前提豁免会把断言一条条吃掉）')
+    if (!self.includes('前提不成立')) miss.push('前提臂现象不出现时必须打出「前提不成立」一行（不许静默）')
+    if (!/premise: true/.test(self)) miss.push('前提臂的读数必须带 premise 标记（否则封顶判据读不到）')
+    if (!/REPRO_ARM_B: 'absolute'/.test(self)) miss.push('必须有臂真用绝对 --root 调判据（否则平台现象无从出现）')
+    // 断言**那一行常量本身**：只测 /REPRO_ARM_B/ 会被文件头注释里的同名字符串满足，
+    // 于是「把常量退回 'relative'」这种让开关失效的改动能整条溜过（R36-LEAD-18）。
+    if (!/^\s*const ARM_B = process\.env\.REPRO_ARM_B \|\| 'relative'\s*$/m.test(t)) miss.push("判据自身的绝对 --root 开关必须写成 `const ARM_B = process.env.REPRO_ARM_B || 'relative'`（行锚定；否则开关可被架空而 S42 看不见）")
+    if (!/ARM_B === 'absolute'/.test(t)) miss.push("判据必须按 ARM_B === 'absolute' 真的给 B 臂加 --root")
+  }
+  // 变异体必须真打在 S41/S42 上，否则这两条断言会退化成「文案在位即通过」
+  const mut = has('scripts/verify-standards-selftest.mjs') ? read('scripts/verify-standards-selftest.mjs') : ''
+  for (const id of ['S41', 'S42']) {
+    const n = [...mut.matchAll(new RegExp(`expect: '${id}'`, 'g'))].length
+    if (n === 0) miss.push(`变异电池里没有以 ${id} 为期望的变异体（断言无法被证明有判别力）`)
+  }
+  const detail = miss.length
+    ? miss.join('、')
+    : `装置纪律在位（mkdtemp 落点 · 清理 · cp -al 硬链 · 拒绝软链）· 未判定出口 ${premiseUndecided} 处 · 零样本分支在位 · 产物入口内容哈希被点名 · 行为臂 6 条（含软链臂与两处前提臂，且逐臂校验末行点名的前提）· 前提豁免封顶 EXPECTED_PREMISE_MAX = 1 且留痕 · 判据侧绝对 --root 开关在位 · 变异电池覆盖 S41/S42`
   return { ok: miss.length === 0, detail }
 } })
 

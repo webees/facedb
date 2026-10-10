@@ -535,6 +535,26 @@ src 不改产物，必须未判定）成对证明这道前提有判别力。**�
 ——重锚前先 `rm -rf dist && npm run build`。这条前提反过来也说明「本地绿」不构成收敛证据，**必须在干净检出
 （或 CI）上复跑才算数**。
 
+**产物可复现性由 `npm run verify:repro` 单独把守（R36 新增）**：`verify:size` 只锁 4 个 chunk 的 sha256 与
+「原始总字节 +2% 上限」，它**不看 `dist/index.html` 的内容**（R36 实测：把 CSP 改一个字节、长度不变 ⇒ 体积判据
+17/17 全绿），它的源码指纹集也**不含任何构建配置**。`scripts/verify-build-reproducible.mjs` 补上这块：A 臂在实测根
+跑 `npm run build`，B 臂在 `mkdtemp` 独立副本里跑同一条命令（`node_modules` 用 `cp -al` 硬链、**软链直接判未判定**），
+然后逐文件比对产物名册（名册哈希只吃 `相对路径 + 字节数 + sha256`，算式在 `scripts/lib/build-index.mjs`）。
+两道前提是明写的：**源码指纹**（`index.html` + `package.json` + `src/**`）与**配置指纹**（`rsbuild.config.ts` /
+`postcss.config.mjs` / `tsconfig.json` / `package.json` / `package-lock.json` 五个输入）——两臂必须相同，不同即
+「副本没复制全 ⇒ 结论不可用」并 exit 2。判据自己的判别力由 `npm run verify:repro-selftest` 的**六臂成对对照**证明：
+干净 ⇒ 0、A 臂产物被改一个字节（长度不变）⇒ 1、B 臂改用绝对 `--root` ⇒ 1、合成树缺 `node_modules` ⇒ 2、
+合成树 `node_modules` 是软链 ⇒ 2、合成树缺 `src/` ⇒ 2（后三条前提臂还各自断言**末行点名了缺的那个前提**，
+否则「臂的标签」与「真实走的分支」可以不一致）。
+> **臂3（绝对 `--root`）是平台前提臂**：R36 实测该现象**平台相关** —— macOS 上换目录名会改 chunk 名与名册哈希
+> （9 个文件差异），而 GitHub Actions 的 Linux runner 上两次构建逐字节相同（CI 首跑正是被这一条判红）。
+> 故现象不出现时该臂判**未判定**（打出「前提不成立」一行，不判通过也不判失败），且前提豁免有**封顶**
+> `EXPECTED_PREMISE_MAX = 1` —— 不许靠前提豁免把断言一条条吃掉（超过封顶即 exit 2）。
+> 真正无条件把守「构建入口不许传绝对 `--root`」的是 **S40**（结构断言，三处构建入口全查）。
+仓库标准 **S41/S42** 负责「这两个脚本在场且被接线、装置纪律与零样本分支在位」，变异体 M94–M98 打在这两条断言上。
+**绝对 `--root` 会改产物**（R36 实测：同一个 `/tmp` 树换个目录名，`index.html` 摘要与三个 chunk 名全变，
+但产物里不含任何绝对路径字面量 —— 泄漏的是模块 id 的哈希输入）⇒ 三处构建入口都不许给 rsbuild 传绝对 `--root`（S40）。
+
 
 **关键认识**：`dist` 只有 27.4MB（13 个文件），**镜像的大头从来不是产物，而是「托管它的服务器」**。
 
@@ -1989,7 +2009,7 @@ SPA 回退会把不存在的路径交给 `index.html`，于是返回 200 加一�
 
 ```
 npm run verify:notices            # 需要 dist：先 npm run build；dist 不存在判「未判定」exit 2，不判通过
-npm run verify:notices-selftest   # 9 个变异体，必须 9/9 被抓
+npm run verify:notices-selftest   # 13 个变异体，必须 13/13 被抓
 node scripts/check-third-party-notices.mjs --live http://localhost:3000   # 按 sha256 比对线上副本
 ```
 
