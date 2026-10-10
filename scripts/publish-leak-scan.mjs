@@ -325,7 +325,17 @@ for (const f of files) {
     voided.push({ file: f, why: `超过扫描上限 ${MAX_SCAN_BYTES} 字节（size=${st.size}）` })
     continue
   }
-  const buf = readFileSync(f)
+  // 【R37（W37C-01，P1）】statSync 只覆盖「不存在 / 非常规 / 超上限」三种，**权限**导致的
+  // EACCES 此前直接冒泡成未捕获异常：exit 1、无 [OK]/[FAIL] 行、无汇总行 ⇒ 与「真有违规」
+  // 在 CI 页面上完全同形（都是红叉），而判据自己的声明是「读不到 ⇒ 未判定 exit 2」。
+  // 现在与上面三支合流成 voided ⇒ 走 469 行的 exit 2。
+  let buf
+  try {
+    buf = readFileSync(f)
+  } catch (e) {
+    voided.push({ file: f, why: `读不到（${e && e.code ? e.code : '读取失败'}）` })
+    continue
+  }
   // 内容判二进制：前 8KB 出现 NUL 字节（v2 前按扩展名白名单，`.pem`/`.bak`/`.log` 被静默跳过）。
   // 注意：判成二进制**只改变解码方式与适用规则集**，不改变「这份内容要不要扫」。
   const isBinary = buf.subarray(0, 8192).includes(0)

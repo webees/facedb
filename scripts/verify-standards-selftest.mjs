@@ -229,6 +229,12 @@ const M = [
   // R23REV-N2 实测的旧行为是把它误报成「verify:ci 多了 CI 不跑的步骤」——那正是本变异体要守住的反例。
   { id: 'M33', target: '.github/workflows/ci.yml', expect: 'S30', staysGreen: true, desc: '把步骤的 `run:` 改成 block scalar —— 语义等价，S30 不许误报（R23REV-N2）',
     apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/^(\s*)run: npm run verify:notices\s*$/m, '$1run: |\n$1  npm run verify:notices')) },
+  // 【R37】非 npm 步骤此前不在 S30 的集内 ⇒ 加一条 `run: <非 npm 命令>` 恒绿（W37-A M1）。
+  // M99 打「多一条未登记命令」，M100 打「把已登记的 `npm ci` 换成别的命令」（两个方向）。
+  { id: 'M99', target: '.github/workflows/ci.yml', expect: 'S30', desc: 'CI 里新增一条未登记的非 npm run 命令（S30 原先对它恒真）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t + '\n      - name: 探针步骤（M99）\n        run: curl -sSf https://example.invalid/probe\n') },
+  { id: 'M100', target: '.github/workflows/ci.yml', expect: 'S30', desc: '把已登记的 `npm ci` 换成 `npm install`（已登记的非 npm 步骤被悄悄改掉）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace('run: npm ci', 'run: npm install --no-audit')) },
   { id: 'M34', target: '.github/workflows/ci.yml', expect: 'S30', desc: '给整个 job 加 `if: false`（整个 job 的步骤都不再执行）',
     apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/^(\s*runs-on: ubuntu-latest\s*)$/m, '    if: false\n$1')) },
   // 【R23 第四次重锚（PR #27 的 CI 抓到）】体积判据的「dist 与源码同源」前提：摘掉它就会退回
@@ -443,7 +449,7 @@ const M = [
 ]
 
 // R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
-const EXPECTED_VARIANTS = 100
+const EXPECTED_VARIANTS = 102
 if (M.length !== EXPECTED_VARIANTS) {
   console.log(`\u26d4 \u672a\u5224\u5b9a\uff08exit 2\uff09\uff1a\u53d8\u5f02\u4f53\u58f0\u660e ${EXPECTED_VARIANTS} \u6761\uff0c\u5b9e\u9645 ${M.length} \u6761`)
   process.exit(2)
