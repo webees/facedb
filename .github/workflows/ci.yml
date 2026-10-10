@@ -86,15 +86,15 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
-      - name: 判据自身的变异自检（86 个变异体必须全部被抓到，且未变异的副本全绿）
+      - name: 判据自身的变异自检（90 个变异体必须全部被抓到，且未变异的副本全绿）
         run: npm run verify:standards-selftest
 
       # 仓库结构面与 CSP 面的判据（verify-repo.mjs）此前**从未在 CI 里自检** ——
-      # 它的 33 个变异体只在本地跑，判据被无声削弱时 CI 仍然全绿（R22 实测发现）。
-      - name: 仓库判据的变异自检（33 个变异体/零样本/越界场景必须全部符合预期）
+      # 它的 36 个变异体只在本地跑，判据被无声削弱时 CI 仍然全绿（R22 实测发现）。
+      - name: 仓库判据的变异自检（36 个变异体/零样本/越界场景必须全部符合预期）
         run: npm run verify:selfcheck
 
-      - name: 第三方许可判据的变异自检（9 个变异体 + 缺 dist 必须判未判定）
+      - name: 第三方许可判据的变异自检（13 个变异体 + 缺 dist 必须判未判定）
         run: npm run verify:notices-selftest
 
       # 体积自检要一份**真实产物**做样本（它在临时目录里真复制一份再施加变异）。
@@ -105,9 +105,9 @@ jobs:
       - name: 产物体积判据的变异自检（10 个变异体：删 wasm / 同大小换内容 / web 注入 / SHA256SUMS 漂移 / 缺 dist / 软链 node_modules / 原始总字节顶穿 / 源码同源前提的对照与漂移 / 对照）
         run: npm run verify:size-selftest
 
-      # 13 个阳性形态（.bak 令牌 / .pem 私钥 / 新式令牌前缀 / 超大文本 / OpenSSH 私钥 / 跟踪的 .env / 公网 IP / Tailscale / 媒体）
-      # 必须全部被抓；2 组阴性对照必须零误报；「索引有而工作区缺失」必须判未判定（exit 2）；闸门自扫不得自阻断
-      - name: 发布卫生闸门的变异自检（17 阳性（含两个二进制旁路形态）+ 3 阴性 + 未判定语义 + 自扫）
+      # 32 个阳性形态（.bak 令牌 / .pem 私钥 / 新式令牌前缀 / 超大文本 / OpenSSH 私钥 / 跟踪的 .env /
+      # 公网 IP / Tailscale / 媒体 / UTF-16LE·BE·UTF-32LE·BE 与 gzip·zip 容器 / 换行拆分 / 零宽字符 / 全角同形）
+      - name: 发布卫生闸门的变异自检（变异自检 43/43：32 阳性（含二进制旁路与四种编码视图）+ 4 阴性 + 4 未判定 + 2 提示区 + 本仓库自扫）
         run: npm run verify:publish-selftest
 
       # 每个场景建独立临时 git 仓库：空样本（.gitattributes 只剩注释 / public/SHA256SUMS 0 字节）必须判未判定，

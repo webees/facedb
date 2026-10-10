@@ -777,6 +777,12 @@ function runSelfCheck() {
     }
   }
   rmSync(tmp, { recursive: true, force: true })
+  // R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
+  const EXPECTED_VARIANTS = 36
+  if (cases.length !== EXPECTED_VARIANTS) {
+    console.log(`⛔ 未判定（exit 2）：变异自检声明 ${EXPECTED_VARIANTS} 条，实际 ${cases.length} 条`)
+    process.exit(2)
+  }
   console.log(`\n变异自检：${cases.length - bad}/${cases.length} 符合预期`)
   process.exit(bad ? 1 : 0)
 }
