@@ -426,10 +426,18 @@ const M = [
     apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/^(\s*run:\s*)npm run build\s*$/gm, '$1npx rsbuild build --root $PWD')) },
   { id: 'M92', target: 'package.json', expect: 'S40', desc: 'package.json 的 build 脚本带上绝对 --root（产物字节与 chunk 名会变 ⇒ 必须报红）',
     apply: () => mutate('package.json', (t) => t.replace('"build": "rsbuild build"', '"build": "rsbuild build --root /tmp"')) },
+  // R36：可复现性判据的两条结构性守卫（S41 = 接线面，S42 = 装置纪律与空样本分支）。
+  // 变异必须真的打在被断言的那个结构上，否则是「变异未生效」而不是「断言有判别力」。
+  { id: 'M94', target: 'scripts/verify-build-reproducible.mjs', expect: 'S42', desc: '整支丢掉「拒绝软链 node_modules」的装置纪律（软链会改 chunk 名，那种树上的读数不可采信 ⇒ 必须报红）',
+    apply: () => mutate('scripts/verify-build-reproducible.mjs', (t) => t.replace(/isSymbolicLink\(\)/g, 'isDirectory()')) },
+  { id: 'M95', target: 'package.json', expect: 'S41', desc: 'verify:repro 指向别的脚本（判据还在但不再被接线跑 ⇒ 必须报红）',
+    apply: () => mutate('package.json', (t) => t.replace('"verify:repro": "node scripts/verify-build-reproducible.mjs"', '"verify:repro": "node scripts/check-dist-size-budget.mjs"')) },
+  { id: 'M96', target: 'package.json', expect: 'S41', desc: 'verify:repro-selftest 指向别的脚本（判据自检不再被接线 ⇒ 必须报红）',
+    apply: () => mutate('package.json', (t) => t.replace('"verify:repro-selftest": "node scripts/verify-build-reproducible-selftest.mjs"', '"verify:repro-selftest": "node scripts/verify-repo.mjs"')) },
 ]
 
 // R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
-const EXPECTED_VARIANTS = 95
+const EXPECTED_VARIANTS = 98
 if (M.length !== EXPECTED_VARIANTS) {
   console.log(`\u26d4 \u672a\u5224\u5b9a\uff08exit 2\uff09\uff1a\u53d8\u5f02\u4f53\u58f0\u660e ${EXPECTED_VARIANTS} \u6761\uff0c\u5b9e\u9645 ${M.length} \u6761`)
   process.exit(2)

@@ -1407,6 +1407,88 @@ add({ id: 'S40', covers: ['package.json', '.github/workflows/ci.yml', 'Dockerfil
   return { ok: miss.length === 0, detail }
 } })
 
+// ── S41 构建可复现性判据在场且被接线（R36）────────────────────────────
+// 为什么必须单独一条：R36 实测「同一源码两次构建产物不同」此前**没有任何判据能判**——
+// CI 每个 job 只构建一次；体积判据只锁 4 个 chunk 的 sha256，而 dist/index.html 的内容
+// 在农村全绿的情况下可以被改一个字节（长度不变 ⇒ gzip 与总字节都不动）。
+add({ id: 'S41', covers: ['scripts/verify-build-reproducible.mjs', 'scripts/verify-build-reproducible-selftest.mjs', 'scripts/lib/build-index.mjs', 'package.json', '.github/workflows/ci.yml'], name: '构建可复现性判据在场且被接线：脚本真做两次独立构建并比对产物名册，判据自检与 CI 步骤都在', run() {
+  const miss = []
+  const VER = 'scripts/verify-build-reproducible.mjs'
+  const SEL = 'scripts/verify-build-reproducible-selftest.mjs'
+  const IDX = 'scripts/lib/build-index.mjs'
+  for (const rel of [VER, SEL, IDX]) if (!has(rel)) miss.push(`缺 ${rel}（没有判据/没有自检就没有判别力）`)
+  if (!has('package.json')) miss.push('缺 package.json')
+  else {
+    let pkg = null
+    try { pkg = JSON.parse(read('package.json')) } catch (e) { miss.push('package.json 不是合法 JSON：' + e.message) }
+    const scripts = ((pkg || {}).scripts || {})
+    const want = { 'verify:repro': `node ${VER}`, 'verify:repro-selftest': `node ${SEL}` }
+    for (const [k, v] of Object.entries(want)) {
+      const got = String(scripts[k] ?? '')
+      if (got !== v) miss.push(`package.json 的 scripts['${k}'] 是 \`${got || '(缺失)'}\`，期望 \`${v}\``)
+    }
+  }
+  const ciRel = '.github/workflows/ci.yml'
+  if (!has(ciRel)) miss.push(`缺 ${ciRel}（接线面无人对拍）`)
+  else {
+    const runs = [...read(ciRel).matchAll(/^\s*(?:-\s*)?run:\s*(.+)$/gm)].map((m) => m[1].trim())
+    for (const s of ['verify:repro', 'verify:repro-selftest']) {
+      const n = runs.filter((r) => r === `npm run ${s}`).length
+      if (n === 0) miss.push(`CI 里没有 \`npm run ${s}\` 步骤（零样本 ⇒ 不判通过：判据存在但从不跑）`)
+      if (n > 1) miss.push(`CI 里 \`npm run ${s}\` 出现 ${n} 次（应恰 1 次）`)
+    }
+  }
+  if (has(VER)) {
+    const t = read(VER)
+    const buildCalls = [...t.matchAll(/\bbuild\(/g)].length
+    if (buildCalls < 2) miss.push(`判据只调用了 ${buildCalls} 次构建（两次独立构建是这条断言的全部意义）`)
+    if (!/A\.rosterHash === B\.rosterHash|A\.rosterHash !== B\.rosterHash/.test(t)) miss.push('判据里没有「两臂名册相等」的比较表达式')
+    if (!/diffRosters/.test(t)) miss.push('判据没有按文件点出差异（只报一个总哈希无法定位）')
+  }
+  if (has(SEL)) {
+    const s = read(SEL)
+    for (const [re, why] of [[/EXPECTED_SCENES\s*=\s*\d+/, '自检没有场景条数声明（条数被改小就无声退化）'], [/exit=/, '自检不打印每臂读数'], [/REPRO_TAMPER/, '自检没有内容漂移臂'], [/REPRO_ARM_B/, '自检没有绝对检出路径臂']]) {
+      if (!re.test(s)) miss.push(`判据自检缺「${why}」`)
+    }
+  }
+  const detail = miss.length
+    ? miss.join('、')
+    : `判据 ${VER} + 自检 ${SEL} + 名册模块 ${IDX} 在场 · package.json 有 verify:repro 与 verify:repro-selftest · CI 各有 1 步跑它们 · 判据调用构建 2 次并比对名册与逐文件差异`
+  return { ok: miss.length === 0, detail }
+} })
+
+// ── S42 可复现性判据的装置纪律与空样本分支（R36）──────────────────────
+// 判据本身也会假绿：R24/R32 的教训是「固定 /tmp 落点」「软链 node_modules」都会让读数不可采信。
+add({ id: 'S42', covers: ['scripts/verify-build-reproducible.mjs'], name: '可复现性判据的装置前提与零样本分支在场：按次唯一落点、拒绝软链 node_modules、空产物判未判定、缺前提判未判定', run() {
+  const VER = 'scripts/verify-build-reproducible.mjs'
+  if (!has(VER)) return { ok: false, detail: `缺 ${VER}（没有判据可查）` }
+  const t = read(VER)
+  const miss = []
+  const need = [
+    [/mkdtempSync\s*\(/, '按次唯一的临时落点（固定路径会被并发互删）'],
+    [/rmSync\(dest/, '临时副本必须清理'],
+    [/cp['"],\s*\['-al'/, 'node_modules 必须用硬链目录复制（软链会改 chunk 名，R23-25）'],
+    [/isSymbolicLink\(\)/, '必须显式拒绝软链 node_modules（否则结论不可采信）'],
+    [/零样本/, '空产物必须有零样本分支（否则空跑也算通过）'],
+    [/exit 2/, '前提不成立必须 exit 2（与「通过」可区分）'],
+    [/diffRosters/, '必须按文件点差异'],
+    [/index\.html/, '必须单独点出产物入口的内容哈希（原体积判据只锁 4 个 chunk）'],
+  ]
+  for (const [re, why] of need) if (!re.test(t)) miss.push(`缺「${why}」`)
+  const premiseUndecided = [...t.matchAll(/undecided\(/g)].length
+  if (premiseUndecided < 5) miss.push(`只找到 ${premiseUndecided} 处未判定出口（缺 package.json / src / node_modules / 软链 / 空产物 至少 5 条前提）`)
+  // 变异体必须真打在 S41/S42 上，否则这两条断言会退化成「文案在位即通过」
+  const mut = has('scripts/verify-standards-selftest.mjs') ? read('scripts/verify-standards-selftest.mjs') : ''
+  for (const id of ['S41', 'S42']) {
+    const n = [...mut.matchAll(new RegExp(`expect: '${id}'`, 'g'))].length
+    if (n === 0) miss.push(`变异电池里没有以 ${id} 为期望的变异体（断言无法被证明有判别力）`)
+  }
+  const detail = miss.length
+    ? miss.join('、')
+    : `装置纪律在位（mkdtemp 落点 · 清理 · cp -al 硬链 · 拒绝软链）· 未判定出口 ${premiseUndecided} 处 · 零样本分支在位 · 产物入口内容哈希被点名 · 变异电池覆盖 S41/S42`
+  return { ok: miss.length === 0, detail }
+} })
+
 for (const c of CHECKS) {
   let r
   try { r = c.run() } catch (e) { r = { ok: false, detail: '断言抛错：' + e.message } }

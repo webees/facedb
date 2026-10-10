@@ -67,6 +67,13 @@ jobs:
       - name: 第三方许可随分发物提供（声明文件 / Apache 全文 / 闭包与 lock 一致 / dist 副本）
         run: npm run verify:notices
 
+      # R36：自建两棵独立副本各构建一次，比对产物名册（逐文件 sha256），
+      # 使「同一源码两次构建产物不同」与「改一个字节的 dist/index.html」都能报红。
+      - name: 产物可复现性（同一源码两次独立构建逐字节比对）
+        run: npm run verify:repro
+      - name: 可复现性判据自检（干净/内容漂移/绝对路径/前提缺失 四臂必须全部符合预期）
+        run: npm run verify:repro-selftest
+
       - name: Docker Compose 配置校验
         run: docker compose config -q
 
@@ -86,7 +93,7 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
-      - name: 判据自身的变异自检（95 个变异体必须全部被抓到，且未变异的副本全绿）
+      - name: 判据自身的变异自检（98 个变异体必须全部被抓到，且未变异的副本全绿）
         run: npm run verify:standards-selftest
 
       # 仓库结构面与 CSP 面的判据（verify-repo.mjs）此前**从未在 CI 里自检** ——
