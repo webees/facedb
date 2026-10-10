@@ -6,6 +6,7 @@
 // 为什么值得独立：这三块都是**只读展示 + 向上抛事件**，不含任何采集/录制状态机，
 // 抽出来既缩小了 CaptureView，也让这块可以在不改状态机的前提下单独看。
 import { computed } from 'vue'
+import { isVirtualCameraLabel } from '../lib/camera-pick'
 import { t } from '../lib/i18n'
 
 const props = defineProps<{
@@ -41,10 +42,27 @@ const pitchHint = computed(() => {
   const p = fin(props.frame.pitch)
   return p === null ? t('debugLevel') : p < -3 ? t('debugUp') : p > 3 ? t('debugDown') : t('debugLevel')
 })
+// 当前正在采集的设备名。枚举出来的 label 在授权后就可用；拿不到就回落到 camId 匹配。
+// 为什么要显示它：有虚拟摄像头（如 OBS Virtual Camera）的机器上，界面若只说「未检测到人脸」，
+// 用户没有任何线索判断采集用的是哪个设备；把名字摆出来（虚拟设备额外提醒）才能自查。
+const camLabel = computed(() => {
+  const hit = props.cameras.find((c) => c.deviceId === props.camId)
+  return hit?.label || ''
+})
+const camIsVirtual = computed(() => isVirtualCameraLabel(camLabel.value))
 </script>
 
 <template>
-  <!-- 摄像头切换 -->
+  <!-- 当前摄像头：常显设备名（虚拟设备给提醒），位置就在画面下方的控制区 -->
+  <p
+    v-if="camLabel"
+    class="text-center text-xs leading-relaxed"
+    :class="camIsVirtual ? 'text-amber-600' : 'text-gray-400'"
+  >
+    {{ camIsVirtual ? t('activeCameraVirtual', { name: camLabel }) : t('activeCamera', { name: camLabel }) }}
+  </p>
+
+  <!-- 摄像头切换（多路设备时）；选项写**真实设备名**，不再只写「摄像头 1/2」-->
   <div v-if="cameras.length > 1" class="flex justify-center">
     <select
       :value="camId"
@@ -52,7 +70,7 @@ const pitchHint = computed(() => {
       @change="emit('update:camId', ($event.target as HTMLSelectElement).value); emit('cameraChanged')"
     >
       <option v-for="(c, i) in cameras" :key="c.deviceId || i" :value="c.deviceId">
-        {{ t('camera', { n: i + 1 }) }}
+        {{ c.label || t('camera', { n: i + 1 }) }}
       </option>
     </select>
   </div>
