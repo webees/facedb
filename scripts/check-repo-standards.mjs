@@ -834,14 +834,15 @@ add({ id: 'S29', covers: ['scripts/check-repo-standards.mjs', 'scripts/verify-re
 // ── S30 本地一键必须与 CI 步骤逐条对齐（R23） ────────────────────────────
 // 触发事故（R23-LEAD-05，实测）：`verify:all` 自称「本地一键」，但它是一个**陈旧聚合**——
 // 缺 `typecheck`、缺 `verify:notices`、缺 `verify:size`，且从不含任何变异自检电池；
-// 而 CI 实际跑 16 步（含构建、体积/许可判据、5 个自检电池）。于是「本地 `verify:all` 全绿」
+// 而 CI 实际跑 18 个 npm 步骤（job1 12 + job2 7，`build` 重复一次；另有 `npm ci` ×2 与
+// `docker compose config -q` 两个非 npm 步骤 —— R37 实测订正，原注释写 16 步）。于是「本地 `verify:all` 全绿」
 // 与「CI 全绿」之间隔着一大片没人跑的面 —— 这与 R22-21（本地绿、CI 红）同族：
 // **假通过的来源可以是「本地那条捷径本身不完整」**，而不是任何一条断言写错。
 // 守两件事：
 //  ① 存在 `verify:ci`，其 npm 步骤序列与工作流里出现的 `npm run X` 步骤**同集同序**；
 //  ② `verify:all` 的步骤集合必须是 `verify:ci` 的子集（允许存在更小的本地捷径，但不许凭空多步骤）。
 // 为什么要求「同序」：构建必须先于一切依赖 dist 的判据（体积/许可/自检电池），顺序错了会判未判定。
-add({ id: 'S30', covers: ['package.json', '.github/workflows/ci.yml'], name: '本地一键与 CI 步骤逐条对齐（verify:ci 同集同序，verify:all 为其子集）', run() {
+add({ id: 'S30', covers: ['package.json', '.github/workflows/ci.yml'], name: '本地一键与 CI 步骤逐条对齐（verify:ci 同集同序含非 npm 步骤，verify:all 为其子集）', run() {
   const miss = []
   let pkg = {}
   try { pkg = has('package.json') ? JSON.parse(read('package.json')) : {} } catch { return { ok: false, detail: 'package.json 不是合法 JSON' } }
@@ -882,6 +883,26 @@ add({ id: 'S30', covers: ['package.json', '.github/workflows/ci.yml'], name: '�
       if (hit) miss.push(`${f}:${i + 1} 的 \`if: false\` 关掉了承载 npm run 的 job/步骤 —— CI 不会执行它，「同集同序」在此恒真`)
     }
   }
+  // 【R37】非 npm 步骤同样必须在集内：原先 S30 只把 `npm run X` 收进集，
+  // CI 里新增任何**别的命令**（`curl …`、`docker push …`）都不进集，
+  // 于是「同集同序」对它恒真（W37-A M1 实测：加一条 `- run: curl …` 后 judge 仍 exit 0）。
+  // 两个方向都守：多一条未登记命令 ⇒ 报红；少一条已登记命令 ⇒ 也报红（删步骤不许静默）。
+  const NON_NPM_ALLOWED = ['npm ci', 'docker compose config -q']
+  const seenNonNpm = new Set()
+  const strayNonNpm = []
+  for (const f of wf) {
+    if (!has(f)) continue
+    for (const body of ciRunBodies(read(f))) {
+      const one = body.trim()
+      if (!one) continue
+      if (/^npm run [A-Za-z0-9:_-]+$/.test(one)) continue
+      seenNonNpm.add(one)
+      if (!NON_NPM_ALLOWED.includes(one)) strayNonNpm.push(one.slice(0, 60))
+    }
+  }
+  if (strayNonNpm.length) miss.push(`CI 有未登记的 run 命令（非 npm run）：${[...new Set(strayNonNpm)].join('、')}`)
+  const goneNonNpm = NON_NPM_ALLOWED.filter((s) => !seenNonNpm.has(s))
+  if (goneNonNpm.length) miss.push(`CI 少了已登记的非 npm 步骤：${goneNonNpm.join('、')}`)
   const chain = (name) => (scripts[name] || '').split('&&').map((s) => s.trim())
     .map((s) => (s.match(/^npm run ([A-Za-z0-9:_-]+)$/) || [])[1]).filter(Boolean)
   const ciLocal = chain('verify:ci')
@@ -904,7 +925,7 @@ add({ id: 'S30', covers: ['package.json', '.github/workflows/ci.yml'], name: '�
   return {
     ok: miss.length === 0,
     detail: miss.length ? miss.slice(0, 4).join('；')
-      : `${wf.length} 个工作流 · CI 侧 ${ciSteps.length} 个 npm 步骤 · verify:ci 同集同序 · verify:all 为 ${allLocal.length} 步子集`,
+      : `${wf.length} 个工作流 · CI 侧 ${ciSteps.length} 个 npm 步骤 + ${seenNonNpm.size} 个非 npm 步骤（已登记 ${NON_NPM_ALLOWED.length}） · verify:ci 同集同序 · verify:all 为 ${allLocal.length} 步子集`,
   }
 } })
 

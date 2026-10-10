@@ -10,7 +10,7 @@
 //   ② 输出里出现**指定的规则 id 命中行**（❌ <sev> <id> … 命中 N 处，N ≥ 1）
 //   ③ 干净仓库里指定的规则 id 必须 0 命中（防假阳性 / 防恒真）
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, copyFileSync, unlinkSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, copyFileSync, unlinkSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { gzipSync, deflateRawSync } from 'node:zlib'
 import path from 'node:path'
@@ -44,7 +44,7 @@ const HERE = path.resolve(import.meta.dirname)
 const SCANNER = process.env.LEAK_SCAN || path.join(HERE, 'publish-leak-scan.mjs')
 const WORK = mkdtempSync(path.join(tmpdir(), 'leak-selftest-'))
 
-function makeRepo(files, { ignore = [], removeAfterAdd = [], copyScanner = true } = {}) {
+function makeRepo(files, { ignore = [], removeAfterAdd = [], chmodAfterAdd = {}, copyScanner = true } = {}) {
   const dir = mkdtempSync(path.join(WORK, 'repo-'))
   execFileSync('git', ['init', '-q'], { cwd: dir })
   if (ignore.length) writeFileSync(path.join(dir, '.gitignore'), ignore.join('\n') + '\n')
@@ -56,6 +56,8 @@ function makeRepo(files, { ignore = [], removeAfterAdd = [], copyScanner = true 
   // 注意：不加 -f —— 否则被 .gitignore 忽略的敏感文件会被强制入库，"忽略但敏感"的提示区就测不到
   execFileSync('git', ['add', '-A'], { cwd: dir })
   for (const rel of removeAfterAdd) unlinkSync(path.join(dir, rel))
+  // 【R37】必须在 `git add` **之后**再改权限：先 chmod 000 的话 git 读不到内容，夹具根本建不起来。
+  for (const [rel, mode] of Object.entries(chmodAfterAdd)) chmodSync(path.join(dir, rel), mode)
   if (copyScanner) copyFileSync(SCANNER, path.join(dir, 'scanner.mjs'))
   return dir
 }
@@ -329,6 +331,15 @@ const CASES = [
     },
     expect: { code: 2, contains: '未判定' },
   },
+  // u5（R37 / W37C-01）：文件**在索引里、statSync 也成功**，只是内容读不到（权限 000）。
+  // 修复前这里是未捕获的 EACCES 裸栈 ⇒ exit 1、无汇总行，与「真有违规」分不开；
+  // 修复后必须与 u1（工作区缺失）同路：记未判定、打印汇总、exit 2。
+  {
+    name: 'u5 已入库但读不到（权限 000）→ exit 2 未判定，不得抛裸栈',
+    files: { 'src/locked.env': 'TOKEN=ghp_' + 'A'.repeat(36) + '\n' },
+    chmodAfterAdd: { 'src/locked.env': 0o000 },
+    expect: { code: 2, contains: '未判定', containsAll: ['src/locked.env：读不到（EACCES）'], absent: ['at Object.readFileSync', 'Node.js v'] },
+  },
   // ── 提示区：被忽略的敏感文件必须可见 ─────────────────────────────────
   {
     name: 'i1 被忽略的 .env.local 必须出现在提示区',
@@ -363,7 +374,7 @@ const CASES = [
 let pass = 0
 const failures = []
 for (const c of CASES) {
-  const dir = makeRepo(c.files, { ignore: c.ignore || [], removeAfterAdd: c.removeAfterAdd || [], copyScanner: !c.realScanner })
+  const dir = makeRepo(c.files, { ignore: c.ignore || [], removeAfterAdd: c.removeAfterAdd || [], chmodAfterAdd: c.chmodAfterAdd || {}, copyScanner: !c.realScanner })
   const { code, out } = c.realScanner ? runScanReal(dir) : runScan(dir)
   const problems = []
   if (code !== c.expect.code) problems.push(`退出码 ${code} ≠ 期望 ${c.expect.code}`)
@@ -385,6 +396,9 @@ for (const c of CASES) {
   if (c.expect.contains && !out.includes(c.expect.contains)) problems.push(`输出里缺少「${c.expect.contains}」`)
   // containsAll：一条场景要同时钉住多处文案时用（比只钉一处更防「只改了半句」）
   for (const s of c.expect.containsAll || []) if (!out.includes(s)) problems.push(`输出里缺少「${s}」`)
+  // 【R37】absent：反向断言（输出里**不许**出现某段文本）。只断言 exit 2 不足以证明修复：
+  // 权限拒绝的旧形态是「exit 1 + 裸栈」，两种退出码都是红叉，必须同时钉住「没有裸栈、有汇总行」。
+  for (const s of c.expect.absent || []) if (out.includes(s)) problems.push(`输出里不该出现「${s}」`)
   if (problems.length === 0) {
     pass++
     console.log(`  ✅ ${c.name}`)
@@ -415,7 +429,7 @@ rmSync(WORK, { recursive: true, force: true })
 
 console.log()
 // R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
-const EXPECTED_VARIANTS = 43 // = CASES 42 个场景 + 本仓库自扫 1
+const EXPECTED_VARIANTS = 44 // = CASES 43 个场景（R37 新增 u5「已入库但读不到」）+ 本仓库自扫 1
 if (CASES.length + 1 !== EXPECTED_VARIANTS) {
   console.log(`⛔ 未判定（exit 2）：场景声明 ${EXPECTED_VARIANTS} 条，实际 ${CASES.length + 1} 条`)
   process.exit(2)
@@ -433,5 +447,5 @@ const undecidedCases = CASES.filter((c) => /^u\d/.test(c.name)).length
 const hints = CASES.filter((c) => /^i\d/.test(c.name)).length
 console.log(
   `  ✅ 全部通过：${positives} 个阳性形态全部被抓（含 R25 的二进制旁路、R26 的 UTF-16BE/UTF-32/窗口/对齐/gzip/zip/零宽/NFKC/GBK/折行）、` +
-    `${negatives} 组阴性对照零误报、未判定语义（读不到 / 扫描面为空 / 压缩内容解不开 / 不支持的压缩方法）${undecidedCases} 个场景（共 ${CASES.length} 个）、提示区 ${hints} 个场景、自扫不阻断`
+    `${negatives} 组阴性对照零误报、未判定语义（读不到 / 权限拒绝 / 扫描面为空 / 压缩内容解不开 / 不支持的压缩方法）${undecidedCases} 个场景（共 ${CASES.length} 个）、提示区 ${hints} 个场景、自扫不阻断`
 )
