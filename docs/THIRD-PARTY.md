@@ -120,7 +120,7 @@
 打包产物 `dist/static/js/` 里，承载 MediaPipe 的 chunk 是 `m.79c0ab86b6.js`（154243 B，
 内含 `FaceLandmarker` 等符号，与 `vision_bundle.mjs` 同源）。实测两个事实：
 
-- **该 chunk 没有许可侧车文件**。同目录下只有 `lib-vue.8351304052.js.LICENSE.txt`（421 B，
+- **该 chunk 没有许可侧车文件**。同目录下只有 `lib-vue.0518959aef.js.LICENSE.txt`（421 B，
   内容是 `@vue/reactivity` / `@vue/runtime-core` / `@vue/runtime-dom` / `@vue/shared` 的 MIT 声明），
   **没有与 MediaPipe 对应的 `.LICENSE.txt`**。
 - **`node_modules/@mediapipe/tasks-vision` 包内也没有许可原文**。该包目录下只有
