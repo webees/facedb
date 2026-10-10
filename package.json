@@ -2,7 +2,7 @@
   "name": "facedb",
   "description": "浏览器端人脸采集与姿态质检工具，配套自建 PocketBase 存档",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.2",
   "license": "MIT",
   "author": "webees",
   "repository": {
