@@ -31,6 +31,8 @@
 | 静态服务 | `static-web-server`（生产容器内运行的是**构建产物**，不是 dev server） |
 | 部署 | Docker Compose：`web`（:3000）+ `pocketbase`（:8090） |
 
+运行时与浏览器基线（Node 版本、构建转译档位、实际最低浏览器版本）以 [`RUN.md`](RUN.md) 的「运行时与浏览器基线」段为唯一出处，并由 `scripts/check-repo-standards.mjs` 的 S36/S37 逐项对拍。
+
 ## 快速开始
 
 ```bash

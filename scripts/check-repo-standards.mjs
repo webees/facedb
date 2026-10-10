@@ -1132,6 +1132,71 @@ add({ id: 'S35', covers: ['scripts/verify-repo.mjs'], name: '迁移语法检查�
   return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : '前提探针 + Invalid package config 分类 + 未判定文案 + notExecuted 路径与体内计数（样本为 0 ⇒ 不构成通过）+ 自检 M29 与 expectAbsent 反向断言 全部在位' }
 } })
 
+
+// R34（W34-A 实测）：Node 版本原先四处互不同（engines ">=22" / ci.yml 两处 22 / Dockerfile node:22-slim@digest / 本机 v26），
+// 且 .nvmrc 不存在 ⇒ 没有任何单一事实源；S1–S35 对 engines|node-version 全部 0 命中。
+add({ id: 'S36', covers: ['.nvmrc', 'package.json', '.github/workflows/ci.yml', 'Dockerfile'], name: '运行时 Node 版本有单一事实源：.nvmrc 与 CI 两处 node-version、Dockerfile 基础镜像同 major，且 engines 覆盖该 major', run() {
+  const miss = []
+  if (!has('.nvmrc')) miss.push('缺 .nvmrc（本地开发没有单一事实源，CI 与 Dockerfile 各写一份）')
+  const nvm = has('.nvmrc') ? read('.nvmrc').trim() : ''
+  const nvmOk = /^\d+$/.test(nvm)
+  if (nvm !== '' && !nvmOk) miss.push('.nvmrc 必须是裸 major 版本号，实际：' + JSON.stringify(nvm))
+  const ci = has('.github/workflows/ci.yml') ? read('.github/workflows/ci.yml') : ''
+  const ciVers = [...ci.matchAll(/node-version:\s*(\S+)/g)].map((m) => m[1].replace(/['"]/g, ''))
+  if (ciVers.length === 0) miss.push('CI 里没有 node-version（没有可对拍的读数）')
+  for (const v of ciVers) if (nvmOk && v !== nvm) miss.push(`CI 的 node-version=${v} 与 .nvmrc=${nvm} 不一致`)
+  const dk = has('Dockerfile') ? read('Dockerfile') : ''
+  const froms = [...dk.matchAll(/FROM\s+node:(\d+)[^\s@]*/g)].map((m) => m[1])
+  if (froms.length === 0) miss.push('Dockerfile 里没有 node:<major>-slim 基础镜像（没有可对拍的读数）')
+  for (const f of froms) if (nvmOk && f !== nvm) miss.push(`Dockerfile 基础镜像 node:${f}-slim 与 .nvmrc=${nvm} 不一致`)
+  const pkg = read('package.json')
+  const eng = (pkg.match(/"node":\s*"([^"]+)"/) || [])[1]
+  if (!eng) miss.push('package.json 没有 engines.node（安装期没有下限声明）')
+  else {
+    const m = eng.match(/>=\s*(\d+)/)
+    if (!m) miss.push('engines.node 不是可解析的下限范围：' + eng)
+    else if (nvmOk && Number(m[1]) > Number(nvm)) miss.push(`engines.node=${eng} 的下限高于 CI 实际使用的 ${nvm}`)
+  }
+  return { ok: miss.length === 0, detail: miss.length ? '缺：' + miss.join('、') : `.nvmrc=${nvm} · CI ${ciVers.length} 处 [${ciVers.join(',')}] · Dockerfile [${froms.join(',')}] · engines.node=${eng}` }
+} })
+
+// R34（W34-A 实测）：浏览器目标全仓零声明，实际生效的是 @rsbuild/core 硬编码的默认基线；
+// 而分发代码里带 ES2023 的 Array.prototype.toSorted（Vue 3.5.43）⇒ 实际最低浏览器高于默认基线。
+// 这条断言守「生效基线与文档必须同源」：声明了就要求文档写清声明，没声明就要求文档复述依赖里的默认值 + 实际最低版本。
+add({ id: 'S37', covers: ['package.json', 'rsbuild.config.ts', 'README.md', 'RUN.md'], name: '浏览器目标：要么显式声明且文档同步，要么沿用 rsbuild 默认并把「生效基线 + 实际最低版本」写进文档', run() {
+  const miss = []
+  const pkg = read('package.json')
+  const rs = has('rsbuild.config.ts') ? read('rsbuild.config.ts') : ''
+  const declared = []
+  if (/"browserslist"\s*:/.test(pkg)) declared.push('package.json.browserslist')
+  // 用目录枚举判断（S29 要求「读取点的字面量必须被 git 跟踪」，而 .browserslistrc 合法地不存在）
+  if (readdirSync(ROOT).includes('.browserslistrc')) declared.push('.browserslistrc')
+  if (/overrideBrowserslist/.test(rs)) declared.push('rsbuild.config.ts.overrideBrowserslist')
+  const docs = read('README.md') + '\n' + (has('RUN.md') ? read('RUN.md') : '')
+  for (const n of ['chrome >= 107', 'es2017', 'Chrome 110', 'Safari 16.4']) {
+    if (!docs.includes(n)) miss.push(`文档缺浏览器基线读数「${n}」`)
+  }
+  if (declared.length > 0 && !/browserslist/i.test(docs)) {
+    miss.push(`已声明浏览器目标（${declared.join('、')}）但文档没有任何 browserslist 说明 —— 声明的支持范围与文档会各自漂移`)
+  }
+  // 默认基线是**依赖里的字面量**：m.js 只 import 该常量（正则抓不到），所以直接扫 dist 顶层 bundle。
+  // 扫不到只记「未探测」，不判红 —— 判红的是「文档与依赖不一致」，不是「依赖不在」（后者由 npm ci 保证）。
+  const distDir = R('node_modules/@rsbuild/core/dist')
+  let probe = '未探测（缺 node_modules/@rsbuild/core/dist）'
+  const want = ['chrome >= 107', 'edge >= 107', 'firefox >= 104', 'safari >= 16']
+  if (existsSync(distDir)) {
+    const js = readdirSync(distDir).filter((f) => f.endsWith('.js')).slice(0, 40)
+    const hit = []
+    for (const f of js) {
+      const t = readFileSync(path.join(distDir, f), 'utf8')
+      for (const w of want) if (t.includes(w) && !hit.includes(w)) hit.push(w)
+    }
+    probe = hit.length ? `${hit.join(' · ')}（命中 ${hit.length}/${want.length}，来自 @rsbuild/core dist bundle）` : '未探测（dist bundle 里找不到默认基线字面量）'
+    if (hit.length > 0 && declared.length === 0) for (const v of hit) if (!docs.includes(v)) miss.push(`文档缺 rsbuild 默认基线项「${v}」（实际生效值藏在依赖里，文档必须复述）`)
+  }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('、') : `${declared.length ? '显式声明：' + declared.join('、') : '未声明，沿用 @rsbuild/core 默认'} · 依赖默认基线：${probe} · 文档已写明生效基线与实际最低版本` }
+} })
+
 for (const c of CHECKS) {
   let r
   try { r = c.run() } catch (e) { r = { ok: false, detail: '断言抛错：' + e.message } }
