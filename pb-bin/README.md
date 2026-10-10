@@ -7,12 +7,12 @@
 |---|---|---|
 | 文件 | `pb-bin/pocketbase-zh-linux-arm64` | `pb-bin/pocketbase-zh-linux-amd64` |
 | 平台 | Linux / arm64（aarch64，静态链接 ELF，`e_machine`=183） | Linux / amd64（x86-64，静态链接 ELF，`e_machine`=62） |
-| 大小 | 41,709,597 字节 | 43,624,965 字节 |
-| sha256 | `ad90eff9ce7fe6c925821637934fb812495f1817367db91376e29481a4fafac2` | `5a4a6bf172b4af4aafe4099866c13892cc56c0ac0ed6548bb91384eb8b516f80` |
-| md5 | `caf52450b62c9f801487331a035dd56a` | `917b89275bffc43e6816e7f800fe9d5b` |
+| 大小 | 43,398,493 字节 | 45,656,931 字节 |
+| sha256 | `f3f6492745c27b0713d8db8ff7ddff577853e3dfb2a035d94c7566c4f6d42bd4` | `01734c19491d33dd9384cc609fe47eba104d454eda1f215fb87f20f50ffda4f2` |
+| md5 | `b57e6fb0f91474494e67cbf7eac7cb31` | `430a8040f244da603f8f9be99eb43443` |
 | 适用机 | 源机 nanopc-t6-lts（RK3588，aarch64） | 目标机（x86_64 构建机） |
 | 自报版本 | `pocketbase version (untracked)`（源码编译产物没有版本号） | 同左 |
-| 运行时基座 | `ghcr.io/muchobien/pocketbase:0.28.1`（多架构，随 `--platform` 取对应架构） | 同左 |
+| 运行时基座 | `ghcr.io/muchobien/pocketbase:0.40.4@sha256:9390b7b63ce114dbab577be72e6ef75f718a19083866607fcbdd1b915632b943`（只作基座；实际执行的是本仓库拷进去的汉化二进制） | 同左 |
 
 构建 `pb-bin/Dockerfile` 时按 `ARG TARGETARCH` 自动选对应文件，无需人工切换：
 `docker buildx build --platform linux/arm64 …` 取 arm64 那份，`--platform linux/amd64 …` 取 amd64 那份。
@@ -21,8 +21,8 @@
 
 - 源码：`../webees@pocketbase`（PocketBase v0.28.1 源码，git HEAD `e73077e7e7eb2005a244b748ecc9bbf5d32d4ea9`）
   - 该工作树就地做过汉化替换（`git status --porcelain` 实测 316 行：**254 个已修改** + 29 个已删除 + 33 个未跟踪，2026-10-07 读数），汉化词表脚本为运行根下的
-    `pb-source-i18n-v2.mjs`（注意：运行根 `run-20261006-160618` 下**该脚本已不存在**，
-    只存在于上一轮运行根 `run-20261005-010657`，见 `findings/R01-C.json` C-13——重建前需先把它找回来）。
+    `pb-source-i18n-v2.mjs`（注意：该脚本只存在于上一轮运行根 `run-20261005-010657`，
+    当前的 `run-20261006-160618` 下**已不存在** —— 重建汉化前需先把它找回来）。
 - 编译方式（与 `RUN.md`「容器权限」小节一致；两份产物只差 `GOARCH`，UI 产物已 `go:embed` 进二进制）：
 
 ```bash
@@ -58,7 +58,8 @@ done
 
    然后更新本文件表格。**注意：本文件不参与构建校验** —— 「构建失败」只由上面两处触发，
    本文件写错不会被拦住（本文件的指纹曾因此与实际二进制脱节）。
-   建议每次重建后跑运行根的 `lib/check-pbbin-fingerprint.mjs` 做三方比对。
+   建议每次重建后跑 `node scripts/check-repo-standards.mjs`（判据 S39 会把清单、Dockerfile 常量、
+   本文件表格与磁盘实测值做机械比对；二进制不在场时该层记未判定）。
 3. `docker compose build pocketbase`（或 `docker buildx build --platform …`）会执行白名单与分架构断言，
    任何未登记的二进制、或架构与 `TARGETARCH` 不符的二进制都会被拦下。
 
@@ -71,18 +72,23 @@ done
 2026-10-07 重锚（R14-PBBIN-FP）：两份二进制被重建过一次（尺寸不变、内容变），
 而清单/Dockerfile/README 三方常量当时未同步 —— 结果是 `docker compose build pocketbase` 必然
 `REFUSED: sha256 … not in pb-bin/SHA256SUMS allowlist`（R19 席实测 exit=1）。
-现按**实际部署中的**二进制重锚，被替换掉的旧指纹登记在此备查：
+现按**磁盘上两份二进制**（构建期真正读的那两份）重锚，被替换掉的旧指纹登记在此备查：
 
 | 架构 | 旧 sha256 | 旧 md5 | 状态 |
 | --- | --- | --- | --- |
 | arm64 | `85a10d0baf5d42d631735304baaaefd79e8a118658daf64981ecda30ebea8ef0` | `115ca8dd9bcbdd667ecc617175c803ed` | 已被替换（仓库内无相符文件） |
 | amd64 | `3786b4f5cbc35379129a35123dd5d2303744036d7fd9c0974d0d089ce3eb0490` | `ac39fb7771e03eb49a986f99a1789313` | 已被替换（仓库内无相符文件） |
+| arm64 | `ffb46fc6eb49bfa0ec2439888b27401142827cbd8e54f1cb86a0212e48c19600` | `f29d1008fc6e59818f5c87df65701f93` | 已被替换（43,332,757 字节；`webees-facedb-pocketbase:0.40.4-zh` 里跑的就是这一份，重新部署后即被新值取代） |
+| amd64 | `2f1e750c3ed64bce8a65862c28a3d2b2ffa26bb914b0d6892d2e267572d520de` | `6debdbde340a5bb0f38281ff0e4c07b5` | 已被替换（45,644,827 字节；无对应部署） |
+| arm64 | `76a295cffdd75a18c31018cfa72da62ee80514be80bf77cfbc0267cb846bf5d5` | `5a990e46efe0ee4b0326cdfb1de8e831` | 曾被写进 `Dockerfile` 头注（43,332,757 字节），但无任何二进制与之相符，已删 |
+| amd64 | `64ba30d7f6e0b14aff0a6e4f72d0b7adb0b0fe4989040a63cd34e9c46d4256d1` | `6e635919dfca206aa79048a35b0eb6fd` | 曾被写进 `Dockerfile` 头注（45,644,827 字节），但无任何二进制与之相符，已删 |
 
-重锚依据：生产镜像 `webees-facedb-pocketbase:0.28.1-zh` 创建于 2026-10-07T07:52:06Z（本地 14:52:06 +07，2026-10-07 实测 `docker image inspect` 读数；镜像创建时刻与二进制 mtime 03:47:09Z **不是同一时刻**），
-容器内 `/usr/local/bin/pocketbase` 的 sha256 与新常量一致；两份二进制均为汉化版
-（`集合` 各 122 处、`API 运行正常` 各 1 处），运行实例 `/api/health` 返回 `{"message":"API 运行正常。"}`。
-`run-20261006-160618/evidence/R02-CT-13-b3b5-mutants-after.log:41`（旧值实测）、
-`run-20261006-160618/evidence/W7-docs.log:111,136`（已记为 P3 残留 E05-3）。
+重锚依据（2026-10-10，v0.1.0 上线前）：两份二进制的 sha256/md5/size 由现场实测（`shasum -a 256` / `md5 -q` / `stat -f%z`）取得，
+与 `Dockerfile` 的 `want_*` 常量、本文件表格、`pb-bin/SHA256SUMS` 逐字符一致；这三方一致性由判据 `S39`
+（`scripts/check-repo-standards.mjs`）与磁盘实测值机械比对，另有 ELF `e_machine` 断言（arm64=183、amd64=62）
+与两条 `FROM` 同 digest 断言。两份均为汉化版，运行实例 `/api/health` 返回 `{"message":"API 运行正常。"}`。
+（早先版本的依据是运行根 `evidence/*.log` 的实测读数；该运行根的纸面产物已按「断言即记录」机制移除，
+证据职责改由 `S39` 承担。）
 
 本次改为按架构分文件后，该条目**已移除**：清单只保留与磁盘上两份文件实际相符的条目，
 避免「未登记的二进制能过白名单」这类证明力被稀释的情况。历史值记录在此处，不再进白名单。
