@@ -418,6 +418,20 @@ const M = [
   // TARGETARCH=amd64 会走 REFUSED 分支（S39 的 consts 表少一架构 ⇒ 必红）。
   { id: 'M88', target: 'pb-bin/Dockerfile', expect: 'S39', desc: 'Dockerfile 少了 amd64 的 want_* 常量块（另一个架构的分架构断言整段消失 ⇒ 必须报红）',
     apply: () => mutate('pb-bin/Dockerfile', (t) => t.replace(/^\s*amd64\)\s*want_machine=\d+;[^\n]*\n/gm, '')) },
+  // 2026-10-10 上线前实测：头注常量块与 README 表格长期脱节（两处都是人工读数入口，此前无断言）。
+  // 两条变异分别打这两处，锚点用「行首标记 + 只翻一个十六进制字符」，与树里是哪个版本无关。
+  { id: 'M111', target: 'pb-bin/Dockerfile', expect: 'S39', desc: 'Dockerfile 头注的 arm64 sha256 被改（人工读数入口与 case 常量漂移 ⇒ 必须报红）',
+    apply: () => mutate('pb-bin/Dockerfile', (t) => t.split('\n').map((l) => {
+      if (!(l.startsWith('#') && l.includes('arm64') && l.includes('sha256='))) return l
+      const i = l.indexOf('sha256=') + 'sha256='.length
+      return l.slice(0, i) + (l[i] === 'a' ? 'b' : 'a') + l.slice(i + 1)
+    }).join('\n')) },
+  { id: 'M112', target: 'pb-bin/README.md', expect: 'S39', desc: 'README 的 sha256 表被改（文档表格与 case 常量漂移 ⇒ 必须报红）',
+    apply: () => mutate('pb-bin/README.md', (t) => t.split('\n').map((l) => {
+      if (!/^\|\s*sha256\s*\|/.test(l)) return l
+      const i = l.indexOf('`') + 1
+      return l.slice(0, i) + (l[i] === 'a' ? 'b' : 'a') + l.slice(i + 1)
+    }).join('\n')) },
   // R36：`verify:standards` 自己有多少个 S 条目，此前只在 CONTRIBUTING 里手写（实测写 37 而实际已 40）。
   { id: 'M93', target: 'CONTRIBUTING.md', expect: 'S38', desc: 'CONTRIBUTING 里复述的 `verify:standards` 条目数被改小（文档与实际 S 条目数漂移 ⇒ 必须报红）',
     apply: () => mutate('CONTRIBUTING.md', (t) => t.replace(/(npm run verify:standards\s+#\s*)(\d+)(\s*项)/, (m, a, n, b) => `${a}${Number(n) - 1}${b}`)) },
@@ -466,7 +480,7 @@ const M = [
 ]
 
 // R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
-const EXPECTED_VARIANTS = 110
+const EXPECTED_VARIANTS = 112
 if (M.length !== EXPECTED_VARIANTS) {
   console.log(`\u26d4 \u672a\u5224\u5b9a\uff08exit 2\uff09\uff1a\u53d8\u5f02\u4f53\u58f0\u660e ${EXPECTED_VARIANTS} \u6761\uff0c\u5b9e\u9645 ${M.length} \u6761`)
   process.exit(2)

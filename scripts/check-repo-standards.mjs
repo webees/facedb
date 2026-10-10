@@ -1345,7 +1345,7 @@ add({ id: 'S38', covers: ['.github/workflows/ci.yml', 'scripts/verify-standards-
 //   ③ 两条 FROM 必须按 index digest 固定且指同一个 digest（R19 遗留项）；
 //   ④ 二进制本体在场时，再加「sha256/size/md5/e_machine 与常量逐项一致」——不在场判未判定
 //      （判据不因「本地没放二进制」而报红，也不因缺样本而判通过）。
-add({ id: 'S39', covers: ['pb-bin/SHA256SUMS', 'pb-bin/Dockerfile', 'pb-bin/pocketbase-zh-linux-arm64', 'pb-bin/pocketbase-zh-linux-amd64'], name: '双架构二进制清单有单一事实源：SHA256SUMS 的登记与 Dockerfile 的分架构常量逐项一致（本体在场时再加磁盘字节断言）', run() {
+add({ id: 'S39', covers: ['pb-bin/SHA256SUMS', 'pb-bin/Dockerfile', 'pb-bin/README.md', 'pb-bin/pocketbase-zh-linux-arm64', 'pb-bin/pocketbase-zh-linux-amd64'], name: '双架构二进制清单有单一事实源：SHA256SUMS、Dockerfile 分架构常量、头注常量块、README 表格四方逐项一致（本体在场时再加磁盘字节断言）', run() {
   const miss = []
   const unj = []
   const ARCHES = ['arm64', 'amd64']
@@ -1391,9 +1391,56 @@ add({ id: 'S39', covers: ['pb-bin/SHA256SUMS', 'pb-bin/Dockerfile', 'pb-bin/pock
     if (machine !== c.machine) miss.push(`${rel}：ELF e_machine ${machine} ≠ 常量 ${c.machine}`)
     probe.push(`${a}:${buf.length}B/${sha.slice(0, 8)}…/e_machine=${machine}`)
   }
+  // ⑤ 头注常量块与 pb-bin/README.md 的表格必须与 case 常量一致。
+  //    2026-10-10 上线前实测漂移：Dockerfile 头注写着第三套值、README 表写着「已部署那套」、
+  //    case 常量与磁盘是第四套 —— 三处读数互不相同，而此前只有 case 常量与 SHA256SUMS 被断言覆盖，
+  //    头注与 README 表（人工读数的两个入口）**完全没有断言**，于是它们能长期脱节。
+  const head = new Map()
+  for (const line of df.split('\n')) {
+    if (!line.startsWith('#')) continue
+    const t = line.split(/\s+/).filter(Boolean)
+    const arch = t.find((x) => ARCHES.includes(x))
+    if (!arch || !t.some((x) => x.startsWith('size='))) continue
+    const get = (k) => (t.find((x) => x.startsWith(`${k}=`)) || '').slice(k.length + 1)
+    head.set(arch, { size: Number(get('size')), md5: get('md5'), sha256: get('sha256') })
+  }
+  for (const a of ARCHES) if (!head.has(a)) miss.push(`Dockerfile 头注没有 ${a} 的 size/md5/sha256 常量行（头注是人工读数入口，缺了就只能翻 case 分支）`)
+  const rdTab = { size: [], sha256: [], md5: [] }
+  let rd = null
+  if (has('pb-bin/README.md')) {
+    rd = read('pb-bin/README.md')
+    const cells = (line) => line.split('|').slice(2, 4).map((s) => s.trim())
+    for (const line of rd.split('\n')) {
+      if (/^\|\s*大小\s*\|/.test(line)) rdTab.size = cells(line)
+      else if (/^\|\s*sha256\s*\|/.test(line)) rdTab.sha256 = cells(line)
+      else if (/^\|\s*md5\s*\|/.test(line)) rdTab.md5 = cells(line)
+    }
+    for (const k of ['大小', 'sha256', 'md5']) {
+      const got = k === '大小' ? rdTab.size : rdTab[k]
+      if (got.length !== 2) miss.push(`pb-bin/README.md 的「${k}」行解析不出两列（表结构改过 ⇒ 该处不再被核对）`)
+    }
+  } else {
+    unj.push('pb-bin/README.md 不在树里')
+  }
+  const norm = (s) => (s || '').replace(/[`,]|\s|字节/g, '')
+  for (const [i, a] of ARCHES.entries()) {
+    const c = consts.get(a)
+    if (!c) continue
+    const h = head.get(a)
+    if (h) {
+      if (h.size !== c.size) miss.push(`Dockerfile 头注 ${a} size=${h.size} ≠ case 常量 ${c.size}`)
+      if (h.md5 !== c.md5) miss.push(`Dockerfile 头注 ${a} md5=${h.md5.slice(0, 12)}… ≠ case 常量 ${c.md5.slice(0, 12)}…`)
+      if (h.sha256 !== c.sha256) miss.push(`Dockerfile 头注 ${a} sha256=${h.sha256.slice(0, 12)}… ≠ case 常量 ${c.sha256.slice(0, 12)}…`)
+    }
+    if (rd && rdTab.size.length === 2) {
+      if (norm(rdTab.size[i]) !== String(c.size)) miss.push(`pb-bin/README.md ${a} 大小 ${rdTab.size[i]} ≠ case 常量 ${c.size}`)
+      if (norm(rdTab.sha256[i]) !== c.sha256) miss.push(`pb-bin/README.md ${a} sha256 ${norm(rdTab.sha256[i]).slice(0, 12)}… ≠ case 常量 ${c.sha256.slice(0, 12)}…`)
+      if (norm(rdTab.md5[i]) !== c.md5) miss.push(`pb-bin/README.md ${a} md5 ${norm(rdTab.md5[i]).slice(0, 12)}… ≠ case 常量 ${c.md5.slice(0, 12)}…`)
+    }
+  }
   const detail = miss.length
     ? miss.join('、')
-    : `两架构登记与常量逐项一致 · FROM 按 digest 固定（${[...new Set(froms)].length} 个）· 未知架构 REFUSED` +
+    : `两架构登记与常量逐项一致 · FROM 按 digest 固定（${[...new Set(froms)].length} 个）· 未知架构 REFUSED · 头注与 README 表逐项一致` +
       (probe.length ? ` · 磁盘核对：${probe.join(' · ')}` : ` · 磁盘核对：未判定（${unj.join('、')}）`)
   return { ok: miss.length === 0, detail }
 } })

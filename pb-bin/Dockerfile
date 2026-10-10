@@ -11,8 +11,8 @@
 #   文件自身 ELF e_machine 必须与 TARGETARCH 相符 —— 五重正向断言，缺一即失败。
 #
 # 分架构常量（与 pb-bin/SHA256SUMS、pb-bin/README.md 三方一致）：
-#   arm64  size=41709597 md5=caf52450b62c9f801487331a035dd56a sha256=ad90eff9ce7fe6c925821637934fb812495f1817367db91376e29481a4fafac2
-#   amd64  size=43624965 md5=917b89275bffc43e6816e7f800fe9d5b sha256=5a4a6bf172b4af4aafe4099866c13892cc56c0ac0ed6548bb91384eb8b516f80
+#   arm64  size=43398493 md5=b57e6fb0f91474494e67cbf7eac7cb31 sha256=f3f6492745c27b0713d8db8ff7ddff577853e3dfb2a035d94c7566c4f6d42bd4
+#   amd64  size=45656931 md5=430a8040f244da603f8f9be99eb43443 sha256=01734c19491d33dd9384cc609fe47eba104d454eda1f215fb87f20f50ffda4f2
 #
 # 双架构分派：Dockerfile 的 COPY 不能按 ARG 条件选源文件，若把两份都 COPY 进最终镜像再删，
 # 被删的那份仍留在下层 layer 里（白占 ~40MB）。故用中间 stage 先按 TARGETARCH 选出一份，
@@ -22,7 +22,7 @@
 #   为什么按 digest 而不是标签：标签可被上游改指，同一个 Dockerfile 会构建出不同的镜像。
 #   保留多架构：digest 是 manifest list（index）的，BuildKit 仍按 TARGETPLATFORM 选子清单。
 #   更新通道：.github/dependabot.yml 已配置 docker 生态（每周一），基座升级会开 PR。
-FROM ghcr.io/muchobien/pocketbase:0.28.1@sha256:c11d164acd6266e31d2b5e88160b7bb3902c472c1ec90e0f403f56e802f23935 AS prepare
+FROM ghcr.io/muchobien/pocketbase:0.40.4@sha256:9390b7b63ce114dbab577be72e6ef75f718a19083866607fcbdd1b915632b943 AS prepare
 
 ARG TARGETARCH
 COPY pocketbase-zh-linux-arm64 /tmp/pb/arm64
@@ -35,7 +35,7 @@ RUN set -eu; \
       *) echo "REFUSED: unsupported TARGETARCH=${TARGETARCH}"; exit 1 ;; \
     esac
 
-FROM ghcr.io/muchobien/pocketbase:0.28.1@sha256:c11d164acd6266e31d2b5e88160b7bb3902c472c1ec90e0f403f56e802f23935
+FROM ghcr.io/muchobien/pocketbase:0.40.4@sha256:9390b7b63ce114dbab577be72e6ef75f718a19083866607fcbdd1b915632b943
 
 ARG TARGETARCH
 ARG PB_ALLOWED_ARCH="arm64 amd64"
@@ -50,8 +50,8 @@ RUN set -eu; \
     f=/usr/local/bin/pocketbase; \
     chmod 0755 "$f"; \
     case "${TARGETARCH}" in \
-      arm64) want_machine=183; want_size=41709597; want_md5=caf52450b62c9f801487331a035dd56a; want_sha256=ad90eff9ce7fe6c925821637934fb812495f1817367db91376e29481a4fafac2 ;; \
-      amd64) want_machine=62;  want_size=43624965; want_md5=917b89275bffc43e6816e7f800fe9d5b; want_sha256=5a4a6bf172b4af4aafe4099866c13892cc56c0ac0ed6548bb91384eb8b516f80 ;; \
+      arm64) want_machine=183; want_size=43398493; want_md5=b57e6fb0f91474494e67cbf7eac7cb31; want_sha256=f3f6492745c27b0713d8db8ff7ddff577853e3dfb2a035d94c7566c4f6d42bd4 ;; \
+      amd64) want_machine=62; want_size=45656931; want_md5=430a8040f244da603f8f9be99eb43443; want_sha256=01734c19491d33dd9384cc609fe47eba104d454eda1f215fb87f20f50ffda4f2 ;; \
       *) echo "REFUSED: unknown arch ${TARGETARCH}"; exit 1 ;; \
     esac; \
     case " ${PB_ALLOWED_ARCH} " in *" ${TARGETARCH} "*) ;; *) echo "REFUSED: TARGETARCH=${TARGETARCH} not in allowed [${PB_ALLOWED_ARCH}]"; exit 1;; esac; \
