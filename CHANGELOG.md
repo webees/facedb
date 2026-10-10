@@ -3,8 +3,34 @@
 本文件记录本项目的显著变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-> 当前发布：**[v0.1.0](https://github.com/webees/facedb/releases/tag/v0.1.0)**（2026-10-10）。
+> 当前发布：**[v0.1.1](https://github.com/webees/facedb/releases/tag/v0.1.1)**（2026-10-10）。
 > `compare/<旧>...<新>` 形式要两端都存在 tag 才可用；本仓库的 tag 从 v0.1.0 开始，之前的提交历史没有 tag。
+>
+> 注：v0.1.1 **尚未打 tag**（本条合并后立即创建）—— 在此之前，上面的链接打不开，
+> `main` 分支的最新提交即 v0.1.1 的内容。
+
+## [0.1.1] - 2026-10-10
+
+生产部署对齐版：修掉「仓库里的指纹常量与真正部署的二进制不是同一份」，使
+`docker compose build pocketbase` 不再必然 `REFUSED`。
+
+### 修复
+
+- `pb-bin` 的指纹常量统一到磁盘上两份汉化二进制的实测值（arm64 `f3f64927…`、
+  amd64 `01734c19…`）。此前四处写法给出三套不同的值：`Dockerfile` 头注常量块、`Dockerfile`
+  的 case 常量、`SHA256SUMS`、`README.md` 表格 —— 其中只有 case 常量与 `SHA256SUMS` 被断言覆盖，
+  头注与 README 表（人工读数的两个入口）无任何断言，于是长期脱节：照头注或 README 重建会必失败。
+- 判据 `S39` 从三方圆到**四方**对拍（`SHA256SUMS` ↔ case 常量 ↔ 头注常量块 ↔ README 表格），
+  再叠加本体在场时的磁盘 `sha256`/`md5`/`size` 与 ELF `e_machine` 断言；新增变异体 M111（改头注）
+  与 M112（改 README 表），电池条数 110 → 112。
+- `pb-bin/README.md` 里指向已移除运行根纸面产物的两处引用改写为自证陈述；备查表补齐被替换的旧值，
+  含此前被写进头注但**无任何二进制与之相符**的 `76a295cf…`/`64ba30d7…`。
+
+### 运维
+
+- 本机 OrbStack 上的实例已用本版重建并重启：容器内 `/usr/local/bin/pocketbase` 的 sha256 现为
+  `f3f64927…`（与清单/常量一致），`/api/health` 200、采集页 200；重启前后 `captures` 5 行、
+  `_migrations` 31 行、`pb_data` 的 88 个 storage 文件逐项不变。
 
 ## [0.1.0] - 2026-10-10
 
