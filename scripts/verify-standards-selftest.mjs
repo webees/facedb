@@ -459,10 +459,12 @@ const M = [
     apply: () => mutate('rsbuild.config.ts', (t) => t.replace(/if \(!v\) return '';/, "if (!v) return '';" + String.fromCharCode(10) + "  if (!/^https?:\\/\\//.test(v)) return '';")) },
   { id: 'M108', target: 'rsbuild.config.ts', expect: 'S46', desc: '删掉 http(s) 方案白名单（ws:// 等值被当作合法源追加 ⇒ 必须报红）',
     apply: () => mutate('rsbuild.config.ts', (t) => t.replace("if (u.protocol !== 'http:' && u.protocol !== 'https:') {", 'if (false) {')) },
+  { id: 'M109', target: 'rsbuild.config.ts', expect: 'S46', desc: '删掉「只接受源」守卫（带路径的 PUBLIC_PB_URL 会被运行期拼成 <path>/api/collections/... ⇒ PB 404 且零入库，而界面显示成功）',
+    apply: () => mutate('rsbuild.config.ts', (t) => t.replace("if (u.pathname !== '/' || u.search !== '' || u.hash !== '') {", 'if (false) {')) },
 ]
 
 // R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
-const EXPECTED_VARIANTS = 108
+const EXPECTED_VARIANTS = 109
 if (M.length !== EXPECTED_VARIANTS) {
   console.log(`\u26d4 \u672a\u5224\u5b9a\uff08exit 2\uff09\uff1a\u53d8\u5f02\u4f53\u58f0\u660e ${EXPECTED_VARIANTS} \u6761\uff0c\u5b9e\u9645 ${M.length} \u6761`)
   process.exit(2)

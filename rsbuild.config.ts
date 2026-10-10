@@ -12,8 +12,9 @@ import { pluginVue } from '@rsbuild/plugin-vue';
  * 同时给出对应的 WebSocket 方案（PB 的实时订阅走 SSE 属 http，这里只为将来留口）。
  */
 function pbUrlOrThrow(v: string): URL {
+  let u: URL;
   try {
-    return new URL(v);
+    u = new URL(v);
   } catch {
     // 不可解析（相对路径、单主机名、多值）⇒ 构建期直接失败。
     // 旧实现静默返回空串：产物与「未配置」逐字节相同，于是配置写错时全部静态判据照样全绿，
@@ -22,6 +23,16 @@ function pbUrlOrThrow(v: string): URL {
       `PUBLIC_PB_URL 必须是带方案的绝对 URL（例如 https://pb.example.com 或 http://192.168.1.5:8090），当前值是 ${JSON.stringify(v)}`,
     );
   }
+  // 只接受「源」：带路径的覆盖值在运行期被原样拼成 `<path>/api/collections/...`
+  // （src/lib/pb.ts 的 PB_BASE 只去掉尾部斜杠），PB 回 404、**库里零写入**，而界面显示成功 ——
+  // R39 实测 `http://<host>/facedb` 与 `.../facedb/` 归一化后逐字相同。网关必须把 /api/* 与
+  // /_/* 映射在域名根（见 RUN.md「后端地址的推导规则」），所以这里 fail-closed，不做静默裁剪。
+  if (u.pathname !== '/' || u.search !== '' || u.hash !== '') {
+    throw new Error(
+      `PUBLIC_PB_URL 只接受源（scheme://host[:port]），不接受路径、查询或片段：当前值是 ${JSON.stringify(v)}`,
+    );
+  }
+  return u;
 }
 
 function derivePbConnectSrc(raw: string | undefined): string {
