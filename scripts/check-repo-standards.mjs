@@ -10,6 +10,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { gzipSync } from 'node:zlib'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1195,6 +1196,131 @@ add({ id: 'S37', covers: ['package.json', 'rsbuild.config.ts', 'README.md', 'RUN
     if (hit.length > 0 && declared.length === 0) for (const v of hit) if (!docs.includes(v)) miss.push(`文档缺 rsbuild 默认基线项「${v}」（实际生效值藏在依赖里，文档必须复述）`)
   }
   return { ok: miss.length === 0, detail: miss.length ? miss.join('、') : `${declared.length ? '显式声明：' + declared.join('、') : '未声明，沿用 @rsbuild/core 默认'} · 依赖默认基线：${probe} · 文档已写明生效基线与实际最低版本` }
+} })
+
+// ── S38 变异自检电池的账目单一声源（R35） ─────────────────────────────────
+// 「有多少条变异体」在电池源码里声明（EXPECTED_VARIANTS）、在 CI 的步骤名里复述一次。
+// 两处都是手写的，各自漂移时谁也发现不了（W35-B 实测：自检 33 vs 实际 36、许可 9 vs 实际 13）。
+// 这里只做机械对拍：电池声明的条数 必须等于 CI 步骤名里写的数字。
+// 覆盖面说明：配置卫生自检的步骤名写的是「9 场景 + 2 阴性对照」（两个数字相加才是总数），
+// 形态不同故不纳入本断言 —— 它由自己的 9 场景电池守。
+add({ id: 'S38', covers: ['.github/workflows/ci.yml', 'scripts/verify-standards-selftest.mjs', 'scripts/verify-repo.mjs', 'scripts/check-third-party-notices-mutants.mjs', 'scripts/check-dist-size-budget-mutants.mjs', 'scripts/publish-leak-scan-selftest.mjs'], name: '变异自检电池的条数有单一事实源：电池里的 EXPECTED_VARIANTS 与 CI 步骤名里的数字逐一对拍', run() {
+  const miss = []
+  if (!has('.github/workflows/ci.yml')) return { ok: false, detail: '缺 .github/workflows/ci.yml（没有可对拍的 CI 文本）' }
+  const ci = read('.github/workflows/ci.yml')
+  // 取「npm run <script>」步骤的步骤名：name 行与它后面的 run 行（含 block scalar）配对。
+  const stepName = (script) => {
+    const ls = ci.split('\n')
+    let cur = null
+    for (let i = 0; i < ls.length; i++) {
+      const nm = ls[i].match(/^\s*-\s*name:\s*(.+?)\s*$/)
+      if (nm) { cur = nm[1]; continue }
+      const rn = ls[i].match(/^\s*(?:-\s*)?run:\s*(.*)$/)
+      if (!rn) continue
+      let body = rn[1].trim()
+      if (/^[|>]/.test(body)) {
+        const indent = ls[i].match(/^\s*/)[0].length
+        const acc = []
+        for (let j = i + 1; j < ls.length; j++) {
+          const ll = ls[j]
+          if (!ll.trim()) continue
+          if (ll.match(/^\s*/)[0].length <= indent) break
+          acc.push(ll.trim())
+        }
+        body = acc.join(' ')
+      }
+      if (body.includes(`npm run ${script}`)) return cur
+    }
+    return null
+  }
+  const BATTERIES = [
+    { script: 'verify:standards-selftest', file: 'scripts/verify-standards-selftest.mjs', claim: /(\d+)\s*个变异体/ },
+    { script: 'verify:selfcheck', file: 'scripts/verify-repo.mjs', claim: /(\d+)\s*个变异体/ },
+    { script: 'verify:notices-selftest', file: 'scripts/check-third-party-notices-mutants.mjs', claim: /(\d+)\s*个变异体/ },
+    { script: 'verify:size-selftest', file: 'scripts/check-dist-size-budget-mutants.mjs', claim: /(\d+)\s*个变异体/ },
+    { script: 'verify:publish-selftest', file: 'scripts/publish-leak-scan-selftest.mjs', claim: /变异自检\s*(\d+)\s*\/\s*(\d+)/, pair: true },
+  ]
+  const rows = []
+  for (const b of BATTERIES) {
+    if (!has(b.file)) { miss.push(`电池文件不存在：${b.file}`); continue }
+    // 必须行锚定：变异体的 apply 里也含 'EXPECTED_VARIANTS = NN' 字面量（裸搜索会读到它）。
+    const decl = read(b.file).match(/^\s*const EXPECTED_VARIANTS\s*=\s*(\d+)/m)
+    if (!decl) { miss.push(`${b.file} 没有 EXPECTED_VARIANTS 声明（条数没有事实源，只能靠人手同步 CI 文本）`); continue }
+    const want = Number(decl[1])
+    const name = stepName(b.script)
+    if (!name) { miss.push(`CI 里找不到 npm run ${b.script} 的步骤名（数字无人对拍）`); continue }
+    const claimed = [...name.matchAll(new RegExp(b.claim.source, 'g'))].flatMap((m) => m.slice(1).filter(Boolean).map(Number))
+    if (claimed.length === 0) { miss.push(`CI 步骤「${name}」里没有可对拍的数字（${b.claim.source}）`); continue }
+    const okNums = claimed.every((n) => n === want)
+    const pairOk = !b.pair || new Set(claimed).size === 1
+    if (!okNums) miss.push(`${b.script}：电池声明 ${want} 条，CI 步骤名里写的是 ${claimed.join(' / ')}`)
+    if (!pairOk) miss.push(`${b.script}：CI 步骤名里两个数字不一致（${claimed.join(' / ')}）`)
+    rows.push(`${b.script}=${want}${okNums && pairOk ? ' ✓' : ' ✗'}（CI 写 ${claimed.join('/')}）`)
+  }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('、') : `${rows.length}/${BATTERIES.length} 个电池的条数与 CI 步骤名一致：${rows.join(' · ')}` }
+} })
+
+// ── S39 双架构二进制清单的单一事实源（R35） ────────────────────────────────
+// 汉化二进制不入库（.gitignore: pb-bin/pocketbase-zh-linux-*），但它的**指纹清单**入库：
+// pb-bin/SHA256SUMS（允许清单）与 pb-bin/Dockerfile 的分架构常量。三者（含磁盘字节）一旦
+// 各自漂移，构建期断言与人工读数就会指向不同的东西（R35 实测：README 表已脱节）。
+// 这里只做可机械判定的部分：
+//   ① SHA256SUMS 必须同时登记两个架构，且 sha256 与 Dockerfile 的同架构常量逐字符相同；
+//   ② Dockerfile 的 TARGETARCH 分支必须两架构都在、且对未知架构 REFUSED；
+//   ③ 两条 FROM 必须按 index digest 固定且指同一个 digest（R19 遗留项）；
+//   ④ 二进制本体在场时，再加「sha256/size/md5/e_machine 与常量逐项一致」——不在场判未判定
+//      （判据不因「本地没放二进制」而报红，也不因缺样本而判通过）。
+add({ id: 'S39', covers: ['pb-bin/SHA256SUMS', 'pb-bin/Dockerfile', 'pb-bin/pocketbase-zh-linux-arm64', 'pb-bin/pocketbase-zh-linux-amd64'], name: '双架构二进制清单有单一事实源：SHA256SUMS 的登记与 Dockerfile 的分架构常量逐项一致（本体在场时再加磁盘字节断言）', run() {
+  const miss = []
+  const unj = []
+  const ARCHES = ['arm64', 'amd64']
+  if (!has('pb-bin/SHA256SUMS')) return { ok: false, detail: '缺 pb-bin/SHA256SUMS（允许清单不在，构建期白名单没有事实源）' }
+  if (!has('pb-bin/Dockerfile')) return { ok: false, detail: '缺 pb-bin/Dockerfile（分架构常量不在）' }
+  const sums = new Map()
+  for (const l of read('pb-bin/SHA256SUMS').split('\n')) {
+    const m = l.trim().match(/^([0-9a-f]{64})\s+(\S+)$/)
+    if (m) sums.set(m[2], m[1])
+  }
+  const df = read('pb-bin/Dockerfile')
+  const consts = new Map()
+  for (const m of df.matchAll(/^\s*(arm64|amd64)\)\s*want_machine=(\d+);\s*want_size=(\d+);\s*want_md5=([0-9a-f]+);\s*want_sha256=([0-9a-f]+)/gm)) {
+    consts.set(m[1], { machine: Number(m[2]), size: Number(m[3]), md5: m[4], sha256: m[5] })
+  }
+  for (const a of ARCHES) {
+    const name = `pocketbase-zh-linux-${a}`
+    if (!sums.has(name)) miss.push(`SHA256SUMS 没有登记 ${name}（该架构的构建期白名单会直接 REFUSED）`)
+    if (!consts.has(a)) { miss.push(`Dockerfile 缺 ${a} 的 want_* 常量块（TARGETARCH=${a} 会走 REFUSED 分支）`); continue }
+    if (sums.has(name) && sums.get(name) !== consts.get(a).sha256) {
+      miss.push(`${name}：SHA256SUMS 登记 ${sums.get(name).slice(0, 12)}… ≠ Dockerfile 常量 ${consts.get(a).sha256.slice(0, 12)}…`)
+    }
+  }
+  if (!/^\s*\*\)\s*echo "REFUSED: unknown arch/m.test(df)) miss.push('Dockerfile 的 TARGETARCH 分支没有对未知架构 REFUSED（未登记的架构会被静默放行）')
+  const froms = [...df.matchAll(/^FROM\s+(\S+)/gm)].map((m) => m[1])
+  if (froms.length === 0) miss.push('Dockerfile 没有 FROM 行（没有可对拍的基座）')
+  for (const f of froms) if (!/@sha256:[0-9a-f]{64}$/.test(f)) miss.push(`FROM ${f} 未按 index digest 固定（标签可被上游改指，同一份 Dockerfile 会构建出不同镜像）`)
+  if (new Set(froms).size > 1) miss.push(`两条 FROM 的基座不一致：${[...new Set(froms)].join(' vs ')}`)
+  // ④ 本体在场时的磁盘层
+  const probe = []
+  for (const a of ARCHES) {
+    const rel = `pb-bin/pocketbase-zh-linux-${a}`
+    if (!has(rel)) { unj.push(`${a} 本体不在树里`); continue }
+    const buf = readFileSync(R(rel))
+    const c = consts.get(a)
+    if (!c) continue
+    const sha = createHash('sha256').update(buf).digest('hex')
+    const md5 = createHash('md5').update(buf).digest('hex')
+    const machine = buf.readUInt16LE(18)
+    if (sha !== c.sha256) miss.push(`${rel}：磁盘 sha256 ${sha.slice(0, 12)}… ≠ 常量 ${c.sha256.slice(0, 12)}…`)
+    if (md5 !== c.md5) miss.push(`${rel}：磁盘 md5 ${md5.slice(0, 12)}… ≠ 常量 ${c.md5.slice(0, 12)}…`)
+    if (buf.length !== c.size) miss.push(`${rel}：磁盘 size ${buf.length} ≠ 常量 ${c.size}`)
+    if (machine !== c.machine) miss.push(`${rel}：ELF e_machine ${machine} ≠ 常量 ${c.machine}`)
+    probe.push(`${a}:${buf.length}B/${sha.slice(0, 8)}…/e_machine=${machine}`)
+  }
+  const detail = miss.length
+    ? miss.join('、')
+    : `两架构登记与常量逐项一致 · FROM 按 digest 固定（${[...new Set(froms)].length} 个）· 未知架构 REFUSED` +
+      (probe.length ? ` · 磁盘核对：${probe.join(' · ')}` : ` · 磁盘核对：未判定（${unj.join('、')}）`)
+  return { ok: miss.length === 0, detail }
 } })
 
 for (const c of CHECKS) {

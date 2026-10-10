@@ -254,6 +254,12 @@ try {
 // ── 期望值比对：退出码 + 翻转的断言名 + 未判定项，三者都要逐项相等 ──
 let pass = 0
 let fail = 0
+// R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
+const EXPECTED_VARIANTS = 10
+if (variants.length !== EXPECTED_VARIANTS) {
+  console.log(`⛔ 未判定（exit 2）：变异体声明 ${EXPECTED_VARIANTS} 条，实际 ${variants.length} 条`)
+  process.exit(2)
+}
 console.log('=== W21-A 产物体积判据 · 变异自检 ===')
 console.log(`样本：${SRC_DIST}（${BEFORE.size} 个文件，web 传输面 gzip 基线 ${BASE_GZIP} B）`)
 console.log(`临时树：真复制（cp -R），跑完删除；inode 逐一核对：${results.every((r) => r.inoOk) ? '副本 ≠ 原件' : '有硬链！'}`)

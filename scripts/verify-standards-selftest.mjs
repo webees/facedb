@@ -392,7 +392,34 @@ const M = [
   { id: 'M84', target: 'RUN.md', expect: 'S37', desc: 'RUN.md 的「浏览器实际最低版本」行被删（生效基线还在，但没说清 toSorted 抬高的门槛）',
     apply: () => mutate('RUN.md', (t) => t.replace(/^\| 浏览器实际最低版本 \|.*$\n/m, '')) },
 
+  // ── R35：账目单一声明 ────────────────────────────────────────────────────
+  // 「有多少条变异体」只能有一处事实源，且必须与 CI 步骤名里写的数字一致
+  // （由 scripts/check-repo-standards.mjs 的 S38 对拍）。声明与实际不符 ⇒ 判未判定 exit 2：
+  // 判据自身账目不自洽时，任何「全部抓到」的结论都不成立。
+  // 锚点必须与「当时是几条」无关：这里按正则命中第一个 N 再减 3，而不是写死某个字面量 —— R35 实测
+  // 写死字面量（`（88 个变异体…`）在计数订正成 90 之后立刻变成「变异体未生效」，变异悄悄失去判别力。
+  { id: 'M85', target: '.github/workflows/ci.yml', expect: 'S38', desc: 'CI 步骤名里的变异体条数被改小（电池声明与 CI 文本漂移 ⇒ 必须报红）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/（(\d+) 个变异体必须全部被抓到/, (m, n) => `（${Number(n) - 3} 个变异体必须全部被抓到`)) },
+  { id: 'M86', target: 'scripts/check-third-party-notices-mutants.mjs', expect: 'S38', desc: '电池里的 EXPECTED_VARIANTS 被改小（声明与实际不符 ⇒ 必须报红）',
+    // 同样不写死条数：按行锚定正则取第一个声明再减 1。
+    apply: () => mutate('scripts/check-third-party-notices-mutants.mjs', (t) => t.replace(/^(const EXPECTED_VARIANTS = )(\d+)$/m, (m, p, n) => p + (Number(n) - 1))) },
+  { id: 'M87', target: 'pb-bin/SHA256SUMS', expect: 'S39', desc: '允许清单里的 sha256 被改（与 Dockerfile 分架构常量漂移 ⇒ 必须报红）',
+    // 锚点必须与「树里是哪个版本的清单」无关：只翻转首行摘要的第 1 个十六进制字符（两棵树都必变）。
+    apply: () => mutate('pb-bin/SHA256SUMS', (t) => t.replace(/^([0-9a-f]{64})/m, (h) => (h[0] === 'a' ? 'b' : 'a') + h.slice(1))) },
+  // 尺寸/md5 常量与清单的机械对拍只在**二进制本体在场**时成立（pb-bin/SHA256SUMS 只有摘要一列，
+  // 本体被 .gitignore 排除、不在 worktree 副本里）⇒ 以尺寸常量为目标的变异体在这套装置里无法被抓到。
+  // 故 M88 改瞄「分架构常量缺一条」这个**与本体无关**的面：删掉 amd64 的 want_* 块，
+  // TARGETARCH=amd64 会走 REFUSED 分支（S39 的 consts 表少一架构 ⇒ 必红）。
+  { id: 'M88', target: 'pb-bin/Dockerfile', expect: 'S39', desc: 'Dockerfile 少了 amd64 的 want_* 常量块（另一个架构的分架构断言整段消失 ⇒ 必须报红）',
+    apply: () => mutate('pb-bin/Dockerfile', (t) => t.replace(/^\s*amd64\)\s*want_machine=\d+;[^\n]*\n/gm, '')) },
 ]
+
+// R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
+const EXPECTED_VARIANTS = 90
+if (M.length !== EXPECTED_VARIANTS) {
+  console.log(`\u26d4 \u672a\u5224\u5b9a\uff08exit 2\uff09\uff1a\u53d8\u5f02\u4f53\u58f0\u660e ${EXPECTED_VARIANTS} \u6761\uff0c\u5b9e\u9645 ${M.length} \u6761`)
+  process.exit(2)
+}
 
 let caught = 0
 const undetermined = []

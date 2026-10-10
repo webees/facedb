@@ -414,6 +414,12 @@ console.log(`  ${selfOk ? '✅' : '❌'} s1 自扫真实仓库（webees/facedb�
 rmSync(WORK, { recursive: true, force: true })
 
 console.log()
+// R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
+const EXPECTED_VARIANTS = 43 // = CASES 42 个场景 + 本仓库自扫 1
+if (CASES.length + 1 !== EXPECTED_VARIANTS) {
+  console.log(`⛔ 未判定（exit 2）：场景声明 ${EXPECTED_VARIANTS} 条，实际 ${CASES.length + 1} 条`)
+  process.exit(2)
+}
 console.log(`  变异自检：${pass} / ${CASES.length + 1} 通过${failures.length ? '，' + failures.length + ' 项失败' : ''}`)
 if (failures.length) {
   for (const f of failures) console.log(`    - ${f.name}：${f.problems.join('；')}`)

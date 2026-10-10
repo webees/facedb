@@ -123,6 +123,12 @@ const EXPECT = {
   'm12-docs-license-drift': { rc: 1, fails: ['N11'] },
 }
 
+// R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
+const EXPECTED_VARIANTS = 13
+if (variants.length !== EXPECTED_VARIANTS) {
+  console.log(`⛔ 未判定（exit 2）：变异体声明 ${EXPECTED_VARIANTS} 条，实际 ${variants.length} 条`)
+  process.exit(2)
+}
 console.log('=== R20-F7 判据变异自检 ===')
 for (const r of results) {
   const e = EXPECT[r.name]
