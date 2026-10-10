@@ -24,6 +24,8 @@
 6. `web` 容器跑的是**生产构建产物**（镜像内由 `static-web-server` 提供静态服务，**没有 node/rsbuild**），产物打包进镜像、不挂载宿主源码。
    `PUBLIC_PB_URL` 会被构建时内联进产物，改动它必须重新构建：
    `docker compose build --build-arg PUBLIC_PB_URL=http://<host>:8090 web && docker compose up -d web`
+   该值必须是 `http://` 或 `https://` 开头的绝对 URL：写错（裸主机名、相对路径、多值、其它方案）时
+   **构建期直接失败并打印原因**（R39 起；此前是静默忽略，产物与未配置逐字节相同，只在浏览器里表现为上传失败）。
    改前端代码同样要重新构建镜像（不再有 dev 热更新）。
 7. 纯本地开发（不进容器）：`npm install && npm run dev`
 8. 姿态符号已实测确认（人向左转时 yaw 为正）；更换模型若符号反转，改 `src/lib/face.ts` 的 `YAW_SIGN`

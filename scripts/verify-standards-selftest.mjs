@@ -454,10 +454,15 @@ const M = [
     apply: () => mutate('docs/THIRD-PARTY.md', (t) => t.replace(new RegExp('(lib-vue[.])[0-9a-f]{10}([.]js[.]LICENSE[.]txt)'), (m, a, b) => a + '0000000000' + b)) },
   { id: 'M106', target: 'docs/R38-probe.md', expect: 'S24', desc: '在 docs/ 下新增一份没有任何断言认领的文档（S24 来源此前不含 docs/）',
     apply: () => { writeFileSync(join(WT, 'docs/R38-probe.md'), ['# 探针文档', '', 'S24 必须点名它没有任何断言覆盖。', ''].join(String.fromCharCode(10))) } },
+  // R39：S46 必须咬得住 —— 两条变异分别回到「静默丢弃」与「方案白名单缺失」两种旧形态。
+  { id: 'M107', target: 'rsbuild.config.ts', expect: 'S46', desc: '把不可解析的取值改回静默返回空串（配置写错时产物与未配置逐字节相同 ⇒ 必须报红）',
+    apply: () => mutate('rsbuild.config.ts', (t) => t.replace(/if \(!v\) return '';/, "if (!v) return '';" + String.fromCharCode(10) + "  if (!/^https?:\\/\\//.test(v)) return '';")) },
+  { id: 'M108', target: 'rsbuild.config.ts', expect: 'S46', desc: '删掉 http(s) 方案白名单（ws:// 等值被当作合法源追加 ⇒ 必须报红）',
+    apply: () => mutate('rsbuild.config.ts', (t) => t.replace("if (u.protocol !== 'http:' && u.protocol !== 'https:') {", 'if (false) {')) },
 ]
 
 // R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
-const EXPECTED_VARIANTS = 106
+const EXPECTED_VARIANTS = 108
 if (M.length !== EXPECTED_VARIANTS) {
   console.log(`\u26d4 \u672a\u5224\u5b9a\uff08exit 2\uff09\uff1a\u53d8\u5f02\u4f53\u58f0\u660e ${EXPECTED_VARIANTS} \u6761\uff0c\u5b9e\u9645 ${M.length} \u6761`)
   process.exit(2)

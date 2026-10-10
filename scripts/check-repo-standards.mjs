@@ -1616,6 +1616,50 @@ add({ id: 'S45', covers: ['docs/THIRD-PARTY.md'], name: '文档引用的产物 c
 } })
 
 
+// ── S46 PUBLIC_PB_URL 取值 → 产物 CSP 的派生必须有行为断言（R39 / W39-LEAD-01 · W39-C） ──
+// 为什么单独立一条：全仓原先没有任何判据把「PUBLIC_PB_URL 的取值」与「产物里的 CSP」连起来。
+// R39 三席实测：不可解析的值（裸主机名、相对路径、多值）与空值的产物**逐字节相同**，
+// 15 格真构建里 12 格没有任何判据可见；接线判据只查占位符在场（对 img-src 通道判别力为 0）。
+// 做法：把 rsbuild.config.ts 里的派生实现**原文抽出来求值**（同一份实现，不做第二份复述），
+// 用一张取值表断言「该追加什么、该拒绝什么」——只加断言不够，M107/M108 证明它咬得住。
+add({ id: 'S46', covers: ['rsbuild.config.ts'], name: 'PUBLIC_PB_URL 取值到 CSP 的派生是行为断言（不可解析必须在构建期失败）', run() {
+  const rel = 'rsbuild.config.ts'
+  if (!has(rel)) return { ok: false, detail: `${rel} 不存在` }
+  const src = read(rel)
+  const start = src.indexOf('function pbUrlOrThrow')
+  const end = src.indexOf('function derivePbConnectSrc')
+  const tail = src.indexOf('\n}', end)
+  if (start < 0 || end < 0 || tail < 0) return { ok: false, detail: '没能从 rsbuild.config.ts 抽出派生实现（改形 ⇒ 本条失去前提，未判定而非通过）' }
+  const js = src.slice(start, tail + 2)
+    .replace(/function pbUrlOrThrow\(v: string\): URL \{/, 'function pbUrlOrThrow(v) {')
+    .replace(/function derivePbConnectSrc\(raw: string \| undefined\): string \{/, 'function derivePbConnectSrc(raw) {')
+  let derive
+  try { derive = new Function(`${js}; return derivePbConnectSrc`)() } catch (e) { return { ok: false, detail: `派生实现去类型后仍无法求值：${e.message}` } }
+  const cases = [
+    [undefined, 'ok', ''],
+    ['', 'ok', ''],
+    ['   ', 'ok', ''],
+    ['https://pb.example.com', 'ok', ' https://pb.example.com wss://pb.example.com'],
+    ['https://pb.example.com/facedb', 'ok', ' https://pb.example.com wss://pb.example.com'],
+    ['http://192.168.1.5:8090', 'ok', ' http://192.168.1.5:8090 ws://192.168.1.5:8090'],
+    ['  http://192.168.1.5:8090  ', 'ok', ' http://192.168.1.5:8090 ws://192.168.1.5:8090'],
+    ['pb.example.com', 'throw', ''],
+    ['/api', 'throw', ''],
+    ['http://a.example.com,http://b.example.com', 'throw', ''],
+    ['ws://192.168.1.5:8090', 'throw', ''],
+    ['ftp://pb.example.com', 'throw', ''],
+  ]
+  const bad = []
+  let hit = 0
+  for (const [input, want, expect] of cases) {
+    let got, msg = ''
+    try { got = derive(input) } catch (e) { got = null; msg = String(e && e.message) }
+    if (want === 'throw' ? got === null : got === expect) hit += 1
+    else bad.push(`${JSON.stringify(input)} 期望 ${want}${want === 'ok' ? `="${expect}"` : ''}，实得 ${got === null ? `不抛（应为抛错）` : `"${got}"`}${msg ? `（抛错文案：${msg.slice(0, 60)}）` : ''}`)
+  }
+  return { ok: bad.length === 0, detail: bad.length ? bad.join('；') : `${hit}/${cases.length} 格取值符合断言（空值不追加 · 绝对地址追加同源 + ws 源 · 不可解析与非 http(s) 方案在构建期失败）` }
+} })
+
 for (const c of CHECKS) {
   let r
   try { r = c.run() } catch (e) { r = { ok: false, detail: '断言抛错：' + e.message } }
