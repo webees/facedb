@@ -1747,6 +1747,68 @@ add({ id: 'S47', name: 'CI 的 checkout 取到 tag（否则 CHANGELOG 的 tag �
   return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : `${n} 个 checkout 步骤都取到 tag` }
 } })
 
+// ── S48 采集画面：环外不得涂黑 + 当前设备名必须可见 + 虚拟摄像头必须改选实体设备 ──
+// 为什么单独立一条（用户反馈 2026-10-11「为什么一直显示未检测到人脸？移除这种蒙版遮盖」）：
+// 根因是两点叠加，两者都会让用户**看不出到底哪里不对**：
+//   ① 椭圆取景环之外被 box-shadow 的极大 spread 涂成纯黑，只留一个椭圆窗口（约占容器宽 53%）——
+//      「取错设备 / 镜头被挡 / 画面停格 / 全黑」这几种完全不同的原因在界面上长得一模一样；
+//   ② 未指定 deviceId 时系统默认可能选中**虚拟摄像头**（本机 macOS/Chrome 实测默认就是
+//      OBS Virtual Camera：未推流时永远没有帧，推流时画面里也没有用户），而设备下拉框
+//      只写「摄像头 1 / 摄像头 2」，用户看不出采集用的是哪一个。
+// 这三条都是用户可见事实，必须有断言兜住，否则下次重构会静默退回原样。
+add({ id: 'S48', covers: ['src/lib/framing.ts', 'src/lib/camera-pick.ts', 'src/components/CaptureView.vue', 'src/components/CaptureFooter.vue', 'src/lib/i18n.ts'], name: '采集画面不涂黑遮罩、当前摄像头名可见（虚拟设备有提醒）、虚拟摄像头会改选实体设备', run() {
+  const miss = []
+  // 判据自身会写「100vmax」这类字样（上面注释与各文件的历史说明），所以一律先剥掉注释行再断言，
+  // 否则断言会被自己的说明文本满足 —— 本仓库已踩过 6 次同类自匹配。
+  const stripComments = (s) => s.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+
+  const framing = 'src/lib/framing.ts'
+  if (!has(framing)) miss.push(`${framing} 不存在`)
+  else {
+    const code = stripComments(read(framing))
+    if (/vmax/.test(code)) miss.push(`${framing} 的代码里又出现 vmax —— 取景环外被涂黑，用户看不到环外画面`)
+    if (!/export function ovalBox/.test(code)) miss.push(`${framing} 缺 ovalBox 导出`)
+    if (!/export function ovalShadow/.test(code)) miss.push(`${framing} 缺 ovalShadow 导出`)
+  }
+
+  const view = 'src/components/CaptureView.vue'
+  if (!has(view)) miss.push(`${view} 不存在`)
+  else {
+    const code = stripComments(read(view))
+    if (/vmax/.test(code)) miss.push(`${view} 里又出现 vmax（涂黑遮罩）`)
+    if (!/\.\.\.ovalBox\(\)/.test(code)) miss.push(`${view} 不再使用 ovalBox() —— 取景环几何被就地复制成了第二份`)
+    if (!/if \(!deviceId\) next = \(await preferPhysicalCamera\(next\)\) \?\? next/.test(code)) {
+      miss.push(`${view} 未在「未指定设备」时改选实体摄像头 —— 默认选中虚拟摄像头时用户会一直没有画面里的人`)
+    }
+  }
+
+  const footer = 'src/components/CaptureFooter.vue'
+  if (!has(footer)) miss.push(`${footer} 不存在`)
+  else {
+    const code = stripComments(read(footer))
+    if (!/c\.label \|\| t\('camera'/.test(code)) miss.push(`${footer} 的设备下拉没显示真实设备名（只写「摄像头 N」＝用户无法区分实体与虚拟设备）`)
+    if (!/t\('activeCamera'/.test(code)) miss.push(`${footer} 没显示当前摄像头名`)
+    if (!/isVirtualCameraLabel/.test(code)) miss.push(`${footer} 对虚拟摄像头没有提醒`)
+  }
+
+  const pick = 'src/lib/camera-pick.ts'
+  if (!has(pick)) miss.push(`${pick} 不存在`)
+  else {
+    const code = stripComments(read(pick))
+    if (!/export async function preferPhysicalCamera/.test(code)) miss.push(`${pick} 缺 preferPhysicalCamera 导出`)
+    const line = code.split('\n').find((l) => l.includes('const VIRTUAL_LABEL =')) || ''
+    if (!/virtual/i.test(line) || !/obs/i.test(line)) miss.push(`${pick} 的虚拟摄像头特征词里缺 virtual/obs`)
+  }
+
+  const i18n = read('src/lib/i18n.ts')
+  for (const k of ['activeCamera', 'activeCameraVirtual']) {
+    const n = (i18n.match(new RegExp(`^\\s*${k}:`, 'gm')) || []).length
+    if (n !== 2) miss.push(`i18n 的 ${k} 键出现 ${n} 次（zh/en 各一条，应为 2）`)
+  }
+
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '环外无涂黑 · 当前摄像头名可见（虚拟设备带提醒）· 未指定设备时会改选实体摄像头' }
+} })
+
 for (const c of CHECKS) {
   let r
   try { r = c.run() } catch (e) { r = { ok: false, detail: '断言抛错：' + e.message } }

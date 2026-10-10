@@ -51,14 +51,19 @@
           })
         }
 
+        // 【R29】兜底页只显示**当前语言**的一段（此前 <h1> 恒中文、<p> 恒英文，中文客户必见中英混排）。
+        // 判定口径与 src/lib/i18n.ts 逐字一致（同输入 navigator.language、同谓词 startsWith('zh')）；
+        // 不读 <html lang>：那是上面脚本写下的派生声明，分叉时兜底页会静默与应用不一致。
+        // 转义必须先于二选一：verify-repo.mjs:505 要求 box() 体内出现 esc(zh)/esc(en)/esc(detail)，
+        // 写成 esc(msg) 既让 zh/en 变成「未转义的入参」（判红），又是二次转义。
+        // dsh-debt：「zh 前缀」闸门现存 3 份副本；升级路径 = 收敛为构建期注入的常量。
         function box(zh, en, detail) {
+          var msg = (navigator.language || '').toLowerCase().startsWith('zh') ? esc(zh) : esc(en)
           var html =
             '<div style="max-width:36rem;margin:12vh auto;padding:1.5rem;font:16px/1.6 system-ui,-apple-system,sans-serif;color:#111">' +
             '<h1 style="font-size:1.25rem;font-weight:700;margin:0 0 .5rem">' +
-            esc(zh) +
-            '</h1><p style="margin:0;color:#444">' +
-            esc(en) +
-            '</p>'
+            msg +
+            '</h1>'
           if (detail) {
             html +=
               '<pre style="margin:1rem 0 0;padding:.75rem;background:#f3f4f6;border-radius:.5rem;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:12px">' +

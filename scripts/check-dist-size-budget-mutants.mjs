@@ -113,7 +113,10 @@ const variants = [
     desc: 'web 传输面注入约 5.5 KB 不可压缩内容（css 里追加合法注释）',
     expect: { rc: 1, fails: ['N3', 'N15'], undecided: [] },
     mutate: (dir) => {
-      const p = path.join(dir, 'dist/static/css/index.d05fa997d9.css')
+      // 不许把产物文件名写死在这里：css 的哈希名随源码变化（实测 R28/R40 各换过一次），
+      // 写死会让这条变异体在下次重锚后直接 ENOENT 抛栈（不是「变异未生效」，是测试自身坏了）。
+      const cssDir = path.join(dir, 'dist/static/css')
+      const p = path.join(cssDir, readdirSync(cssDir).filter((f) => f.endsWith('.css')).sort()[0])
       const before = statSync(p).size
       // 随机 base64：gzip 压不动，保证 gzip 档真的会被顶穿（可压缩的文本注释会被 gzip 抹平）
       writeFileSync(p, readFileSync(p) + `\n/* W21-A 变异体（仅存在于临时树）：${randomBytes(4096).toString('base64')} */\n`)

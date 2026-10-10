@@ -62,6 +62,15 @@ const M = {
     cameraNotFound: '未检测到可用摄像头',
     cameraBusy: '摄像头被其他程序占用，请关闭其他程序后刷新页面',
     cameraFailed: '摄像头启动失败（{err}）',
+    // cameraFailed 的 {err} 槽位取值（R29 汉化）：DOMException.name 命中映射表时用下面四条，
+    // 未命中则**原样显示原始 name**（SecurityError / NotSupportedError 等排查信息不能丢）。
+    // 映射表在 CaptureView.vue 的 CAMERA_ERR_KEY，与 quality.ts 的 POSE_KEY 同一形态（name → i18n 键）。
+    cameraErrSecurity: '被安全策略阻止',
+    cameraErrUnsupported: '浏览器不支持',
+    cameraErrType: '参数不受支持',
+    cameraErrAbort: '启动被中断',
+    // 异常对象没有 name 时的兜底。此前是硬编码英文 'unknown'，中文界面会显示「摄像头启动失败（unknown）」。
+    cameraErrUnknown: '未知错误',
     // 采集中途设备断开（拔掉 USB 摄像头 / 系统撤销权限 / 被其他程序抢占）。
     // 单独一条的原因：此时画面会停在最后一帧，逐帧判定只会报「未检测到人脸」，
     // 用户会误以为是自己姿势的问题。
@@ -76,6 +85,10 @@ const M = {
     failed: '失败：{msg}（保持姿态会自动重试）',
     failedMax: '连续失败，请检查网络后点「重试」',
     camera: '摄像头 {n}',
+    // 当前采集设备名（常显在画面下方）。虚拟摄像头额外提醒：它的画面里通常没有用户本人，
+    // 「一直检测不到人脸」时这条提示就是自查线索。
+    activeCamera: '当前摄像头：{name}',
+    activeCameraVirtual: '当前摄像头：{name}（虚拟摄像头，画面里可能没有你）',
 
     doneTitle: '识别完成',
     again: '重新识别',
@@ -154,6 +167,11 @@ const M = {
     cameraNotFound: 'No available camera detected',
     cameraBusy: 'Camera is in use by another program. Please close it and refresh the page',
     cameraFailed: 'Failed to start camera ({err})',
+    cameraErrSecurity: 'blocked by security policy',
+    cameraErrUnsupported: 'unsupported by this browser',
+    cameraErrType: 'unsupported parameters',
+    cameraErrAbort: 'startup interrupted',
+    cameraErrUnknown: 'unknown',
     cameraLost: 'Camera disconnected. Please check the device and refresh the page',
     segmentFailed: 'Video recording could not start; this step will have no video',
 
@@ -163,6 +181,8 @@ const M = {
     failed: 'Failed: {msg} (will retry automatically while holding pose)',
     failedMax: 'Repeated failures. Please check the network and tap "Retry"',
     camera: 'Camera {n}',
+    activeCamera: 'Camera: {name}',
+    activeCameraVirtual: 'Camera: {name} (virtual camera — you may not appear in it)',
 
     doneTitle: 'Recognition complete',
     again: 'Recognize again',

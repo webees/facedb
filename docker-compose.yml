@@ -8,7 +8,7 @@ services:
     build:
       context: ./pb-bin
       dockerfile: Dockerfile
-    image: webees-facedb-pocketbase:0.28.1-zh
+    image: webees-facedb-pocketbase:0.40.4-zh
     container_name: facedb-pocketbase
     restart: unless-stopped
     # 加固（R19 P3）：PB 只监听 8090（非特权端口）、只写 /pb_data 与 /pb_migrations(ro)，
@@ -52,9 +52,13 @@ services:
       # 实测只读下功能完全正常（空库重放 6 集合齐全、最终迁移含 \p{Z} 已应用）；
       # PB 自身不需要写这个目录（迁移执行记录写在 pb_data 里）。
       - ./pb_migrations:/pb_migrations:ro
-    # 显式声明迁移目录：镜像的 ENTRYPOINT 已带 `serve --dir=/pb_data …`，
-    # 这里追加的 flag 会接到 ENTRYPOINT 之后，即最终命令为
+    # 显式声明迁移目录：基座（muchobien/pocketbase:0.40.4）的 ENTRYPOINT 是 entrypoint.sh，
+    # 首参以 '-' 开头时执行
+    #   pocketbase serve --http=0.0.0.0:8090 --dir=/pb_data --publicDir=/pb_public --hooksDir=/pb_hooks "$@"
+    # 这里追加的 flag 即接到其后，最终命令为
     #   pocketbase serve --http=0.0.0.0:8090 --dir=/pb_data --publicDir=/pb_public --hooksDir=/pb_hooks --migrationsDir=/pb_migrations
+    # 红线：该脚本还会在 PB_ADMIN_EMAIL 与 PB_ADMIN_PASSWORD 同时非空时执行 superuser upsert
+    # （等于每次启动重置管理员密码），故**不得**向本服务注入这两个环境变量。
     # 不写也能跑：PB 会从 --dir 推导 ./pb_data/../pb_migrations，恰好命中挂载点；
     # 但那是隐式推导，一旦改 --dir 或换挂载点就会静默不加载迁移（B#11），故显式指定。
     command: ["--migrationsDir=/pb_migrations"]

@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { MAX_BRIGHT, MIN_BRIGHT } from '../lib/quality'
+import { MAX_BRIGHT, MIN_BRIGHT, judge, POSE_KEY, roiStats, STABLE_FRAMES, type Pose } from '../lib/quality'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { createHints, uploadFailureHint } from '../lib/hints'
 import { closeFace, detectFace, drawOverlay, emptyFrame, initFace } from '../lib/face'
-import { judge, POSE_KEY, roiStats, STABLE_FRAMES, type Pose } from '../lib/quality'
 import {
   BURST,
   BURST_GAP_MS,
@@ -20,6 +19,9 @@ import { UPLOAD_BUDGET_MS, type CaptureMeta, type CaptureResult, type PendingFil
 import { runUploadBatch, preSubmitQueue } from '../lib/upload-batch'
 import { buildPoseFiles } from '../lib/batch-files'
 import { primeAudio, resumeAudio, sfx } from '../lib/audio'
+import { cameraErrText } from '../lib/camera-error'
+import { preferPhysicalCamera } from '../lib/camera-pick'
+import { boxStyle, ovalBox, ovalShadow } from '../lib/framing'
 import { t } from '../lib/i18n'
 import CaptureFooter from './CaptureFooter.vue'
 
@@ -105,39 +107,9 @@ const HINT_BOX_H = 56
 // 曾经还记录 h，但从未被读取；容器比例现在固定为 BOX_AR，不再依赖视频尺寸。
 const videoSize = reactive({ w: 0 })
 
-// 容器固定尺寸：宽度与页面其余元素对齐（都撑满 max-w-2xl），高度按 4:3 锁定。
-// 不用 3:4 —— 满宽下 3:4 会到 896px 高，超出一屏；也不用跟随摄像头宽高比，
-// 那会导致每次打开链接布局都不同。video 用 object-cover 填满。
-const BOX_AR = 4 / 3
-// 用 BOX_AR 生成，避免与常量各写一份、改一处漏一处。
-const boxStyle = { width: '100%', aspectRatio: `${BOX_AR}` }
-
-// 距离提示只由文案承担（「请靠近镜头」）；这里不再做人脸尺寸到取景洞缩放的映射。
-// 原因：原先按「人脸宽 / 画面宽」缩放椭圆（<0.25 缩小、>0.5 放大），
-// 该比值在阈值附近抖动时会让椭圆在两种尺寸间反复切换，肉眼看到的就是「镂空框一会儿大一会儿小」。
-
-// 椭圆取景框：高度占容器高 92%，宽度按真人脸型比例反推。
-// 原用黄金比 1.618（极为高瘦），在 4:3 满宽容器里宽度只占 38%（约 255px），
-// 人脸稍宽就会被遮住下半张脸或两颊。真人脸（含发际线到下巴）高宽比约 1.25~1.4，
-// 取 1.3 后椭圆宽约占容器 53%（约 356px），能完整容纳常见人脸。
-const OVAL_H = 0.92
-const FACE_AR = 1.3
-const ovalStyle = computed(() => {
-  // 椭圆全高（相对容器高）= OVAL_H；换算成相对容器宽的宽度 = OVAL_H × (高/宽) / FACE_AR
-  const rxPct = ((OVAL_H * (1 / BOX_AR)) / FACE_AR) * 100
-  return {
-    width: rxPct + '%',
-    height: OVAL_H * 100 + '%',
-    // 描边用 spread（无 blur）+ 小半径发光：开销远低于大半径 blur
-    // 遮罩全不透明（纯黑），椭圆边缘用青色发光形成取景环
-    boxShadow: ok.value
-      ? '0 0 0 100vmax #000, 0 0 0 3px #4ade80, 0 0 28px 8px rgba(74,222,128,.65), inset 0 0 24px rgba(74,222,128,.25)'
-      : '0 0 0 100vmax #000, 0 0 0 2px #22d3ee, 0 0 24px 5px rgba(34,211,238,.55), inset 0 0 20px rgba(34,211,238,.18)',
-    // 位置固定、不做任何缩放；只让描边颜色平滑过渡
-    transform: 'translate(-50%, -50%)',
-    transition: 'box-shadow .2s ease',
-  }
-})
+// 取景几何（容器比例、椭圆取景环）与「环外不再涂黑」的口径都在 lib/framing.ts 里，
+// 这里只做组合：形状来自 ovalBox()，配色来自 ovalShadow(是否达标)。
+const ovalStyle = computed(() => ({ ...ovalBox(), boxShadow: ovalShadow(ok.value) }))
 
 let stream: MediaStream | null = null
 let raf = 0
@@ -205,7 +177,7 @@ function cameraError(e: unknown): void {
   if (n === 'NotAllowedError') hints.set('cameraDenied')
   else if (n === 'NotFoundError' || n === 'OverconstrainedError') hints.set('cameraNotFound')
   else if (n === 'NotReadableError') hints.set('cameraBusy')
-  else hints.set('cameraFailed', { err: n ?? 'unknown' })
+  else hints.set('cameraFailed', { err: cameraErrText(n) })
 }
 
 function stopStream(): void {
@@ -262,7 +234,12 @@ async function startCamera(deviceId?: string): Promise<void> {
   if (deviceId) video.deviceId = { exact: deviceId }
   else video.facingMode = 'user'
   // 先取到新流再停旧流：切换失败时旧流仍可用，采集会话不作废。
-  const next = await navigator.mediaDevices.getUserMedia({ video, audio: false })
+  let next = await navigator.mediaDevices.getUserMedia({ video, audio: false })
+  // 未指定设备时，系统默认可能选中**虚拟摄像头**（本机实测 macOS/Chrome 默认就是
+  // 「OBS Virtual Camera」：不推流时永远没有帧，推流时画面里也没有用户），
+  // 用户看到的就是「一直没有我」。这里尽力改选实体设备；失败就沿用原流。
+  // 带 deviceId 的路径（下拉框显式选择、重试）不做任何改动。
+  if (!deviceId) next = (await preferPhysicalCamera(next)) ?? next
   // 卸载守卫（R13-F10）：等待期间组件可能已经卸载（onBeforeUnmount 里的 stopStream/cleanup
   // 早就跑完了）。这条流此刻没有任何接管者，必须就地停掉 —— 否则轨道一直活着、
   // 摄像头指示灯亮着。实测修复前：tracks_live=1 / tracks_stopped=0 / streams_live=1。

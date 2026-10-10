@@ -477,10 +477,18 @@ const M = [
     apply: () => mutate('rsbuild.config.ts', (t) => t.replace("if (u.pathname !== '/' || u.search !== '' || u.hash !== '') {", 'if (false) {')) },
   { id: 'M110', target: '.github/workflows/ci.yml', expect: 'S47', desc: 'CI 的 checkout 不再取 tag（S8 的 tag 链接断言在 CI 里就核验不了，且会误红）',
     apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace(/^\s*fetch-depth: 0\n/m, '').replace(/^\s*fetch-tags: true\n/m, '')) },
+  // 2026-10-11 用户反馈「一直显示未检测到人脸」：三条变异分别打「环外涂黑回来了」「设备名又不显示了」
+  // 「未指定设备时不再改选实体摄像头」——三种都会让用户重新陷入「看不出哪里不对」。
+  { id: 'M113', target: 'src/lib/framing.ts', expect: 'S48', desc: '取景环外又被涂成纯黑（用户看不到环外画面，设备取错/画面停格无法区分 ⇒ 必须报红）',
+    apply: () => mutate('src/lib/framing.ts', (t) => t.replace("'0 0 0 3px #4ade80", "'0 0 0 100vmax #000, 0 0 0 3px #4ade80")) },
+  { id: 'M114', target: 'src/components/CaptureFooter.vue', expect: 'S48', desc: '设备下拉只写「摄像头 N」而不显示真实设备名（用户无法区分实体与虚拟摄像头 ⇒ 必须报红）',
+    apply: () => mutate('src/components/CaptureFooter.vue', (t) => t.replace('{{ c.label || t(\'camera\', { n: i + 1 }) }}', "{{ t('camera', { n: i + 1 }) }}")) },
+  { id: 'M115', target: 'src/components/CaptureView.vue', expect: 'S48', desc: '未指定设备时不再改选实体摄像头（默认选中虚拟摄像头时用户一直没有画面里的人 ⇒ 必须报红）',
+    apply: () => mutate('src/components/CaptureView.vue', (t) => t.replace('  if (!deviceId) next = (await preferPhysicalCamera(next)) ?? next\n', '')) },
 ]
 
 // R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
-const EXPECTED_VARIANTS = 112
+const EXPECTED_VARIANTS = 115
 if (M.length !== EXPECTED_VARIANTS) {
   console.log(`\u26d4 \u672a\u5224\u5b9a\uff08exit 2\uff09\uff1a\u53d8\u5f02\u4f53\u58f0\u660e ${EXPECTED_VARIANTS} \u6761\uff0c\u5b9e\u9645 ${M.length} \u6761`)
   process.exit(2)
