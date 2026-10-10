@@ -379,6 +379,14 @@ const M = [
     apply: () => mutate('scripts/publish-leak-scan.mjs', (t) => t.replace("      if (method !== 0 && method !== 8) throw new Error(`zip 条目用了未支持的压缩方法 ${method}（可能是加密/AES）`)\n", '')) },
   { id: 'M81', target: 'scripts/check-repo-standards.mjs', expect: 'S27', desc: '行为探针退回「第一行含 BEARER 的文本 + 命中数」（两端都能被一行普通日志欺骗）',
     apply: () => mutate('scripts/check-repo-standards.mjs', (t) => t.replace("const bearerLine = (out.match(/^\\s*[✅❌] P\\d BEARER\\s.*?命中 (\\d+) 处.*$/m) || [])[0] || ''", "const bearerLine = out.split('\\n').find((l) => l.includes('BEARER')) || ''")) },
+  // R34：Node/浏览器口径的三条变异体（新加的 S36/S37 必须自己对得起「空真命题」这条纪律）。
+  { id: 'M82', target: '.github/workflows/ci.yml', expect: 'S36', desc: 'CI 的 node-version 与 .nvmrc 漂移（Node 口径又变成多处各写一份）',
+    apply: () => mutate('.github/workflows/ci.yml', (t) => t.replace('node-version: 22', 'node-version: 24')) },
+  { id: 'M83', target: '.nvmrc', expect: 'S36', desc: '.nvmrc 被改成另一个 major（本地与 CI/Dockerfile 不一致）',
+    apply: () => mutate('.nvmrc', (t) => t.replace('22', '24')) },
+  { id: 'M84', target: 'RUN.md', expect: 'S37', desc: 'RUN.md 的「浏览器实际最低版本」行被删（生效基线还在，但没说清 toSorted 抬高的门槛）',
+    apply: () => mutate('RUN.md', (t) => t.replace(/^\| 浏览器实际最低版本 \|.*$\n/m, '')) },
+
 ]
 
 let caught = 0

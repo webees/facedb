@@ -2833,3 +2833,14 @@ R26 的复核席位逐个证明了一类同族缺口：把 `S27`/`S28`/`S35` 守
 - 禁止直接向 `main` 推送；禁止对已推送历史做 rebase / amend / force push。
 - 历史情况说明：R13 之前的 5 个提交（`581599c`…`902327d`）是合并规范确立前落下的线性提交，
   不回改已公开的历史；R13-F8 起一律走合并提交（首次示例：合并提交 `479d066`）。
+
+## 运行时与浏览器基线（R34 实测）
+
+分发承诺的运行时口径必须可机检，因此这里保留**唯一一份读数**；`scripts/check-repo-standards.mjs` 的 S36/S37 与本段对拍（改文档或改配置任一侧漂移都会红）。
+
+| 项 | 读数 | 出处与依据 |
+| --- | --- | --- |
+| Node 版本 | `22` | `.nvmrc`（本地开发）· `.github/workflows/ci.yml` 两处 `node-version: 22` · `Dockerfile` 基础镜像 `node:22-slim@sha256:c3de60bf…`；`package.json` 的 `engines.node` 写作 `>=22`，是**范围**（安装期下限，未启用 `engine-strict`，不阻断任何版本） |
+| 构建转译档位 | `es2017` | `@rsbuild/core` 2.2.11 的 `esQuery = isDefaultBrowserslist ? 'es2017' : …`（`dist/m.js:8672`）；真 production 构建探针实测 `target: ["web","es2017"]`。`tsconfig.json` 里的 `ES2022` 只管类型检查与判据，**不约束产物**（把 tsconfig 的 target 依次调成 ES2022/ES2021/ES2015/ES5，产物 target 不变，类型检查报错数 0→0→9→77） |
+| 浏览器基线（生效值） | `chrome >= 107` · `edge >= 107` · `firefox >= 104` · `safari >= 16` | 本仓**没有声明**浏览器目标：无 `package.json.browserslist`、无 `.browserslistrc`（`node_modules/browserslist` 也未安装）、`rsbuild.config.ts` 无 `overrideBrowserslist`/`output.target` ⇒ 生效的是 `@rsbuild/core` 的 `DEFAULT_WEB_BROWSERSLIST` 硬编码值。一旦声明，产物 target 会从 `es2017` 常量换成 `browserslist:` 查询串并改变分块哈希与体积（实测三档：默认 313.1 kB / `chrome>=120,safari>=17` 311.9 kB / `ie 11` 338.3 kB），故本轮只把口径固定进文档，不动构建 |
+| 浏览器实际最低版本 | **Chrome 110+ · Edge 110+ · Firefox 115+ · Safari 16.4+** | 分发代码里带 ES2023 API：Vue 3.5.43 的 `reactivity.esm-browser.js:940` 直接调用 `Array.prototype.toSorted`（无兜底分支）。该 API 的门槛是 Chrome 110 / Firefox 115 / Safari 16.4，低于此版本会运行时报 TypeError。**`es2017` 只降语法，不降 API** —— 上表两行必须一起读 |
