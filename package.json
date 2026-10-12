@@ -42,7 +42,7 @@
     "verify:ci": "npm run verify && npm run verify:publish && npm run verify:standards && npm run verify:hygiene && npm run verify:types && npm run verify:types-selftest && npm run typecheck && npm run build && npm run verify:size && npm run verify:notices && npm run verify:repro && npm run verify:repro-selftest && npm run verify:standards-selftest && npm run verify:selfcheck && npm run verify:notices-selftest && npm run verify:size-selftest && npm run verify:publish-selftest && npm run verify:hygiene-selftest"
   },
   "dependencies": {
-    "@mediapipe/tasks-vision": "^1.0.1",
+    "@mediapipe/tasks-vision": "^1.1.0",
     "vue": "^3.5.43"
   },
   "devDependencies": {
