@@ -1809,6 +1809,35 @@ add({ id: 'S48', covers: ['src/lib/framing.ts', 'src/lib/camera-pick.ts', 'src/c
   return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : '环外无涂黑 · 当前摄像头名可见（虚拟设备带提醒）· 未指定设备时会改选实体摄像头' }
 } })
 
+// ── S49 package-lock.json 的根包元数据必须与 package.json 一致 ──────────
+// 为什么单独立一条（2026-10-12 实测漂移）：v0.1.1 / v0.1.2 发布时只改了 package.json 的 version，
+// lock 里的根条目仍写着 0.1.0、并且缺 license 与 engines —— 而 `npm ci` 只校验**依赖树**与
+// package.json 的 dependencies 是否匹配，**不校验根包元数据**，于是这种漂移一路绿灯进 main。
+// 本次是 Dependabot 的 npm install 顺手重写 lock 才暴露（属偶然，不是被断言守住的）。
+// 版本号是三处共用的读数（package.json / lock / CHANGELOG + tag），漏一处就会出现
+// 「锁文件自称的版本」与已发布版本不符。
+add({ id: 'S49', covers: ['package.json', 'package-lock.json'], name: 'package-lock.json 的根包元数据（name / version / license / engines）与 package.json 一致', run() {
+  const pkg = JSON.parse(read('package.json'))
+  let lock
+  try { lock = JSON.parse(read('package-lock.json')) } catch (e) { return { ok: false, detail: `package-lock.json 不是合法 JSON：${e.message}` } }
+  const root = lock.packages && lock.packages['']
+  // 零样本（缺根条目）不得判通过：那时下面每一项都会「无值可对」，等于空真命题。
+  if (!root) return { ok: false, detail: 'package-lock.json 缺 packages[""] 根条目 —— 零样本，不得判通过' }
+  const miss = []
+  const pairs = [
+    ['name', pkg.name, root.name],
+    ['version', pkg.version, root.version],
+    ['license', pkg.license, root.license],
+    ['engines.node', pkg.engines && pkg.engines.node, root.engines && root.engines.node],
+  ]
+  for (const [k, want, got] of pairs) {
+    if (want === undefined) { miss.push(`package.json 缺 ${k}，无法比对`); continue }
+    if (got === undefined) { miss.push(`lock 根条目缺 ${k}（package.json 写的是 ${want}）—— 跑一次 npm install 让 lock 跟上`); continue }
+    if (got !== want) miss.push(`${k} 不一致：package.json=${want} / lock=${got}`)
+  }
+  return { ok: miss.length === 0, detail: miss.length ? miss.join('；') : `${pairs.length} 项根包元数据一致（${pkg.name}@${pkg.version}）` }
+} })
+
 for (const c of CHECKS) {
   let r
   try { r = c.run() } catch (e) { r = { ok: false, detail: '断言抛错：' + e.message } }

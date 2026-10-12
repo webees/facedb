@@ -485,10 +485,14 @@ const M = [
     apply: () => mutate('src/components/CaptureFooter.vue', (t) => t.replace('{{ c.label || t(\'camera\', { n: i + 1 }) }}', "{{ t('camera', { n: i + 1 }) }}")) },
   { id: 'M115', target: 'src/components/CaptureView.vue', expect: 'S48', desc: '未指定设备时不再改选实体摄像头（默认选中虚拟摄像头时用户一直没有画面里的人 ⇒ 必须报红）',
     apply: () => mutate('src/components/CaptureView.vue', (t) => t.replace('  if (!deviceId) next = (await preferPhysicalCamera(next)) ?? next\n', '')) },
+  // 2026-10-12：lock 的根包元数据漂移（v0.1.1/v0.1.2 只改了 package.json 的 version，lock 仍是 0.1.0
+  // 且缺 license/engines），而 `npm ci` 不校验根包元数据 ⇒ 必须由 S49 挡住。
+  { id: 'M116', target: 'package-lock.json', expect: 'S49', desc: 'lock 根条目的 version 退回 0.1.0（与 package.json 的 0.1.2 不符 ⇒ 必须报红）',
+    apply: () => mutate('package-lock.json', (t) => t.replace('"name": "facedb",\n      "version": "0.1.2",', '"name": "facedb",\n      "version": "0.1.0",')) },
 ]
 
 // R35-S38：条数声明（S38 对拍；改条数必须同时改这里与 CI 步骤名）
-const EXPECTED_VARIANTS = 115
+const EXPECTED_VARIANTS = 116
 if (M.length !== EXPECTED_VARIANTS) {
   console.log(`\u26d4 \u672a\u5224\u5b9a\uff08exit 2\uff09\uff1a\u53d8\u5f02\u4f53\u58f0\u660e ${EXPECTED_VARIANTS} \u6761\uff0c\u5b9e\u9645 ${M.length} \u6761`)
   process.exit(2)
