@@ -9,6 +9,15 @@ updates:
       timezone: Asia/Bangkok
     open-pull-requests-limit: 5
     versioning-strategy: increase
+    ignore:
+      # @mediapipe/tasks-vision 的 wasm 是 vendored 副本（public/wasm/*，由 public/SHA256SUMS 登记），
+      # SDK 与 wasm 成对发布：只升 SDK 不换副本会让胶水层与 wasm 不匹配、模型加载失败。
+      # 升级必须同步四个 wasm + 清单 + 重建重锚 + 真浏览器验证，无法自动合并 ⇒ 关掉自动 PR，
+      # 需要时由人工升级（详见 CONTRIBUTING.md 的「依赖升级」一节）。
+      - dependency-name: "@mediapipe/tasks-vision"
+      # TypeScript 7 是原生重写，vue-tsc / Vue 工具链尚未支持；minor 与 patch 照常自动提。
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "chore(deps)"
     labels:

@@ -61,9 +61,9 @@ docker compose config -q   # 若改动 docker-compose.yml
 `.github/`、`scripts/`、`.editorconfig`、`.gitattributes` 或哈希资产时请一并跑：
 
 ```bash
-npm run verify:standards    # 48 项：文档 / 治理文件 / 工作流 / 脚本之间的交叉核对
+npm run verify:standards    # 49 项：文档 / 治理文件 / 工作流 / 脚本之间的交叉核对
 npm run verify:hygiene      # 5 项：零命中规则、哈希资产保护、行尾口径
-npm run verify:standards-selftest   # 判据自身的变异自检（115 个变异体必须全部被抓到）
+npm run verify:standards-selftest   # 判据自身的变异自检（116 个变异体必须全部被抓到）
 npm run verify:all          # 本地快速一键（不构建、不跑变异自检）
 npm run verify:ci           # 与 CI 逐条同集同序的一键（含构建、体积/许可判据与全部变异自检）
 ```
@@ -78,6 +78,21 @@ npm run verify:ci           # 与 CI 逐条同集同序的一键（含构建、�
 
 改动 `pb_migrations/` 时，必须实测「空库重放」与「`down` 回退」；改动阈值或约束时，
 必须附**边界两侧**的实测值（例如 200 通过 / 201 拒绝），不能只测中间值。
+
+## 依赖升级
+
+自动升级（Dependabot）只处理依赖树，下面两类升级**不能**直接合并，必须人工补齐配套改动：
+
+| 依赖 | 为什么不能自动合并 | 人工要做什么 |
+|---|---|---|
+| `@mediapipe/tasks-vision` | `public/wasm/*` 是它的 **vendored 副本**（由 `public/SHA256SUMS` 登记），SDK 与 wasm 成对发布：1.0.1 → 1.1.0 时四个文件全部变化（`vision_wasm_internal.wasm` 11,756,954 → 12,997,248 B）。只升 SDK 不换副本，胶水层与 wasm 不匹配，模型加载失败 | 同步四个 wasm → 更新 `public/SHA256SUMS` → `rm -rf dist && npm run build` → 重锚体积基线 → 真浏览器验证（模型加载 + 一次真实检测）→ 重新部署 |
+| `typescript`（major） | 7.x 是原生重写，`vue-tsc` 与 Vue 工具链尚未支持 | 等 `vue-tsc` 支持后再升；升完必须 `npm run verify:types` 加全量构建 |
+
+这两类已在 `.github/dependabot.yml` 里加了 `ignore`，避免每周重复生成必然红的 PR。
+
+任何依赖升级都要注意：`package.json` 属体积判据的**源码指纹输入面**，升级后必须重建产物并重锚
+（`node <运行根>/lib/size-reanchor.mjs --root . --write`），否则 CI 的 `verify:size` 会以
+「未判定」退出 —— 那不是缺陷，是判据在说「源码改过而产物没重建，此时体积不可比」。
 
 ## 证据要求
 
