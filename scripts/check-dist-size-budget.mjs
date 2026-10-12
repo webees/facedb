@@ -108,7 +108,7 @@ const EXPECTED_FILE_COUNT = 13
 // **未判定（exit 2）**，提示先 `rm -rf dist && npm run build` 再重锚。
 // 覆盖输入：`index.html`、`package.json`、`src/**`（递归、按路径排序）。不含 node_modules
 // （软链/真实目录各有 N0 前提）与 `dist/`（那是被检查对象）。
-const SOURCE_FINGERPRINT = 'd05ef2b5f0489c14ae83d78c686e60315ee7fbce838d2538295b7f296c96b05e'
+const SOURCE_FINGERPRINT = 'c47ca8ed0ce2c59b4faf7d488172c373b0ddc495e3779d8c3849d9b85820efd4'
 
 // 阈值自洽（防手抄错，尤其是 27978237.9 这类取整）：常量必须等于由基线派生的取整结果。
 const DERIVED = {
