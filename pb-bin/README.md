@@ -7,9 +7,9 @@
 |---|---|---|
 | 文件 | `pb-bin/pocketbase-zh-linux-arm64` | `pb-bin/pocketbase-zh-linux-amd64` |
 | 平台 | Linux / arm64（aarch64，静态链接 ELF，`e_machine`=183） | Linux / amd64（x86-64，静态链接 ELF，`e_machine`=62） |
-| 大小 | 43,398,493 字节 | 45,656,931 字节 |
-| sha256 | `f3f6492745c27b0713d8db8ff7ddff577853e3dfb2a035d94c7566c4f6d42bd4` | `01734c19491d33dd9384cc609fe47eba104d454eda1f215fb87f20f50ffda4f2` |
-| md5 | `b57e6fb0f91474494e67cbf7eac7cb31` | `430a8040f244da603f8f9be99eb43443` |
+| 大小 | 43,390,182 字节 | 45,650,820 字节 |
+| sha256 | `9f61babf05f54e7d74eec3387006a7d8a675bdcb32bc89db4c4e98d837bc29ad` | `2c497de9d36b7a5b81a375c0ce22bb30c3f1f4e9ab3b3f030736316c8544180a` |
+| md5 | `0962c2457e3d99a82cff50cf7c70ce55` | `957607bc574e9dedc63a790e0963dbff` |
 | 适用机 | 源机 nanopc-t6-lts（RK3588，aarch64） | 目标机（x86_64 构建机） |
 | 自报版本 | `pocketbase version (untracked)`（源码编译产物没有版本号） | 同左 |
 | 运行时基座 | `ghcr.io/muchobien/pocketbase:0.40.4@sha256:9390b7b63ce114dbab577be72e6ef75f718a19083866607fcbdd1b915632b943`（只作基座；实际执行的是本仓库拷进去的汉化二进制） | 同左 |
@@ -82,6 +82,8 @@ done
 | amd64 | `2f1e750c3ed64bce8a65862c28a3d2b2ffa26bb914b0d6892d2e267572d520de` | `6debdbde340a5bb0f38281ff0e4c07b5` | 已被替换（45,644,827 字节；无对应部署） |
 | arm64 | `76a295cffdd75a18c31018cfa72da62ee80514be80bf77cfbc0267cb846bf5d5` | `5a990e46efe0ee4b0326cdfb1de8e831` | 曾被写进 `Dockerfile` 头注（43,332,757 字节），但无任何二进制与之相符，已删 |
 | amd64 | `64ba30d7f6e0b14aff0a6e4f72d0b7adb0b0fe4989040a63cd34e9c46d4256d1` | `6e635919dfca206aa79048a35b0eb6fd` | 曾被写进 `Dockerfile` 头注（45,644,827 字节），但无任何二进制与之相符，已删 |
+| arm64 | `f3f6492745c27b0713d8db8ff7ddff577853e3dfb2a035d94c7566c4f6d42bd4` | `b57e6fb0f91474494e67cbf7eac7cb31` | 已被替换（43,398,493 字节；本轮部署前 `webees-facedb-pocketbase:0.40.4-zh` 里跑的就是这一份） |
+| amd64 | `01734c19491d33dd9384cc609fe47eba104d454eda1f215fb87f20f50ffda4f2` | `430a8040f244da603f8f9be99eb43443` | 已被替换（45,656,931 字节；本轮部署前线上 `facedb-api` 容器内的 `/usr/local/bin/pocketbase` 实测即此值） |
 
 重锚依据（2026-10-10，v0.1.0 上线前）：两份二进制的 sha256/md5/size 由现场实测（`shasum -a 256` / `md5 -q` / `stat -f%z`）取得，
 与 `Dockerfile` 的 `want_*` 常量、本文件表格、`pb-bin/SHA256SUMS` 逐字符一致；这三方一致性由判据 `S39`
